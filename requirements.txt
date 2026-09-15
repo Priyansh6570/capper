@@ -1,0 +1,27 @@
+# Laptop / dev dependencies (stages 1, 7 + orchestration).
+# The GPU stages (2, 4, 6) get their own environments on Kaggle - see CLAUDE.md.
+PyMuPDF>=1.24
+Pillow>=10.0
+google-genai>=1.0
+groq>=0.9
+python-dotenv>=1.0
+# Stage 2a: local CPU vision tagging (person via YOLO, face via OpenCV) so
+# selection picks character frames, not text bubbles. ultralytics pulls torch -
+# torch is already the CUDA build below; don't let it downgrade (re-check
+# torch.cuda.is_available() after install). Pin nothing.
+ultralytics      # yolov8n person detection (CPU)
+opencv-python    # Haar-cascade face detection (CPU)
+# Stage 6: Chatterbox TTS, runs locally on the GPU (with CPU fallback).
+# IMPORTANT (Windows): the default PyPI torch wheel is CPU-only. To use your
+# RTX 3050, install the CUDA build first, then the rest of this file, e.g.:
+#   pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu121
+# Do NOT pin the +cu121 wheel URL here (it's machine/CUDA-specific).
+chatterbox-tts>=0.1
+torch>=2.1
+torchaudio>=2.1
+# Stage 6 --draft fast path (MANHWA_TTS_DRAFT=1): edge-tts neural voices, no GPU.
+edge-tts>=6.1     # draft: free Microsoft neural TTS
+mutagen>=1.47     # draft: read real MP3 duration
+# Stage 7: render the 1920x1080 MP4 (MoviePy v2 API + ffmpeg). Encodes with
+# h264_nvenc when available, else libx264. ffmpeg must be on PATH.
+moviepy>=2.0

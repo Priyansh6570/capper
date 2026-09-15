@@ -1,0 +1,1285 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Framer — manual frame selection</title>
+<style>
+  /* DARK theme (default) — all colors flow through these vars so the LIGHT
+     override below re-themes the strip, cards and controls together. */
+  :root {
+    --bg:#15171c; --panel:#1e2128; --line:#2a2e37;
+    --accent:#5aa9ff; --accent-ink:#06203f;
+    --frame:#34d399; --blur:#f87171; --blur-ink:#3a0d0d;
+    --txt:#e6e8ec; --muted:#9aa1ad;
+    --input:#12141a; --input2:#0e1014;
+    --btn:#2b303b; --btn-hover:#343a47;
+    --stage:#0c0d11; --pill:#262b34; --chip:#0c0d11; --toast:#222732;
+    --frame-fill:rgba(52,211,153,.08); --frame-fill2:rgba(52,211,153,.16);
+    --blur-fill:rgba(248,113,113,.16); --blur-fill2:rgba(248,113,113,.10);
+    --overlay:rgba(10,12,16,.74);
+  }
+  body.light {
+    --bg:#f4f5f7; --panel:#ffffff; --line:#d3d7de;
+    --accent:#1f6feb; --accent-ink:#ffffff;
+    --frame:#0f9d63; --blur:#d23b3b; --blur-ink:#ffffff;
+    --txt:#1c1f24; --muted:#5a626e;
+    --input:#ffffff; --input2:#eceef1;
+    --btn:#e7e9ee; --btn-hover:#dde0e7;
+    --stage:#dfe2e7; --pill:#e7eaef; --chip:#ffffff; --toast:#ffffff;
+    --frame-fill:rgba(15,157,99,.10); --frame-fill2:rgba(15,157,99,.20);
+    --blur-fill:rgba(210,59,59,.16); --blur-fill2:rgba(210,59,59,.12);
+    --overlay:rgba(244,245,247,.74);
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; font:14px/1.45 system-ui,Segoe UI,Roboto,sans-serif;
+         background:var(--bg); color:var(--txt); height:100vh; overflow:hidden; }
+  .app { display:flex; height:100vh; }
+  .left { flex:1; min-width:0; display:flex; flex-direction:column; position:relative; }
+  .divider { flex:0 0 6px; cursor:col-resize; background:var(--line); }
+  .divider:hover, .divider.active { background:var(--accent); }
+  .right { width:460px; flex:0 0 auto; display:flex; flex-direction:column;
+           border-left:1px solid var(--line); }
+  /* download panel (top of the strip column) */
+  .dlbar { padding:10px 12px; border-bottom:1px solid var(--line); background:var(--panel);
+           display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  .dltag { font-weight:600; color:var(--accent); margin-right:2px; }
+  header { padding:10px 12px; border-bottom:1px solid var(--line);
+           display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  h1 { font-size:14px; margin:0 8px 0 0; font-weight:600; }
+  input[type=text], textarea { background:var(--input); color:var(--txt);
+    border:1px solid var(--line); border-radius:6px; padding:6px 8px; font:inherit; }
+  input[type=text] { width:230px; }
+  textarea { width:100%; height:90px; resize:vertical; }
+  button { background:var(--btn); color:var(--txt); border:1px solid var(--line);
+    border-radius:6px; padding:6px 10px; cursor:pointer; font:inherit; }
+  button:hover { background:var(--btn-hover); }
+  button.primary { background:var(--accent); color:var(--accent-ink); border-color:var(--accent);
+    font-weight:600; }
+  button.on { background:var(--blur); color:var(--blur-ink); border-color:var(--blur); font-weight:600; }
+  select { background:var(--btn); color:var(--txt); border:1px solid var(--line);
+    border-radius:6px; padding:3px 6px; font:inherit; cursor:pointer; }
+  button.seg { padding:3px 9px; font-size:12px; }
+  button.seg.on { background:var(--accent); color:var(--accent-ink); border-color:var(--accent); font-weight:600; }
+  .muted { color:var(--muted); }
+  .hint { font-size:12px; color:var(--muted); }
+
+  /* zoom toolbar */
+  .toolbar { padding:8px 12px; border-bottom:1px solid var(--line);
+             display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  .pill { font-size:12px; padding:2px 8px; border-radius:20px; background:var(--pill); }
+  #zoom { width:160px; }
+  .zlbl { font-variant-numeric:tabular-nums; min-width:96px; }
+
+  /* strip view: scrollable stage holding a zoomed "world" of stacked tiles */
+  .stage { flex:1; overflow:auto; background:var(--stage); position:relative; }
+  #world { position:relative; transform-origin:0 0; cursor:crosshair; }
+  img.tile { position:absolute; left:0; display:block; image-rendering:auto;
+             pointer-events:none; user-select:none; }
+  #boxes, #rubber { position:absolute; left:0; top:0; pointer-events:none; }
+  .box { position:absolute; pointer-events:none; box-sizing:border-box; }
+  .box.frame { border:2px solid var(--frame); background:var(--frame-fill); }
+  .box.frame.cur { border-width:3px; background:var(--frame-fill2); }
+  .box.frame::after { content:attr(data-lbl); position:absolute; left:0; top:-16px;
+    font-size:11px; color:var(--frame); background:var(--chip); padding:0 3px; border-radius:2px; }
+  .box.blur { border:2px solid var(--blur); background:var(--blur-fill); }
+  #rubber { display:none; border:1.5px dashed var(--frame); background:var(--frame-fill); }
+  #rubber.blur { border-color:var(--blur); background:var(--blur-fill2); }
+
+  /* loading overlay (covers the strip pane) */
+  .overlay { position:absolute; inset:0; background:var(--overlay); display:none;
+             flex-direction:column; align-items:center; justify-content:center; gap:14px; z-index:40; }
+  .overlay.show { display:flex; }
+  .spinner { width:42px; height:42px; border:4px solid var(--line); border-top-color:var(--accent);
+             border-radius:50%; animation:spin .8s linear infinite; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+  .ovmsg { font-size:14px; color:var(--txt); font-weight:600; }
+
+  /* script list */
+  .rtop { padding:10px 12px; border-bottom:1px solid var(--line); }
+  .lines { flex:1; overflow:auto; padding:8px; }
+  .row { background:var(--panel); border:1px solid var(--line); border-radius:8px;
+         padding:8px; margin-bottom:0; display:flex; gap:8px; }
+  .row.active { border-color:var(--accent); box-shadow:0 0 0 1px var(--accent); }
+  .row.dragover { border-color:var(--frame); }
+  .grip { cursor:grab; color:var(--muted); user-select:none; padding:2px 2px 0; }
+  .rbody { flex:1; min-width:0; }
+  .ltext { width:100%; background:var(--input); color:var(--txt); border:1px solid var(--line);
+           border-radius:6px; padding:5px 6px; font:inherit; resize:vertical; min-height:34px; }
+  .rmeta { display:flex; gap:8px; align-items:center; margin-top:6px; flex-wrap:wrap; }
+  .rmeta label { font-size:12px; color:var(--muted); display:flex; gap:4px; align-items:center; }
+  .dur { width:62px; }
+  .idx { font-weight:600; color:var(--accent); margin-right:4px; }
+  .small { padding:3px 7px; font-size:12px; }
+  .danger { color:var(--blur); }
+  .status { padding:8px 12px; border-top:1px solid var(--line); font-size:12px;
+            color:var(--muted); white-space:pre-wrap; max-height:150px; overflow:auto; }
+
+  /* insert bar between lines (hover to reveal) */
+  .insbar { display:flex; align-items:center; justify-content:center; height:14px; }
+  .insbar button { padding:0 8px; font-size:11px; line-height:16px; opacity:.28;
+                   transition:opacity .12s; }
+  .insbar:hover button { opacity:1; }
+
+  /* per-line frame strip */
+  .frames { display:flex; gap:6px; margin-top:8px; flex-wrap:wrap; }
+  .fcard { width:96px; border:1px solid var(--line); border-radius:6px; padding:4px;
+           background:var(--stage); }
+  .fcard.cur { border-color:var(--frame); box-shadow:0 0 0 1px var(--frame); }
+  .fthumb { width:86px; height:64px; border-radius:4px; overflow:hidden; cursor:pointer;
+            background:#000 center/contain no-repeat; display:flex; align-items:center;
+            justify-content:center; font-size:10px; color:var(--muted); }
+  .fthumb.flip { transform:scaleX(-1); }
+  .fctl { display:flex; gap:2px; align-items:center; margin-top:3px; font-size:11px; }
+  .fctl button { padding:1px 5px; font-size:11px; }
+  .fn { color:var(--frame); font-weight:600; margin-right:auto; }
+  .blurchip { font-size:10px; color:var(--blur); }
+  .addhint { width:96px; height:88px; border:1px dashed var(--line); border-radius:6px;
+             display:flex; align-items:center; justify-content:center; text-align:center;
+             font-size:11px; color:var(--muted); padding:4px; }
+
+  /* duration field clarity */
+  .durwrap { display:flex; gap:4px; align-items:center; }
+  .durwrap.auto { opacity:.6; }
+  .durwrap.auto .durlbl { font-style:italic; }
+  .dur:disabled { background:var(--input2); color:var(--muted); cursor:not-allowed; }
+  button:disabled { opacity:.4; cursor:default; }
+
+  /* generate (audio+video) panel: buttons, progress bar, live log, result video */
+  .genbar { padding:10px 12px; border-top:1px solid var(--line);
+            display:flex; flex-direction:column; gap:7px; }
+  .progress { display:none; height:8px; background:var(--input2); border:1px solid var(--line);
+              border-radius:6px; overflow:hidden; }
+  .progress .bar { height:100%; width:0; background:var(--accent); border-radius:6px;
+                   transition:width .3s ease; }
+  .progress.indet .bar { width:35% !important;
+    background:linear-gradient(90deg, transparent, var(--accent), transparent);
+    animation:indet 1.1s ease-in-out infinite; }
+  @keyframes indet { 0% { margin-left:-35%; } 100% { margin-left:100%; } }
+  .progress.err .bar { background:var(--blur); width:100% !important; animation:none; }
+  .genlog { font:12px/1.45 ui-monospace,Consolas,monospace; color:var(--muted);
+            background:var(--input2); border:1px solid var(--line); border-radius:6px;
+            padding:6px 8px; max-height:170px; overflow:auto; white-space:pre-wrap;
+            display:none; }
+  .genlog:not(:empty) { display:block; }
+  .genvideo { width:100%; border-radius:8px; background:#000; margin-top:2px; }
+  .dllink { color:var(--accent); text-decoration:none; font-weight:600; }
+  .dllink:hover { text-decoration:underline; }
+
+  /* undo toast */
+  .toast { position:fixed; left:50%; bottom:22px; transform:translateX(-50%) translateY(16px);
+           background:var(--toast); border:1px solid var(--line); border-radius:8px;
+           padding:8px 12px; display:flex; gap:10px; align-items:center;
+           box-shadow:0 8px 28px #0006; opacity:0; pointer-events:none;
+           transition:opacity .15s, transform .15s; z-index:50; font-size:13px; }
+  .toast.show { opacity:1; transform:translateX(-50%) translateY(0); pointer-events:auto; }
+</style>
+</head>
+<body>
+<div class="app">
+  <!-- LEFT: the chapter strip -->
+  <div class="left">
+    <div class="dlbar">
+      <span class="dltag">⬇ Download</span>
+      <input id="dlUrl" type="text" placeholder="webtoon.com chapter URL" style="flex:1; min-width:240px" />
+      <input id="dlNo" type="text" placeholder="chapter #" style="width:90px" />
+      <button id="dlBtn" class="primary">Download PDF</button>
+      <span class="hint" id="dlHint">Fetches the chapter PDF, splits it if &gt;127 pages so you can upload each part to Gemini. Then click Stitch PDF.</span>
+    </div>
+    <header>
+      <h1>Framer</h1>
+      <input id="pdfPath" type="text" placeholder="PDF path (e.g. D:\…\ch_001.pdf)" />
+      <input id="chapId" type="text" placeholder="chapter id (optional)" style="width:150px" />
+      <button id="loadPdfBtn">Stitch PDF</button>
+      <label class="hint">or <input id="pdfFile" type="file" accept="application/pdf" style="width:auto"></label>
+      <button id="loadProjBtn" class="small" title="Load a saved project for the chapter id above">📂 Load project</button>
+      <button id="themeBtn" class="small" style="margin-left:auto" title="Toggle light / dark">☀ Light</button>
+    </header>
+    <div class="toolbar">
+      <button id="zoomOut" class="small">−</button>
+      <input id="zoom" type="range" min="0" max="100" value="0" />
+      <button id="zoomIn" class="small">+</button>
+      <span class="zlbl pill" id="zoomLbl">Zoom —</span>
+      <button id="fitBtn" class="small">Fit width</button>
+      <button id="oneBtn" class="small">100%</button>
+      <span style="width:8px"></span>
+      <button id="frameModeBtn" class="small">Frame mode</button>
+      <button id="blurModeBtn" class="small">Blur mode</button>
+      <select id="blurStyle" class="small" title="Style for new blur regions — mosaic destroys text most reliably">
+        <option value="m">Blur: Mosaic (strongest)</option>
+        <option value="g">Blur: Heavy gaussian</option>
+      </select>
+      <span class="hint" id="stripInfo">No strip loaded.</span>
+    </div>
+    <div class="toolbar" style="border-top:0; padding-top:0">
+      <span class="hint">Scroll = navigate · <b>Ctrl/⌘ + wheel</b> = zoom (5%–400%) · drag = add a frame to the active line · Blur mode draws on the selected frame.</span>
+    </div>
+    <div class="stage" id="stage">
+      <div id="world">
+        <div id="tiles"></div>
+        <div id="boxes"></div>
+        <div id="rubber"></div>
+      </div>
+    </div>
+    <div class="overlay" id="overlay">
+      <div class="spinner"></div>
+      <div class="ovmsg" id="overlayMsg">Working…</div>
+    </div>
+  </div>
+
+  <!-- draggable split between the strip and the script panel -->
+  <div class="divider" id="divider" title="drag to resize"></div>
+
+  <!-- RIGHT: the script lines -->
+  <div class="right" id="right">
+    <div class="rtop">
+      <textarea id="scriptText" placeholder="Paste narration script — one segment per line"></textarea>
+      <div class="rmeta" style="margin-top:6px">
+        <input id="txtPath" type="text" placeholder="…or a .txt path" style="flex:1" />
+        <button id="loadScriptBtn">Load script</button>
+        <button id="addLineBtn" class="small">+ line</button>
+        <button id="undoBtn" class="small" title="Nothing to undo" disabled>↶ Undo</button>
+        <button id="redoBtn" class="small" title="Nothing to redo" disabled>↷ Redo</button>
+        <button id="saveProjBtn" class="small" title="Save the full working state to project.json">💾 Save project</button>
+        <span id="saveState" class="hint"></span>
+      </div>
+    </div>
+    <div class="lines" id="lines"></div>
+    <div class="rmeta" style="padding:10px 12px; border-top:1px solid var(--line)">
+      <button id="exportBtn" class="primary">Export frames + mapping</button>
+      <span class="hint" id="exportHint"></span>
+    </div>
+    <div class="genbar">
+      <div class="rmeta" style="margin:0">
+        <button id="genAVBtn" class="primary" title="Run the pipeline: TTS voiceover then video">🔊 Generate Audio + Video</button>
+        <button id="genVidBtn" class="small" title="Re-render the video from the existing audio (fast)">🎬 Re-render Video</button>
+        <button id="genCancelBtn" class="small danger" disabled title="Stop the running job">■ Stop</button>
+      </div>
+      <div class="progress" id="genProgress"><div class="bar" id="genBar"></div></div>
+      <div class="genlog" id="genStatus"></div>
+      <div class="result" id="genResult"></div>
+    </div>
+    <div class="status" id="status">Load a PDF, then a script. Click a line to make it active, then drag boxes on the strip to add frames. Ctrl+Z undoes edits.</div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+// ---------------------------------------------------------------------------
+// state (kept in JS memory only; exported to the backend on demand)
+//
+//   line  = { text, duration_s, mode:'sequence'|'together', frames:[frame] }
+//   frame = { bbox:[tx,ty,tw,th], flip:bool, blur:[[tx,ty,tw,th],...] }
+// ---------------------------------------------------------------------------
+const S = {
+  chapter_id: null,
+  source_pdf: null,
+  strip_w: 0, strip_h: 0,
+  preview_scale: 1,        // preview_px = true_px * preview_scale  (base downscale)
+  preview_w: 0, preview_h: 0,
+  tiles: [],               // [{url,y,w,h}] in preview px
+  zoom: 1,
+  fitZoom: 1, minZoom: 0.05, maxZoom: 4.0,   // FIXED 5%–400% range
+  vscale: 1,               // TRUE px -> on-screen world px = preview_scale * zoom
+  lines: [],
+  active: -1,              // active line index
+  activeFrame: -1,         // active frame index WITHIN the active line
+  mode: 'frame',           // 'frame' | 'blur'
+  blurStyle: 'm',          // style for NEW blur regions: 'm' mosaic | 'g' gaussian
+};
+
+const $ = id => document.getElementById(id);
+const stage = $('stage'), world = $('world');
+const tilesDiv = $('tiles'), boxesDiv = $('boxes'), rubber = $('rubber');
+const clamp = (v,a,b) => Math.max(a, Math.min(b, v));
+
+function setStatus(msg, isErr) {
+  const el = $('status');
+  el.textContent = msg;
+  el.style.color = isErr ? 'var(--blur)' : 'var(--muted)';
+}
+
+// ---------------------------------------------------------------------------
+// loading overlay (spinner + message over the strip pane)
+// ---------------------------------------------------------------------------
+function showOverlay(msg) { $('overlayMsg').textContent = msg || 'Working…'; $('overlay').classList.add('show'); }
+function setOverlay(msg) { $('overlayMsg').textContent = msg; }
+function hideOverlay() { $('overlay').classList.remove('show'); }
+
+// ---------------------------------------------------------------------------
+// undo / redo — snapshot the editable state BEFORE each destructive edit, so any
+// listed action (remove line/frame, reorder, add box, add/clear blur, flip, play
+// mode) is reversible. Keeps the last UNDO_LIMIT steps; redo mirrors it.
+// ---------------------------------------------------------------------------
+const UNDO_LIMIT = 30;
+let undoStack = [], redoStack = [];
+
+function snapshot() {
+  return {
+    lines: JSON.parse(JSON.stringify(S.lines)),
+    active: S.active, activeFrame: S.activeFrame, mode: S.mode,
+  };
+}
+function pushUndo(label) {
+  undoStack.push({ snap: snapshot(), label });
+  if (undoStack.length > UNDO_LIMIT) undoStack.shift();
+  redoStack = [];
+  updateUndoUI();
+  markDirty();
+}
+function restoreState(snap) {
+  S.lines = JSON.parse(JSON.stringify(snap.lines));
+  S.active = Math.min(snap.active, S.lines.length - 1);
+  S.activeFrame = snap.activeFrame;
+  setMode(snap.mode);
+  renderLines(); redrawBoxes();
+}
+function undo() {
+  if (!undoStack.length) { setStatus('Nothing to undo.'); return; }
+  const item = undoStack.pop();
+  redoStack.push({ snap: snapshot(), label: item.label });
+  restoreState(item.snap);
+  updateUndoUI();
+  setStatus(`Undid: ${item.label}`);
+}
+function redo() {
+  if (!redoStack.length) { setStatus('Nothing to redo.'); return; }
+  const item = redoStack.pop();
+  undoStack.push({ snap: snapshot(), label: item.label });
+  restoreState(item.snap);
+  updateUndoUI();
+  setStatus(`Redid: ${item.label}`);
+}
+function updateUndoUI() {
+  const u = $('undoBtn'), r = $('redoBtn');
+  if (u) { u.disabled = !undoStack.length;
+    u.title = undoStack.length
+      ? `Undo: ${undoStack[undoStack.length-1].label} (${undoStack.length} step${undoStack.length>1?'s':''})`
+      : 'Nothing to undo'; }
+  if (r) { r.disabled = !redoStack.length;
+    r.title = redoStack.length ? `Redo: ${redoStack[redoStack.length-1].label}` : 'Nothing to redo'; }
+}
+
+// Ctrl/Cmd+Z = undo, Ctrl/Cmd+Shift+Z or Ctrl+Y = redo. Ignored while typing in a
+// text field so the browser's native text-undo still works there.
+window.addEventListener('keydown', e => {
+  const t = e.target;
+  if (t && (t.tagName === 'TEXTAREA' || t.tagName === 'INPUT')) return;
+  if (!(e.ctrlKey || e.metaKey)) return;
+  const k = e.key.toLowerCase();
+  if (k === 'z' && !e.shiftKey) { e.preventDefault(); undo(); }
+  else if ((k === 'z' && e.shiftKey) || k === 'y') { e.preventDefault(); redo(); }
+});
+
+// ---------------------------------------------------------------------------
+// toast — transient message with an optional action button (used as the
+// "are you sure?" safety net for remove-line: shows an inline Undo).
+// ---------------------------------------------------------------------------
+let toastTimer = null;
+function showToast(msg, actionLabel, actionFn) {
+  const el = $('toast');
+  el.innerHTML = '';
+  const span = document.createElement('span'); span.textContent = msg;
+  el.appendChild(span);
+  if (actionLabel && actionFn) {
+    const btn = document.createElement('button');
+    btn.className = 'small'; btn.textContent = actionLabel;
+    btn.onclick = () => { actionFn(); hideToast(); };
+    el.appendChild(btn);
+  }
+  el.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(hideToast, 6000);
+}
+function hideToast() { $('toast').classList.remove('show'); }
+
+// ---------------------------------------------------------------------------
+// download a chapter (webtoon-downloader) -> PDF (+ split >127pg for Gemini)
+// The result feeds the existing "Stitch PDF" flow: we drop the downloaded PDF
+// path into the PDF-path field and the chapter id into its field, ready to load.
+// ---------------------------------------------------------------------------
+async function doDownload() {
+  const url = $('dlUrl').value.trim();
+  const no = $('dlNo').value.trim();
+  if (!url) { setStatus('Paste a webtoon.com chapter URL.', true); return; }
+  const chap = $('chapId').value.trim() || no;   // reuse the chapter-id field; default to the number
+  showOverlay('Downloading chapter…');
+  setStatus(`Downloading chapter ${no || ''} with webtoon-downloader…\n` +
+            `This can take a while for image-heavy chapters — leave it running.`);
+  $('dlBtn').disabled = true;
+  try {
+    const res = await fetch('/download', { method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ url, chapter_no: no, chapter_id: chap }) });
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.error || 'download failed');
+
+    // feed the Stitch PDF flow with the FULL chapter PDF
+    $('chapId').value = d.chapter_id;
+    $('pdfPath').value = d.pdf;
+
+    let msg = (d.steps || []).join('\n') + '\n\n';
+    if (d.split) {
+      msg += `Split into ${d.parts.length} part(s) for Gemini (≤127 pages each) — ` +
+             `upload these:\n` +
+             d.parts.map((p, i) =>
+               `  part ${i + 1}  (pages ${p.from}–${p.to}, ${p.pages}p):  ${p.path}`).join('\n');
+    } else {
+      msg += `One PDF (≤127 pages) — upload this to Gemini:\n  ${d.parts[0].path}`;
+    }
+    msg += `\n\n✔ Ready. Click “Stitch PDF” to load this chapter for framing.`;
+    setStatus(msg);
+    $('stripInfo').textContent = `Downloaded ${d.page_count}p` +
+      (d.split ? ` → ${d.parts.length} Gemini parts. Click Stitch PDF.` : `. Click Stitch PDF.`);
+  } catch (e) {
+    setStatus('Download error: ' + e.message, true);
+  } finally {
+    $('dlBtn').disabled = false;
+    hideOverlay();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// load PDF -> tiled preview
+// ---------------------------------------------------------------------------
+async function loadPdf() {
+  const file = $('pdfFile').files[0];
+  const path = $('pdfPath').value.trim();
+  const chap = $('chapId').value.trim();
+  if (!file && !path) { setStatus('Enter a PDF path or choose a file.', true); return; }
+  showOverlay('Stitching PDF…');
+  setStatus('Stitching PDF… (rendering every page + tiling the preview, this can take a moment)');
+  try {
+    let res;
+    if (file) {
+      const fd = new FormData();
+      fd.append('pdf', file);
+      if (chap) fd.append('chapter_id', chap);
+      res = await fetch('/load_pdf', { method:'POST', body:fd });
+    } else {
+      res = await fetch('/load_pdf', { method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ pdf_path: path, chapter_id: chap || undefined }) });
+    }
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.error || 'load failed');
+    setOverlay('Building preview…');
+    S.chapter_id = d.chapter_id;
+    S.source_pdf = d.source_pdf || null;
+    S.preview_scale = d.preview_scale;
+    S.strip_w = d.strip_w; S.strip_h = d.strip_h;
+    S.preview_w = d.preview_w; S.preview_h = d.preview_h;
+    S.tiles = d.tiles;
+    $('chapId').value = d.chapter_id;
+    buildTiles();
+    computeZoomRange();
+    setZoom(S.fitZoom);             // start fit-width so the whole width is visible
+    stage.scrollTop = 0;
+    await firstTilePromise();       // wait for the first tile to paint before hiding
+    $('stripInfo').textContent =
+      `strip ${d.strip_w}×${d.strip_h}px · preview ${d.preview_w}×${d.preview_h} (${d.tiles.length} tiles) · base ${d.preview_scale.toFixed(4)}`;
+    setStatus(`Loaded ${d.chapter_id}. Full-res ${d.strip_w}×${d.strip_h}. Zoom out to navigate, in to see the art.`);
+    maybeOfferRecovery(d.chapter_id);
+  } catch (e) { setStatus('PDF load error: ' + e.message, true); }
+  finally { hideOverlay(); }
+}
+
+function buildTiles() {
+  tilesDiv.innerHTML = '';
+  S.tiles.forEach((t, idx) => {
+    const img = new Image();
+    img.className = 'tile';
+    img.loading = idx === 0 ? 'eager' : 'lazy';   // eager first tile so we can wait on it
+    img.dataset.y = t.y; img.dataset.h = t.h;
+    img.src = t.url + '?t=' + Date.now();
+    tilesDiv.appendChild(img);
+  });
+}
+
+// resolves once the first (eager) tile has painted, or after a short timeout, so
+// "Building preview…" stays up until there's actually art on screen.
+function firstTilePromise() {
+  const first = tilesDiv.querySelector('img.tile');
+  if (!first || first.complete) return Promise.resolve();
+  return new Promise(res => {
+    first.addEventListener('load', res, { once:true });
+    first.addEventListener('error', res, { once:true });
+    setTimeout(res, 2500);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// zoom + layout  (FIXED 5%–400% so you can zoom out to the whole strip)
+// ---------------------------------------------------------------------------
+function computeZoomRange() {
+  S.fitZoom = stage.clientWidth / S.preview_w;   // for the Fit-width button
+  S.minZoom = 0.05;                              // 5%  — whole strip for navigation
+  S.maxZoom = 4.0;                               // 400%
+}
+
+function layout() {
+  S.vscale = S.preview_scale * S.zoom;           // TRUE px -> world px
+  const ww = Math.round(S.preview_w * S.zoom);
+  const wh = Math.round(S.preview_h * S.zoom);
+  world.style.width = ww + 'px';
+  world.style.height = wh + 'px';
+  for (const img of tilesDiv.children) {
+    const y = +img.dataset.y, h = +img.dataset.h;
+    img.style.top = (y * S.zoom) + 'px';
+    img.style.width = ww + 'px';
+    img.style.height = (h * S.zoom) + 'px';
+  }
+  redrawBoxes();
+  const eff = (S.vscale * 100).toFixed(1);
+  $('zoomLbl').textContent = `Zoom ${Math.round(S.zoom*100)}%  (${eff}% true)`;
+  const t = (S.zoom - S.minZoom) / (S.maxZoom - S.minZoom);
+  $('zoom').value = String(Math.round(clamp(t,0,1) * 100));
+}
+
+// set zoom, keeping the strip point under (cx,cy) [client px] fixed.
+function setZoom(z, cx, cy) {
+  z = clamp(z, S.minZoom, S.maxZoom);
+  const rect = stage.getBoundingClientRect();
+  if (cx == null) { cx = rect.left + stage.clientWidth/2; cy = rect.top + stage.clientHeight/2; }
+  const vx = cx - rect.left, vy = cy - rect.top;
+  const wx = stage.scrollLeft + vx, wy = stage.scrollTop + vy;
+  const truePt = [ wx / S.vscale, wy / S.vscale ];     // invariant point (old zoom)
+  S.zoom = z; layout();
+  stage.scrollLeft = truePt[0] * S.vscale - vx;
+  stage.scrollTop  = truePt[1] * S.vscale - vy;
+}
+
+$('zoom').addEventListener('input', e => {
+  const t = (+e.target.value) / 100;
+  setZoom(S.minZoom + t * (S.maxZoom - S.minZoom));
+});
+$('zoomIn').onclick  = () => setZoom(S.zoom * 1.25);
+$('zoomOut').onclick = () => setZoom(S.zoom / 1.25);
+$('fitBtn').onclick  = () => { computeZoomRange(); setZoom(S.fitZoom); };
+$('oneBtn').onclick  = () => setZoom(1);
+
+stage.addEventListener('wheel', e => {
+  if (!(e.ctrlKey || e.metaKey)) return;     // plain wheel = scroll
+  e.preventDefault();
+  const factor = e.deltaY < 0 ? 1.12 : 1/1.12;
+  setZoom(S.zoom * factor, e.clientX, e.clientY);
+}, { passive:false });
+
+window.addEventListener('resize', () => { if (S.preview_w) { computeZoomRange(); layout(); } });
+
+// ---------------------------------------------------------------------------
+// coordinate mapping (screen <-> TRUE strip px) — exact at ANY zoom/scroll.
+// world.getBoundingClientRect() folds in scroll AND the zoom-scaled CSS size,
+// so dividing by vscale (= preview_scale * zoom) yields TRUE px directly.
+// ---------------------------------------------------------------------------
+function screenToTrue(clientX, clientY) {
+  const r = world.getBoundingClientRect();
+  return [ (clientX - r.left) / S.vscale, (clientY - r.top) / S.vscale ];
+}
+function trueToWorld(v) { return v * S.vscale; }
+
+// ---------------------------------------------------------------------------
+// drawing boxes on the strip
+// ---------------------------------------------------------------------------
+let dragging = false, startTrue = null;
+
+function activeLine() { return S.lines[S.active]; }
+
+world.addEventListener('mousedown', ev => {
+  if (ev.button !== 0 || !S.tiles.length) return;
+  if (S.active < 0) { setStatus('Click a script line first to make it active.', true); return; }
+  if (S.mode === 'blur' && (!activeLine() || S.activeFrame < 0)) {
+    setStatus('Add a frame first, then select it to draw blur on it.', true); return;
+  }
+  dragging = true;
+  startTrue = screenToTrue(ev.clientX, ev.clientY);
+  rubber.className = (S.mode === 'blur') ? 'blur' : '';
+  rubber.style.display = 'block';
+  drawRubber(startTrue, startTrue);
+  ev.preventDefault();
+});
+window.addEventListener('mousemove', ev => {
+  if (!dragging) return;
+  drawRubber(startTrue, screenToTrue(ev.clientX, ev.clientY));
+});
+window.addEventListener('mouseup', ev => {
+  if (!dragging) return;
+  dragging = false;
+  rubber.style.display = 'none';
+  const cur = screenToTrue(ev.clientX, ev.clientY);
+  const x = Math.min(startTrue[0], cur[0]), y = Math.min(startTrue[1], cur[1]);
+  const w = Math.abs(cur[0]-startTrue[0]), h = Math.abs(cur[1]-startTrue[1]);
+  if (w * S.vscale < 4 || h * S.vscale < 4) return;     // ignore tiny clicks
+  const box = [
+    Math.round(clamp(x, 0, S.strip_w-1)),
+    Math.round(clamp(y, 0, S.strip_h-1)),
+    Math.round(clamp(w, 1, S.strip_w)),
+    Math.round(clamp(h, 1, S.strip_h)),
+  ];
+  const ln = activeLine();
+  if (S.mode === 'frame') {
+    pushUndo('add frame');
+    ln.frames.push({ bbox: box, flip:false, blur:[] });   // ADD a frame
+    S.activeFrame = ln.frames.length - 1;
+    setStatus(`Added frame ${ln.frames.length} to line ${S.active+1}: [${box.join(', ')}] true px`);
+  } else {
+    pushUndo('add blur');
+    (ln.frames[S.activeFrame].blur ||= []).push([...box, S.blurStyle]);  // box + style
+    setStatus(`Blur region (${S.blurStyle==='m'?'mosaic':'gaussian'}) added to line ${S.active+1}, frame ${S.activeFrame+1}.`);
+  }
+  redrawBoxes();
+  renderRow(S.active);
+});
+
+function drawRubber(a, b) {
+  const x = Math.min(a[0],b[0]), y = Math.min(a[1],b[1]);
+  const w = Math.abs(b[0]-a[0]), h = Math.abs(b[1]-a[1]);
+  rubber.style.left = trueToWorld(x)+'px';
+  rubber.style.top = trueToWorld(y)+'px';
+  rubber.style.width = trueToWorld(w)+'px';
+  rubber.style.height = trueToWorld(h)+'px';
+}
+
+function boxEl(box, cls, lbl) {
+  const d = document.createElement('div');
+  d.className = 'box ' + cls;
+  d.style.left = trueToWorld(box[0])+'px';
+  d.style.top = trueToWorld(box[1])+'px';
+  d.style.width = trueToWorld(box[2])+'px';
+  d.style.height = trueToWorld(box[3])+'px';
+  if (lbl) d.dataset.lbl = lbl;
+  return d;
+}
+
+function redrawBoxes() {
+  boxesDiv.innerHTML = '';
+  const ln = activeLine();
+  if (!ln) return;
+  ln.frames.forEach((f, j) => {
+    boxesDiv.appendChild(boxEl(f.bbox, 'frame' + (j===S.activeFrame ? ' cur':''), 'frame ' + (j+1)));
+  });
+  const cur = ln.frames[S.activeFrame];
+  if (cur) for (const b of (cur.blur || [])) {
+    const el = boxEl(b, 'blur');
+    // LIVE blur preview on the strip: fill the box with the same gaussian-blurred
+    // crop the exporter will bake for this region.
+    if (S.chapter_id) {
+      el.style.backgroundImage = `url(${cropUrl(b, [b])})`;
+      el.style.backgroundSize = '100% 100%';
+      el.style.backgroundRepeat = 'no-repeat';
+    }
+    boxesDiv.appendChild(el);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// thumbnails — server crops from the preview tiles (always correct, light)
+// ---------------------------------------------------------------------------
+function cropUrl(box, blurRegions) {
+  let q = `chapter=${encodeURIComponent(S.chapter_id)}&x=${box[0]}&y=${box[1]}&w=${box[2]}&h=${box[3]}`;
+  if (blurRegions && blurRegions.length)
+    q += `&blur=${blurRegions.map(b => b.join(',')).join(';')}`;
+  return `/crop?${q}`;
+}
+// a frame's thumbnail includes its blur regions, so the blur shows LIVE
+function thumbUrl(f) { return cropUrl(f.bbox, f.blur); }
+
+// ---------------------------------------------------------------------------
+// script lines
+// ---------------------------------------------------------------------------
+function newLine(text) { return { text: text||'', duration_s:4, mode:'sequence', frames:[] }; }
+
+async function loadScript() {
+  const text = $('scriptText').value;
+  const txtPath = $('txtPath').value.trim();
+  if (!text.trim() && !txtPath) { setStatus('Paste a script or give a .txt path.', true); return; }
+  try {
+    const body = text.trim() ? { text } : { txt_path: txtPath };
+    const res = await fetch('/load_script', { method:'POST',
+      headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.error || 'load failed');
+    if (S.lines.length) pushUndo('load script');   // don't silently nuke existing work
+    S.lines = d.lines.map(t => newLine(t));
+    S.active = S.lines.length ? 0 : -1;
+    S.activeFrame = -1;
+    renderLines(); redrawBoxes();
+    setStatus(`Loaded ${S.lines.length} script line(s).`);
+    markDirty();
+  } catch (e) { setStatus('Script load error: ' + e.message, true); }
+}
+
+function addLine() {
+  pushUndo('add line');
+  S.lines.push(newLine(''));
+  setActiveLine(S.lines.length - 1);
+}
+
+function setActiveLine(i) {
+  S.active = i;
+  const ln = S.lines[i];
+  S.activeFrame = (ln && ln.frames.length) ? ln.frames.length - 1 : -1;
+  renderLines(); redrawBoxes();
+}
+function setActiveFrame(i, j) {
+  S.active = i; S.activeFrame = j;
+  renderLines(); redrawBoxes();
+}
+
+function renderLines() {
+  const box = $('lines'); box.innerHTML = '';
+  box.appendChild(buildInsertBar(0));                 // insert at the very top
+  S.lines.forEach((ln, i) => {
+    box.appendChild(buildRow(ln, i));
+    box.appendChild(buildInsertBar(i + 1));           // ...and between every pair
+  });
+}
+
+// a thin "+ insert" affordance that drops a blank line at the given position
+function buildInsertBar(pos) {
+  const bar = document.createElement('div');
+  bar.className = 'insbar';
+  bar.innerHTML = `<button class="small">+ insert</button>`;
+  bar.querySelector('button').addEventListener('click', e => { e.stopPropagation(); insertLine(pos); });
+  return bar;
+}
+function insertLine(pos) {
+  pushUndo('insert line');
+  S.lines.splice(pos, 0, newLine(''));
+  setActiveLine(pos);
+  scrollActiveRowIntoView();
+}
+
+// split a line into two at the text cursor (or in half if no cursor). The first
+// part keeps the original line's frames; the new part inherits its mode/duration.
+function splitLine(i, pos) {
+  const ln = S.lines[i];
+  const text = ln.text || '';
+  if (pos == null || pos < 0 || pos > text.length) pos = Math.floor(text.length / 2);
+  pushUndo('split line');
+  const after = text.slice(pos);
+  ln.text = text.slice(0, pos);
+  const nl = newLine(after);
+  nl.duration_s = ln.duration_s; nl.mode = ln.mode;
+  S.lines.splice(i + 1, 0, nl);          // frames stay with line i
+  setActiveLine(i);
+  scrollActiveRowIntoView();
+}
+
+// merge a line UP into the one above: combine text, keep BOTH lines' frames in order.
+function mergeUp(i) {
+  if (i <= 0) return;
+  pushUndo('merge line');
+  const up = S.lines[i - 1], cur = S.lines[i];
+  const a = (up.text || ''), b = (cur.text || '');
+  up.text = (a.trim() && b.trim()) ? (a + ' ' + b) : (a + b);
+  up.frames = up.frames.concat(cur.frames);
+  S.lines.splice(i, 1);
+  setActiveLine(i - 1);
+  scrollActiveRowIntoView();
+}
+function renderRow(i) {
+  const old = document.querySelector(`.row[data-i="${i}"]`);
+  if (old) old.replaceWith(buildRow(S.lines[i], i));
+  else renderLines();
+}
+
+function buildRow(ln, i) {
+  const row = document.createElement('div');
+  row.className = 'row' + (i===S.active ? ' active':'');
+  row.dataset.i = i;
+  row.innerHTML = `
+    <span class="grip" title="drag to reorder lines" draggable="true">⠿</span>
+    <div class="rbody">
+      <textarea class="ltext" rows="2"></textarea>
+      <div class="rmeta">
+        <span class="idx">#${i+1}</span>
+        <label class="durwrap"><span class="durlbl">dur s</span><input class="dur" type="number" min="0.5" step="0.5" value="${ln.duration_s}"></label>
+        <span class="pill" style="padding:1px 4px">play:</span>
+        <button class="seg seqbtn ${ln.mode==='sequence'?'on':''}">sequence</button>
+        <button class="seg togbtn ${ln.mode==='together'?'on':''}">together</button>
+        <button class="small splitbtn" title="split this line at the cursor">split</button>
+        <button class="small mergebtn" title="merge into the line above">merge ↑</button>
+        <button class="small danger del">✕ line</button>
+      </div>
+      <div class="frames"></div>
+    </div>`;
+
+  const ta = row.querySelector('.ltext'); ta.value = ln.text;
+  ta.addEventListener('input', e => { ln.text = e.target.value; updateDurUI(row, ln); markDirty(); });
+  row.querySelector('.dur').addEventListener('input', e => { ln.duration_s = parseFloat(e.target.value)||0; markDirty(); });
+  row.querySelector('.splitbtn').addEventListener('click', e => { e.stopPropagation();
+    splitLine(i, ta.selectionStart); });
+  const mb = row.querySelector('.mergebtn');
+  if (i === 0) mb.disabled = true;
+  mb.addEventListener('click', e => { e.stopPropagation(); mergeUp(i); });
+  row.querySelector('.seqbtn').addEventListener('click', e => { e.stopPropagation();
+    if (ln.mode!=='sequence') { pushUndo('play: sequence'); ln.mode='sequence'; } renderRow(i); });
+  row.querySelector('.togbtn').addEventListener('click', e => { e.stopPropagation();
+    if (ln.mode!=='together') { pushUndo('play: together'); ln.mode='together'; } renderRow(i); });
+  row.querySelector('.del').addEventListener('click', e => { e.stopPropagation();
+    pushUndo('remove line');
+    const lbl = (ln.text||'').trim()
+      ? `"${ln.text.trim().slice(0,28)}${ln.text.trim().length>28?'…':''}"` : `line ${i+1}`;
+    S.lines.splice(i,1);
+    if (S.active>=S.lines.length) S.active=S.lines.length-1;
+    S.activeFrame = -1; renderLines(); redrawBoxes();
+    showToast(`Removed ${lbl}.`, '↶ Undo', undo); });
+  row.addEventListener('mousedown', () => { if (i!==S.active) setActiveLine(i); });
+  updateDurUI(row, ln);
+
+  // ---- per-line frame cards -------------------------------------------------
+  const fbox = row.querySelector('.frames');
+  ln.frames.forEach((f, j) => fbox.appendChild(buildFrameCard(ln, i, f, j)));
+  const hint = document.createElement('div');
+  hint.className = 'addhint';
+  hint.textContent = ln.frames.length ? '+ drag on strip to add another frame'
+                                      : 'drag a box on the strip to add a frame';
+  fbox.appendChild(hint);
+
+  // drag-reorder LINES via the grip
+  const grip = row.querySelector('.grip');
+  grip.addEventListener('dragstart', e => { e.dataTransfer.setData('text/plain', 'line:'+i); row.classList.add('dragover'); });
+  grip.addEventListener('dragend', () => row.classList.remove('dragover'));
+  row.addEventListener('dragover', e => { e.preventDefault(); row.classList.add('dragover'); });
+  row.addEventListener('dragleave', () => row.classList.remove('dragover'));
+  row.addEventListener('drop', e => { e.preventDefault(); row.classList.remove('dragover');
+    const tok = e.dataTransfer.getData('text/plain');
+    if (!tok.startsWith('line:')) return;
+    const from = parseInt(tok.slice(5), 10), to = i;
+    if (Number.isNaN(from) || from===to) return;
+    pushUndo('reorder lines');
+    const [moved] = S.lines.splice(from,1); S.lines.splice(to,0,moved);
+    setActiveLine(to); });
+
+  return row;
+}
+
+// Make the duration field's behaviour clear: lines WITH narration text are timed
+// by their generated audio (s6 overwrites duration_s), so the field is greyed and
+// relabelled "auto (audio length)". Lines with no text fall back to this value.
+function updateDurUI(row, ln) {
+  const wrap = row.querySelector('.durwrap');
+  const dur = row.querySelector('.dur');
+  if (!wrap || !dur) return;
+  const narrated = !!(ln.text || '').trim();
+  dur.disabled = narrated;
+  wrap.classList.toggle('auto', narrated);
+  wrap.querySelector('.durlbl').textContent = narrated ? 'auto (audio length)' : 'dur s';
+  wrap.title = narrated
+    ? 'This line has narration text, so the frame is shown for the generated AUDIO length — this value is ignored unless the line ends up with no audio.'
+    : 'No narration text → the frame is shown for this many seconds.';
+}
+
+function buildFrameCard(ln, i, f, j) {
+  const card = document.createElement('div');
+  card.className = 'fcard' + (i===S.active && j===S.activeFrame ? ' cur':'');
+  card.innerHTML = `
+    <div class="fthumb${f.flip?' flip':''}"></div>
+    <div class="fctl">
+      <span class="fn">${j+1}</span>
+      ${f.blur && f.blur.length ? `<span class="blurchip">${f.blur.length}b</span><button class="blurclr danger" title="clear blur on this frame">⌫</button>`:''}
+      <button class="mvL" title="move left">◀</button>
+      <button class="mvR" title="move right">▶</button>
+      <button class="fdel danger" title="remove frame">✕</button>
+    </div>
+    <div class="fctl">
+      <label><input type="checkbox" class="fflip" ${f.flip?'checked':''}> flip</label>
+    </div>`;
+
+  const thumb = card.querySelector('.fthumb');
+  thumb.style.backgroundImage = `url(${thumbUrl(f)})`;
+  thumb.title = 'click to select this frame (blur draws on it)';
+  thumb.addEventListener('click', e => { e.stopPropagation(); setActiveFrame(i, j); });
+
+  card.querySelector('.fflip').addEventListener('change', e => {
+    pushUndo('flip frame');
+    f.flip = e.target.checked; thumb.classList.toggle('flip', f.flip); });
+  card.querySelector('.fdel').addEventListener('click', e => { e.stopPropagation();
+    pushUndo('remove frame');
+    ln.frames.splice(j,1);
+    if (S.active===i) S.activeFrame = Math.min(S.activeFrame, ln.frames.length-1);
+    renderRow(i); redrawBoxes(); });
+  card.querySelector('.mvL').addEventListener('click', e => { e.stopPropagation(); moveFrame(ln,i,j,-1); });
+  card.querySelector('.mvR').addEventListener('click', e => { e.stopPropagation(); moveFrame(ln,i,j,+1); });
+  const clr = card.querySelector('.blurclr');
+  if (clr) clr.addEventListener('click', e => { e.stopPropagation();
+    pushUndo('clear blur'); f.blur = [];
+    renderRow(i); redrawBoxes(); });
+  return card;
+}
+
+function moveFrame(ln, i, j, dir) {
+  const k = j + dir;
+  if (k < 0 || k >= ln.frames.length) return;
+  pushUndo('reorder frame');
+  const [m] = ln.frames.splice(j,1); ln.frames.splice(k,0,m);
+  if (S.active===i && S.activeFrame===j) S.activeFrame = k;
+  renderRow(i); redrawBoxes();
+}
+
+function setMode(m) {
+  S.mode = m;
+  $('blurModeBtn').classList.toggle('on', m==='blur');
+  $('frameModeBtn').classList.toggle('on', m==='frame');
+}
+
+// ---------------------------------------------------------------------------
+// export
+// ---------------------------------------------------------------------------
+async function doExport() {
+  if (!S.chapter_id) { setStatus('Load a PDF first.', true); return; }
+  const entries = S.lines.map(ln => ({
+    line_text: ln.text, duration_s: ln.duration_s || 4, mode: ln.mode,
+    frames: ln.frames.map(f => ({ bbox: f.bbox, flip: !!f.flip, blur: f.blur || [] })),
+  }));
+  const lines = entries.filter(e => e.frames.length).length;
+  const frames = entries.reduce((n,e) => n + e.frames.length, 0);
+  if (!lines) { setStatus('No lines have a frame. Draw a box on the strip first.', true); return; }
+  setStatus(`Exporting ${frames} frame(s) across ${lines} line(s)…`);
+  try {
+    const res = await fetch('/export', { method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ chapter_id: S.chapter_id, entries }) });
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.error || 'export failed');
+    setStatus(
+      `Exported ${d.frames_written} frame(s) across ${d.lines_written} line(s).\n` +
+      `frames:   ${d.frames_dir}\n` +
+      `mapping:  ${d.mapping_path}\n` +
+      `manifest: ${d.manifest_path}\n\n` +
+      `Next, run the pipeline's audio + video:\n  ${d.next_command}`);
+    $('exportHint').textContent = `→ ${d.frames_dir}`;
+  } catch (e) { setStatus('Export error: ' + e.message, true); }
+}
+
+// ---------------------------------------------------------------------------
+// generate audio + video — stream the pipeline (s6 TTS, s7 assemble) over SSE so
+// the long model-load + per-line synth shows live, then play/download the result.
+// ---------------------------------------------------------------------------
+let genES = null, genDone = false;
+const genLines = [];
+const gen = { total: 0, audio: 0, video: 0, what: 'both' };
+
+function setGenBusy(b) {
+  $('genAVBtn').disabled = b; $('genVidBtn').disabled = b;
+  $('genCancelBtn').disabled = !b;
+}
+function setGenBar(frac, indet) {
+  const wrap = $('genProgress'), bar = $('genBar');
+  wrap.style.display = 'block';
+  wrap.classList.remove('err');
+  wrap.classList.toggle('indet', !!indet);
+  if (!indet) bar.style.width = Math.round(clamp(frac, 0, 1) * 100) + '%';
+}
+function appendGenLog(line) {
+  genLines.push(line);
+  if (genLines.length > 500) genLines.shift();
+  const el = $('genStatus');
+  el.textContent = genLines.join('\n');
+  el.scrollTop = el.scrollHeight;
+}
+
+function startGenerate(what) {
+  if (genES) { setStatus('A generate job is already running.', true); return; }
+  if (!S.chapter_id) { setStatus('Load/Export a chapter first.', true); return; }
+  gen.total = 0; gen.audio = 0; gen.video = 0; gen.what = what;
+  genLines.length = 0; genDone = false;
+  $('genStatus').textContent = ''; $('genResult').innerHTML = '';
+  setGenBusy(true); setGenBar(0, true);
+  appendGenLog(`Requesting ${what === 'video' ? 'video re-render' : 'audio + video'} for ${S.chapter_id}…`);
+
+  const url = `/generate_stream?chapter=${encodeURIComponent(S.chapter_id)}&what=${encodeURIComponent(what)}`;
+  genES = new EventSource(url);
+  genES.onmessage = e => { try { handleGenEvent(JSON.parse(e.data)); } catch (_) {} };
+  genES.onerror = () => {
+    if (genDone) return;                 // normal end-of-stream close — ignore
+    appendGenLog('[connection lost]');
+    setStatus('Generate stream disconnected.', true);
+    finishGen();
+  };
+}
+
+function handleGenEvent(ev) {
+  if (ev.type === 'start') {
+    gen.total = ev.total_beats || 0;
+    appendGenLog(ev.message || 'Starting…');
+    setGenBar(0.02, true);
+  } else if (ev.type === 'log') {
+    appendGenLog(ev.line || '');
+    updateGenProgress(ev.line || '');
+  } else if (ev.type === 'done') {
+    genDone = true;
+    if (ev.ok) {
+      setGenBar(1, false);
+      appendGenLog('✔ ' + (ev.message || 'Done.'));
+      if (ev.video) showGenResult(ev.video);
+      setStatus(ev.video ? 'Render complete — playing below.' : (ev.message || 'Done.'));
+    } else {
+      $('genProgress').classList.add('err');
+      appendGenLog('✖ ' + (ev.message || 'Failed.'));
+      setStatus(ev.message || 'Generation failed — see the log.', true);
+    }
+    finishGen();
+  } else if (ev.type === 'error') {
+    genDone = true;
+    $('genProgress').classList.add('err');
+    appendGenLog('✖ ' + (ev.message || 'Error'));
+    setStatus(ev.message || 'Generation error.', true);
+    finishGen();
+  }
+}
+
+// Advance the bar from the pipeline's own log lines: s6 prints one "[NNN] …" per
+// voiced line, s7 prints one "line N: …" per rendered line. Audio is the slow
+// part, so weight it heavier for the combined run; a video-only run is all s7.
+function updateGenProgress(line) {
+  if (/^\s*\[\d{1,4}\]/.test(line)) gen.audio++;
+  else if (/^\s*line \d+:/.test(line)) gen.video++;
+  const counted = gen.audio > 0 || gen.video > 0;
+  if (gen.total <= 0 || !counted) { setGenBar(0, true); return; }   // pulse until first tick
+  const a = clamp(gen.audio / gen.total, 0, 1);
+  const v = clamp(gen.video / gen.total, 0, 1);
+  const frac = gen.what === 'video' ? (0.05 + 0.90 * v) : (0.05 + 0.70 * a + 0.22 * v);
+  setGenBar(frac, false);
+}
+
+function showGenResult(videoUrl) {
+  const src = videoUrl + '?t=' + Date.now();   // cache-bust so a re-render updates
+  $('genResult').innerHTML =
+    `<video class="genvideo" src="${src}" controls preload="metadata"></video>
+     <div class="rmeta" style="margin-top:4px">
+       <a class="dllink" href="${src}" download="recap.mp4">⬇ Download recap.mp4</a>
+       <span class="hint">${videoUrl}</span>
+     </div>`;
+}
+
+function finishGen() {
+  if (genES) { genES.close(); genES = null; }
+  setGenBusy(false);
+}
+
+function cancelGenerate() {
+  if (!genES) return;
+  genDone = true;                 // closing the stream makes the server kill the job
+  finishGen();
+  $('genProgress').style.display = 'none';
+  appendGenLog('[stopped by user]');
+  setStatus('Generation stopped.');
+}
+
+// ---------------------------------------------------------------------------
+// save / load project + periodic autosave (recovery)
+// ---------------------------------------------------------------------------
+function normLine(l) {
+  return {
+    text: l.text || '',
+    duration_s: (l.duration_s ?? 4),
+    mode: l.mode === 'together' ? 'together' : 'sequence',
+    frames: (l.frames || []).map(f => ({ bbox: f.bbox, flip: !!f.flip, blur: f.blur || [] })),
+  };
+}
+function projectObject() {
+  return {
+    chapter_id: S.chapter_id,
+    source_pdf: S.source_pdf || null,
+    strip_w: S.strip_w, strip_h: S.strip_h,
+    preview_scale: S.preview_scale, preview_w: S.preview_w, preview_h: S.preview_h,
+    active: S.active,
+    lines: S.lines,
+  };
+}
+function setSaveState(msg) { const el = $('saveState'); if (el) el.textContent = msg; }
+
+async function saveProject(recovery) {
+  if (!S.chapter_id) { if (!recovery) setStatus('Load a PDF (or a project) first.', true); return; }
+  try {
+    const res = await fetch('/save_project', { method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ chapter_id: S.chapter_id, recovery: !!recovery, project: projectObject() }) });
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.error || 'save failed');
+    const t = new Date().toLocaleTimeString();
+    if (recovery) setSaveState(`auto-saved ${t}`);
+    else { setSaveState(`saved ${t}`); setStatus(`Project saved → ${d.path}`); }
+  } catch (e) {
+    if (recovery) setSaveState('autosave failed');
+    else setStatus('Save error: ' + e.message, true);
+  }
+}
+
+function applyProject(project, preview) {
+  if (preview) {
+    S.chapter_id = preview.chapter_id;
+    S.preview_scale = preview.preview_scale;
+    S.strip_w = preview.strip_w; S.strip_h = preview.strip_h;
+    S.preview_w = preview.preview_w; S.preview_h = preview.preview_h;
+    S.tiles = preview.tiles;
+    $('chapId').value = preview.chapter_id;
+    buildTiles(); computeZoomRange(); setZoom(S.fitZoom); stage.scrollTop = 0;
+    $('stripInfo').textContent =
+      `strip ${preview.strip_w}×${preview.strip_h}px · preview ${preview.preview_w}×${preview.preview_h} (${preview.tiles.length} tiles)`;
+  } else {
+    S.chapter_id = project.chapter_id;
+    setStatus('Project loaded, but no stitched strip found — re-stitch the PDF to box frames.', true);
+  }
+  S.source_pdf = project.source_pdf || null;
+  S.lines = (project.lines || []).map(normLine);
+  S.active = S.lines.length ? clamp(project.active ?? 0, 0, S.lines.length - 1) : -1;
+  S.activeFrame = (S.active >= 0 && S.lines[S.active].frames.length) ? 0 : -1;
+  undoStack = []; redoStack = []; updateUndoUI();
+  renderLines(); redrawBoxes();
+}
+
+async function loadProject(recovery) {
+  const chap = ($('chapId').value.trim() || S.chapter_id || '');
+  if (!chap) { setStatus('Enter a chapter id to load its saved project.', true); return; }
+  showOverlay(recovery ? 'Restoring recovery…' : 'Loading project…');
+  try {
+    const res = await fetch(`/load_project?chapter=${encodeURIComponent(chap)}${recovery ? '&recovery=1' : ''}`);
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.error || 'load failed');
+    applyProject(d.project, d.preview);
+    await firstTilePromise();
+    setStatus(`Loaded ${recovery ? 'recovery' : 'project'} ${d.project.chapter_id} — ${S.lines.length} line(s).`);
+    setSaveState(`loaded ${new Date().toLocaleTimeString()}`);
+  } catch (e) { setStatus('Load error: ' + e.message, true); }
+  finally { hideOverlay(); }
+}
+
+// after a chapter is opened, offer to restore newer unsaved (recovery) work
+async function maybeOfferRecovery(chap) {
+  try {
+    const res = await fetch(`/project_status?chapter=${encodeURIComponent(chap)}`);
+    const d = await res.json();
+    if (d.recovery && d.recovery.exists &&
+        (!d.project || !d.project.exists || d.recovery.mtime > d.project.mtime)) {
+      showToast('Unsaved recovery found for this chapter.', 'Restore', () => loadProject(true));
+    }
+  } catch (_) { /* non-fatal */ }
+}
+
+// debounced autosave on every edit + a 30s backstop, both to the recovery file
+let autosaveTimer = null;
+function markDirty() {
+  if (!S.chapter_id) return;
+  setSaveState('unsaved…');
+  clearTimeout(autosaveTimer);
+  autosaveTimer = setTimeout(() => saveProject(true), 1500);
+}
+setInterval(() => { if (S.chapter_id) saveProject(true); }, 30000);
+
+// ---------------------------------------------------------------------------
+// theme (light / dark) + split position — both persisted SERVER-SIDE per session
+// ---------------------------------------------------------------------------
+let curTheme = 'dark';
+function applyTheme(name) {
+  curTheme = name === 'light' ? 'light' : 'dark';
+  document.body.classList.toggle('light', curTheme === 'light');
+  const b = $('themeBtn');
+  if (b) b.textContent = curTheme === 'light' ? '🌙 Dark' : '☀ Light';
+}
+function toggleTheme() { applyTheme(curTheme === 'light' ? 'dark' : 'light'); saveSetting({ theme: curTheme }); }
+
+async function saveSetting(obj) {
+  try { await fetch('/settings', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(obj) }); }
+  catch (_) { /* non-fatal */ }
+}
+async function loadSettings() {
+  try {
+    const d = await (await fetch('/settings')).json();
+    if (d.theme) applyTheme(d.theme);
+    if (d.split) applySplit(d.split);
+  } catch (_) { /* non-fatal */ }
+}
+
+function applySplit(px) {
+  px = clamp(px, 280, Math.max(320, window.innerWidth - 360));
+  $('right').style.width = px + 'px';
+  if (S.preview_w) { computeZoomRange(); layout(); }
+}
+
+// drag the divider to resize the strip / script split (rAF-throttled), then persist
+let resizing = false, pendW = null, rafId = null;
+function scheduleSplit(w) { pendW = w; if (rafId) return; rafId = requestAnimationFrame(() => { rafId = null; applySplit(pendW); }); }
+$('divider').addEventListener('mousedown', e => {
+  resizing = true; $('divider').classList.add('active');
+  document.body.style.cursor = 'col-resize'; document.body.style.userSelect = 'none';
+  e.preventDefault();
+});
+window.addEventListener('mousemove', e => { if (resizing) scheduleSplit(window.innerWidth - e.clientX); });
+window.addEventListener('mouseup', () => {
+  if (!resizing) return;
+  resizing = false; $('divider').classList.remove('active');
+  document.body.style.cursor = ''; document.body.style.userSelect = '';
+  saveSetting({ split: parseInt($('right').style.width) || 460 });
+});
+
+// ---------------------------------------------------------------------------
+// keyboard navigation: ↑/↓ or j/k move the active line; Enter focuses its text;
+// the strip scrolls to the active line's first frame.
+// ---------------------------------------------------------------------------
+function scrollActiveRowIntoView() {
+  const r = document.querySelector(`.row[data-i="${S.active}"]`);
+  if (r) r.scrollIntoView({ block:'nearest' });
+}
+function scrollToActiveFrame() {
+  const ln = activeLine();
+  if (!ln || !ln.frames.length || !S.tiles.length) return;
+  const b = ln.frames[0].bbox;
+  const cx = trueToWorld(b[0] + b[2] / 2), cy = trueToWorld(b[1] + b[3] / 2);
+  stage.scrollTo({
+    left: clamp(cx - stage.clientWidth / 2, 0, Math.max(0, world.offsetWidth - stage.clientWidth)),
+    top:  clamp(cy - stage.clientHeight / 2, 0, Math.max(0, world.offsetHeight - stage.clientHeight)),
+    behavior: 'smooth',
+  });
+}
+function moveActive(d) {
+  if (!S.lines.length) return;
+  const ni = clamp((S.active < 0 ? 0 : S.active) + d, 0, S.lines.length - 1);
+  if (ni !== S.active) { setActiveLine(ni); scrollActiveRowIntoView(); }
+  scrollToActiveFrame();
+}
+function focusActive() {
+  const r = document.querySelector(`.row[data-i="${S.active}"]`);
+  const ta = r && r.querySelector('.ltext');
+  if (ta) { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }
+}
+window.addEventListener('keydown', e => {
+  const t = e.target;
+  if (t && (t.tagName === 'TEXTAREA' || t.tagName === 'INPUT')) {
+    if (e.key === 'Escape') t.blur();
+    return;
+  }
+  if (e.ctrlKey || e.metaKey || e.altKey) return;   // undo/redo handled elsewhere
+  if (e.key === 'ArrowDown' || e.key === 'j') { e.preventDefault(); moveActive(1); }
+  else if (e.key === 'ArrowUp' || e.key === 'k') { e.preventDefault(); moveActive(-1); }
+  else if (e.key === 'Enter') { e.preventDefault(); focusActive(); }
+});
+
+// ---------------------------------------------------------------------------
+// wire up
+// ---------------------------------------------------------------------------
+$('dlBtn').onclick = doDownload;
+$('loadPdfBtn').onclick = loadPdf;
+$('loadScriptBtn').onclick = loadScript;
+$('addLineBtn').onclick = addLine;
+$('exportBtn').onclick = doExport;
+$('genAVBtn').onclick = () => startGenerate('both');
+$('genVidBtn').onclick = () => startGenerate('video');
+$('genCancelBtn').onclick = cancelGenerate;
+$('frameModeBtn').onclick = () => setMode('frame');
+$('blurModeBtn').onclick = () => setMode('blur');
+$('blurStyle').onchange = e => { S.blurStyle = e.target.value; };
+$('undoBtn').onclick = undo;
+$('redoBtn').onclick = redo;
+$('saveProjBtn').onclick = () => saveProject(false);
+$('loadProjBtn').onclick = () => loadProject(false);
+$('themeBtn').onclick = toggleTheme;
+setMode('frame');
+updateUndoUI();
+loadSettings();
+</script>
+</body>
+</html>

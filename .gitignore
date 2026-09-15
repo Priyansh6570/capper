@@ -1,0 +1,53 @@
+# --- secrets ---
+.env
+*.env
+
+# --- python virtual environment ---
+.venv/
+venv/
+
+# --- python junk ---
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- downloaded content / work data (copyrighted scraped material, large files) ---
+work/
+downloads/
+output/
+series/
+inputs/
+
+# --- model caches and weights ---
+.cache/
+*/.cache/
+huggingface/
+.huggingface/
+*.pt
+*.pth
+*.safetensors
+*.onnx
+*.ckpt
+*.bin
+
+# --- large media anywhere in work/output-style dirs ---
+work/**/*.mp4
+work/**/*.wav
+work/**/*.mp3
+work/**/*.png
+work/**/*.jpg
+work/**/*.jpeg
+output/**/*.mp4
+output/**/*.wav
+output/**/*.mp3
+output/**/*.png
+output/**/*.jpg
+output/**/*.jpeg
+
+# keep small repo assets (e.g. icons) even if they match media patterns above
+!assets/**
