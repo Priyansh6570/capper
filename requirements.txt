@@ -1,27 +1,43 @@
-# Laptop / dev dependencies (stages 1, 7 + orchestration).
-# The GPU stages (2, 4, 6) get their own environments on Kaggle - see CLAUDE.md.
-PyMuPDF>=1.24
-Pillow>=10.0
-google-genai>=1.0
-groq>=0.9
-python-dotenv>=1.0
-# Stage 2a: local CPU vision tagging (person via YOLO, face via OpenCV) so
-# selection picks character frames, not text bubbles. ultralytics pulls torch -
-# torch is already the CUDA build below; don't let it downgrade (re-check
-# torch.cuda.is_available() after install). Pin nothing.
-ultralytics      # yolov8n person detection (CPU)
-opencv-python    # Haar-cascade face detection (CPU)
-# Stage 6: Chatterbox TTS, runs locally on the GPU (with CPU fallback).
-# IMPORTANT (Windows): the default PyPI torch wheel is CPU-only. To use your
-# RTX 3050, install the CUDA build first, then the rest of this file, e.g.:
-#   pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu121
-# Do NOT pin the +cu121 wheel URL here (it's machine/CUDA-specific).
-chatterbox-tts>=0.1
+# Runtime dependencies for the CURRENT workflow: Framer (manual PDF stitch +
+# manual frame boxing) -> Generate audio+video. That flow only ever executes
+# stage 1 (pages, called directly by tools/framer/app.py) and stages 6+7
+# (audio, video - the only stages orchestrator.py --from audio ever runs).
+# Stages 2/2a/2b/3/4/5 (auto panel detection, vision tagging, frame matching,
+# Groq context/emotion, inpainting, auto script) are dead in this workflow -
+# orchestrator.py now imports stage modules lazily, so their dependencies
+# (groq, ultralytics, opencv-python, pytesseract/easyocr/paddleocr,
+# python-dotenv, google-genai) are no longer required at all. See work_log.md.
+
+# --- Framer app: serving the UI, stitching a PDF, project metadata --------
+flask>=3.0
+PyMuPDF>=1.24        # stage 1: render PDF pages -> stitched strip
+Pillow>=10.0         # stage 1 stitching + stage 7 compositing
+requests>=2.31       # webtoon_meta.py: best-effort series-metadata scraping
+beautifulsoup4>=4.12 # webtoon_meta.py
+
+# --- Stage 6: Chatterbox TTS, runs locally (GPU with CPU fallback) --------
+# IMPORTANT (Windows): the default PyPI torch wheel is CPU-only. To use an
+# NVIDIA GPU, install the CUDA build first, then the rest of this file, e.g.:
+#   pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu128
+# Do NOT pin a +cuXXX wheel URL here (it's machine/CUDA-specific). After any
+# install, re-check `python -c "import torch; print(torch.cuda.is_available())"`.
 torch>=2.1
 torchaudio>=2.1
-# Stage 6 --draft fast path (MANHWA_TTS_DRAFT=1): edge-tts neural voices, no GPU.
-edge-tts>=6.1     # draft: free Microsoft neural TTS
-mutagen>=1.47     # draft: read real MP3 duration
-# Stage 7: render the 1920x1080 MP4 (MoviePy v2 API + ffmpeg). Encodes with
-# h264_nvenc when available, else libx264. ffmpeg must be on PATH.
-moviepy>=2.0
+chatterbox-tts>=0.1
+soundfile>=0.12      # voice-reference preprocessing (float32/mono/24kHz)
+numpy>=1.24
+
+# Stage 6 --draft fast path (MANHWA_TTS_DRAFT=1): edge-tts neural voices, no
+# GPU, seconds per chapter. Remove these two if you never use the draft path.
+edge-tts>=6.1
+mutagen>=1.47         # draft: read the real MP3 duration
+
+# --- Stage 7: render the 1920x1080 MP4 -------------------------------------
+# Primary path is a direct ffmpeg call (EXTERNAL tool, not pip-installable -
+# it must be on PATH). Encodes with h264_nvenc when available, else libx264.
+moviepy>=2.0           # fallback ONLY, used if the direct ffmpeg path fails
+
+# Optional, not required by the workflow above: the `webtoon-downloader` CLI
+# powers Framer's "Download PDF" button (`pip install webtoon-downloader`).
+# Framer detects its absence and reports a clear error instead of crashing, so
+# it's left out of this file - install it only if you use that button.

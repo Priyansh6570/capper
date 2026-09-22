@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import shutil
 import subprocess
 import time
@@ -71,6 +72,16 @@ AUDIO_SR = 48000       # common sample rate for the audio graph
 MUSIC_DIR = ROOT / "assets" / "music"
 MUSIC_EXTS = {".mp3", ".wav", ".m4a", ".ogg", ".oga", ".aac", ".flac"}
 
+# --- per-project media settings (framer's project system) ------------------ #
+# A project's music/watermark/background are resolved by the framer (see
+# tools/framer/projects.py: media_settings_snapshot()) into an ABSOLUTE-path
+# snapshot written to <chapter work>/media_settings.json - the same pattern
+# _load_mapping() below already uses for framer/mapping.json. Missing/garbled
+# file -> every one of these falls back to today's behavior untouched.
+_FONT_CANDIDATES = ["arialbd.ttf", "segoeuib.ttf", "arial.ttf", "segoeui.ttf"]
+_FONTS_DIR = Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts"
+WATERMARK_STROKE = 2       # px outline so light text reads on light frames too
+
 
 # --------------------------------------------------------------------------- #
 # Planning (pure)
@@ -94,6 +105,20 @@ def _load_mapping(chapter_id: str) -> dict[int, dict]:
     except Exception:  # noqa: BLE001 - a bad mapping must not sink the render
         return {}
     return {ln["order"]: ln for ln in data.get("lines", []) if "order" in ln}
+
+
+def _load_media_settings(chapter_id: str) -> dict:
+    """Read the framer's project media settings snapshot (music/watermark/
+    background, absolute paths), written by tools/framer/projects.py. Mirrors
+    _load_mapping() above: returns {} on any absence/failure, so run() falls
+    back to today's global assets/music + blurred-crop behavior."""
+    path = chapter_work_dir(chapter_id) / "media_settings.json"
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 - a bad settings file must not sink the render
+        return {}
 
 
 def _line_frames(b: Panel, mapping: dict[int, dict]) -> tuple[list[str | None], str]:
@@ -174,6 +199,14 @@ def _music_file() -> Path | None:
     return files[0] if files else None
 
 
+def _resolve_music(settings: dict) -> Path | None:
+    """The project's chosen music track, else today's global assets/music scan."""
+    raw = settings.get("music")
+    if raw and Path(raw).is_file():
+        return Path(raw)
+    return _music_file()
+
+
 # --------------------------------------------------------------------------- #
 # Precompose each beat's full-frame still ONCE (PIL)
 # --------------------------------------------------------------------------- #
@@ -190,25 +223,56 @@ def _open_rgb(path: str | None):
         return None
 
 
-def _compose_still(frame_path: str | None):
+def _cover_crop(img, w: int, h: int):
+    """Scale `img` to COVER a w x h box, then center-crop to exactly it."""
+    from PIL import Image
+    scale = max(w / img.width, h / img.height)
+    r = img.resize((max(1, round(img.width * scale)), max(1, round(img.height * scale))),
+                    Image.LANCZOS)
+    left, top = (r.width - w) // 2, (r.height - h) // 2
+    return r.crop((left, top, left + w, top + h))
+
+
+def _load_background(settings: dict):
+    """The project's custom background image, cover-cropped to 1920x1080 and
+    dimmed (NOT blurred - a user-chosen background is deliberate art). Returns
+    None when no custom background is set, so callers fall back to today's
+    blurred-self-cover default untouched. Loaded once per render by run()."""
+    bg_cfg = settings.get("background")
+    if not bg_cfg or not bg_cfg.get("file"):
+        return None
+    from PIL import Image, ImageEnhance
+    p = Path(bg_cfg["file"])
+    if not p.exists():
+        return None
+    try:
+        img = Image.open(p).convert("RGB")
+    except Exception:  # noqa: BLE001 - a bad background must not sink the render
+        return None
+    img = _cover_crop(img, W, H)
+    return ImageEnhance.Brightness(img).enhance(float(bg_cfg.get("dim", 0.85)))
+
+
+def _blurred_self_cover(img):
+    """Today's default background: a blurred + darkened cover-crop of the frame
+    itself. Extracted unchanged from the old _compose_still/_compose_grid_still."""
+    from PIL import ImageEnhance, ImageFilter
+    bg = _cover_crop(img, W, H).filter(ImageFilter.GaussianBlur(BG_BLUR))
+    return ImageEnhance.Brightness(bg).enhance(BG_BRIGHTNESS)
+
+
+def _compose_still(frame_path: str | None, bg=None):
     """Build the full 1920x1080 still for a beat: the frame fit to ~85%H/~92%W,
-    centered over a blurred + darkened COVER of itself. Returns a PIL RGB image."""
-    from PIL import Image, ImageEnhance, ImageFilter
+    centered over `bg` (a project's custom background) if given, else a blurred
+    + darkened cover of itself as before. Returns a PIL RGB image."""
+    from PIL import Image
 
     base = Image.new("RGB", (W, H), (12, 12, 12))
     img = _open_rgb(frame_path)
     if img is None:
         return base
 
-    # Background: cover-scale, center-crop, blur, darken.
-    scale = max(W / img.width, H / img.height)
-    bg = img.resize((max(1, round(img.width * scale)), max(1, round(img.height * scale))),
-                    Image.LANCZOS)
-    left, top = (bg.width - W) // 2, (bg.height - H) // 2
-    bg = bg.crop((left, top, left + W, top + H))
-    bg = bg.filter(ImageFilter.GaussianBlur(BG_BLUR))
-    bg = ImageEnhance.Brightness(bg).enhance(BG_BRIGHTNESS)
-    base.paste(bg, (0, 0))
+    base.paste(bg if bg is not None else _blurred_self_cover(img), (0, 0))
 
     # Foreground: fit within 85%H / 92%W (whichever is tighter), centered.
     fscale = min((CROP_FRAC_H * H) / img.height, (CROP_FRAC_W * W) / img.width)
@@ -218,29 +282,21 @@ def _compose_still(frame_path: str | None):
     return base
 
 
-def _compose_grid_still(frame_paths: list[str | None]):
+def _compose_grid_still(frame_paths: list[str | None], bg=None):
     """Build the full 1920x1080 still for a "together" line: every frame fit into
-    its cell of a simple grid (2 -> side by side, 3-4 -> 2x2, etc.), each over a
-    shared blurred + darkened COVER background. Returns a PIL RGB image."""
-    from PIL import Image, ImageEnhance, ImageFilter
+    its cell of a simple grid (2 -> side by side, 3-4 -> 2x2, etc.), over `bg`
+    (a project's custom background) if given, else a shared blurred + darkened
+    cover of the first frame as before. Returns a PIL RGB image."""
+    from PIL import Image
 
     imgs = [im for im in (_open_rgb(p) for p in frame_paths) if im is not None]
     if not imgs:
         return Image.new("RGB", (W, H), (12, 12, 12))
     if len(imgs) == 1:
-        return _compose_still(frame_paths[0])
+        return _compose_still(frame_paths[0], bg)
 
     base = Image.new("RGB", (W, H), (12, 12, 12))
-
-    # Background: cover-scale the first frame, center-crop, blur, darken.
-    src = imgs[0]
-    scale = max(W / src.width, H / src.height)
-    bg = src.resize((max(1, round(src.width * scale)), max(1, round(src.height * scale))),
-                    Image.LANCZOS)
-    left, top = (bg.width - W) // 2, (bg.height - H) // 2
-    bg = bg.crop((left, top, left + W, top + H)).filter(ImageFilter.GaussianBlur(BG_BLUR))
-    bg = ImageEnhance.Brightness(bg).enhance(BG_BRIGHTNESS)
-    base.paste(bg, (0, 0))
+    base.paste(bg if bg is not None else _blurred_self_cover(imgs[0]), (0, 0))
 
     # Foreground grid: cols ~ sqrt(N), each frame fit within ~92% of its cell.
     n = len(imgs)
@@ -257,17 +313,125 @@ def _compose_grid_still(frame_paths: list[str | None]):
     return base
 
 
-def _precompose(items: list[dict], stills_dir: Path) -> None:
+# --------------------------------------------------------------------------- #
+# Tiled watermark - built ONCE per render as a single 1920x1080 RGBA layer,
+# then alpha-composited onto every precomposed still (see _precompose). PIL,
+# not an ffmpeg filter: the MoviePy fallback (_assemble_moviepy) reuses these
+# same stills, so both render paths get the watermark for free from one code
+# path, and it costs one composite per BEAT (tens) rather than per output
+# frame (~24fps x total_s).
+# --------------------------------------------------------------------------- #
+def _find_font(px: int):
+    from PIL import ImageFont
+    for name in _FONT_CANDIDATES:
+        p = _FONTS_DIR / name
+        if p.is_file():
+            try:
+                return ImageFont.truetype(str(p), px)
+            except Exception:  # noqa: BLE001
+                continue
+    try:
+        return ImageFont.load_default(size=px)
+    except TypeError:  # older Pillow: load_default() takes no `size`
+        return ImageFont.load_default()
+
+
+def _make_stamp(cfg: dict):
+    """One watermark sprite (RGBA) scaled so its width is cfg['size'] * W - a
+    logo image, or rendered text solved to that same target width."""
+    from PIL import Image, ImageDraw
+
+    target_w = max(16, round(float(cfg.get("size", 0.12)) * W))
+
+    if cfg.get("type") == "image" and cfg.get("file"):
+        p = Path(cfg["file"])
+        if p.is_file():
+            try:
+                img = Image.open(p).convert("RGBA")
+                h = max(1, round(img.height * target_w / img.width))
+                return img.resize((target_w, h), Image.LANCZOS)
+            except Exception:  # noqa: BLE001 - fall through to text/None
+                pass
+        return None
+
+    text = (cfg.get("text") or "").strip()
+    if not text:
+        return None
+    # Solve the font size so the rendered text width matches target_w.
+    size = max(8, round(target_w / max(1, len(text)) * 1.8))
+    font = _find_font(size)
+    tmp = Image.new("RGBA", (10, 10))
+    bbox = ImageDraw.Draw(tmp).textbbox((0, 0), text, font=font, stroke_width=WATERMARK_STROKE)
+    w = max(1, bbox[2] - bbox[0])
+    if w != target_w:
+        size = max(8, round(size * target_w / w))
+        font = _find_font(size)
+        bbox = ImageDraw.Draw(tmp).textbbox((0, 0), text, font=font, stroke_width=WATERMARK_STROKE)
+    pad = WATERMARK_STROKE + 2
+    tw, th = bbox[2] - bbox[0] + pad * 2, bbox[3] - bbox[1] + pad * 2
+    stamp = Image.new("RGBA", (tw, th), (0, 0, 0, 0))
+    ImageDraw.Draw(stamp).text((pad - bbox[0], pad - bbox[1]), text, font=font,
+                               fill=(255, 255, 255, 255),
+                               stroke_width=WATERMARK_STROKE, stroke_fill=(0, 0, 0, 255))
+    return stamp
+
+
+def _build_watermark_layer(settings: dict):
+    """One 1920x1080 RGBA layer, tiled with the project's stamp at low opacity,
+    built once per render. None when the project has no watermark enabled."""
+    from PIL import Image
+
+    cfg = settings.get("watermark")
+    if not cfg:
+        return None
+    stamp = _make_stamp(cfg)
+    if stamp is None:
+        return None
+
+    opacity = max(0.0, min(1.0, float(cfg.get("opacity", 0.12))))
+    alpha = stamp.getchannel("A").point(lambda v: int(v * opacity))
+    stamp.putalpha(alpha)
+
+    spacing = max(0.0, float(cfg.get("spacing", 1.0)))
+    step_x = max(1, round(stamp.width * (1 + spacing)))
+    step_y = max(1, round(stamp.height * (1 + spacing)))
+
+    # Tile onto an oversized canvas so a rotation never leaves a bare corner,
+    # then rotate and center-crop back to the frame size.
+    big_w, big_h = W * 2, H * 2
+    canvas = Image.new("RGBA", (big_w, big_h), (0, 0, 0, 0))
+    row = 0
+    for y in range(-step_y, big_h + step_y, step_y):
+        x0 = -step_x + (step_x // 2 if row % 2 else 0)
+        for x in range(x0, big_w + step_x, step_x):
+            canvas.alpha_composite(stamp, (x, y))
+        row += 1
+
+    angle = max(-90, min(90, float(cfg.get("angle", 0))))
+    if angle:
+        canvas = canvas.rotate(angle, expand=False, resample=Image.BICUBIC)
+    left, top = (big_w - W) // 2, (big_h - H) // 2
+    return canvas.crop((left, top, left + W, top + H))
+
+
+def _precompose(items: list[dict], stills_dir: Path, wm=None, bg=None) -> None:
     """Render every item's still PNG into stills_dir and record its path on the
     item (key "still"). All the per-frame compositing work happens here, once.
-    A "grid" item lays its frames out together; everything else is one frame."""
+    A "grid" item lays its frames out together; everything else is one frame.
+    `bg` (a PIL image) replaces the default blurred self-cover when given; `wm`
+    (a PIL RGBA layer) is alpha-composited on top of every still when given."""
+    from PIL import Image
+
     stills_dir.mkdir(parents=True, exist_ok=True)
     for i, it in enumerate(items):
         out = stills_dir / f"beat_{i:04d}.png"
         if it["layout"] == "grid":
-            _compose_grid_still(it["frames"]).save(out)
+            still = _compose_grid_still(it["frames"], bg)
         else:
-            _compose_still(it["frames"][0]).save(out)
+            still = _compose_still(it["frames"][0], bg)
+        if wm is not None:
+            still = Image.alpha_composite(still.convert("RGBA"), wm).convert("RGB")
+        still.save(out)
         it["still"] = str(out)
 
 
@@ -466,8 +630,15 @@ def run(m: Manifest) -> Manifest:
 
     beats = m.kept_panels()  # the matched narration beats (STAGE B)
     mapping = _load_mapping(m.chapter_id)  # framer's multi-frame + mode plan
+    settings = _load_media_settings(m.chapter_id)  # framer's per-project media settings
     items, total, lines = _plan(beats, mapping)
-    music_path = _music_file()
+    music_path = _resolve_music(settings)
+    wm_cfg = settings.get("watermark")
+    print(f"  [debug] media_settings.json watermark cfg: {wm_cfg!r}")
+    watermark = _build_watermark_layer(settings)
+    print(f"  [debug] watermark: enabled={bool(wm_cfg and wm_cfg.get('enabled'))}, "
+          f"layer_built={watermark is not None}, compositing onto {len(items)} still(s)")
+    background = _load_background(settings)
 
     # Per-line report so multi-frame handling can be verified at a glance.
     for ln in lines:
@@ -483,6 +654,7 @@ def run(m: Manifest) -> Manifest:
         json.dumps({
             "chapter_id": m.chapter_id, "size": [W, H], "fps": FPS,
             "music": music_path.name if music_path else None,
+            "watermark": bool(watermark), "background": bool(background),
             "total_s": total, "beats": items,
         }, indent=2, ensure_ascii=False),
         encoding="utf-8",
@@ -497,8 +669,9 @@ def run(m: Manifest) -> Manifest:
     stills_dir = out_dir / "_stills"
     t0 = time.perf_counter()
     try:
-        _precompose(items, stills_dir)
-        print(f"  precomposed {len(items)} stills ({total:.1f}s timeline)")
+        _precompose(items, stills_dir, watermark, background)
+        print(f"  precomposed {len(items)} stills ({total:.1f}s timeline)"
+              f"{' + watermark' if watermark else ''}{' + custom background' if background else ''}")
         try:
             codec = _assemble_ffmpeg(items, music_path, total, out)
             path = "ffmpeg"

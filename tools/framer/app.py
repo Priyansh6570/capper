@@ -51,8 +51,13 @@ from PIL import Image, ImageFilter  # noqa: E402
 # Stage 1: importing it lifts Pillow's MAX_IMAGE_PIXELS guard (module-level) and
 # gives us the exact stitch used by the real pipeline.
 from stages import s1_pdf_to_pages as s1  # noqa: E402
-from config import chapter_work_dir, chapter_output_dir  # noqa: E402
+import config  # noqa: E402 - module import so chapter_scope()/set_/clear_ are reachable
+from config import chapter_work_dir, chapter_output_dir, WORK_DIR, OUTPUT_DIR, PROJECTS_DIR  # noqa: E402
 from manifest import Manifest, Page, Panel  # noqa: E402
+
+import projects  # noqa: E402 - the project system (this package: tools/framer/projects.py)
+import webtoon_meta  # noqa: E402 - best-effort series-metadata scraper
+from stages import s7_assemble as s7  # noqa: E402 - reused by the settings live-preview routes
 
 # Belt-and-suspenders: ensure the bomb guard stays off even if import order shifts.
 Image.MAX_IMAGE_PIXELS = None
@@ -73,10 +78,17 @@ THUMB_MAX = 220           # max px for a line's crop thumbnail
 BLUR_STRENGTH = 0.30      # gaussian radius / mosaic block size = this * minside
 DEFAULT_BLUR_STYLE = "m"  # "m" = pixelate/mosaic (most unreadable), "g" = heavy gaussian
 
-# Google AI Studio / Gemini accepts at most this many pages per uploaded PDF. A
-# downloaded chapter PDF longer than this is split into <=GEMINI_PAGE_LIMIT-page
-# chunks at whole-page boundaries so each part can be uploaded for the script.
-GEMINI_PAGE_LIMIT = 127
+# Gemini-part prep: a downloaded chapter PDF is ALWAYS split into <=PART_PAGES-page
+# parts (Google AI Studio / Gemini caps pages per uploaded PDF well above this, but
+# smaller parts upload faster and keep each request well inside size limits too).
+# Consecutive parts OVERLAP by a few pages so Gemini has continuity across the seam
+# when reading two parts back-to-back. Each part's pages are downscaled to
+# GEMINI_MAX_DIM px (longest side) and re-encoded as JPEG at GEMINI_JPEG_QUALITY
+# inside the PDF, trading a little sharpness for a much smaller upload.
+PART_PAGES = 100            # max pages per Gemini part
+PART_OVERLAP = 5            # pages repeated at the start of each part after the first
+GEMINI_MAX_DIM = 1600       # downscale target, px (longest side)
+GEMINI_JPEG_QUALITY = 75    # JPEG quality for the re-encoded page images
 WEBTOON_TIMEOUT_S = 1800  # hard cap on a single webtoon-downloader run (30 min)
 
 HERE = Path(__file__).resolve().parent
@@ -92,8 +104,56 @@ def _now_iso() -> str:
 
 
 # --------------------------------------------------------------------------- #
+# project scoping - every route that touches chapter files redirects
+# chapter_work_dir()/chapter_output_dir() (see config.py) to
+# projects/<slug>/chapters/<n>/{work,output} for the duration of the request,
+# by reading `project` + `ch_no` (query args, JSON body, or form field - never
+# collides with the pre-existing `chapter`/`chapter_id` label param).
+#
+# NOTE on the two SSE routes (/generate_stream, /gemini_parts_stream): Flask
+# tears the request context down before a streamed generator's body actually
+# runs, so before_request's scope would be gone by the time chapter_work_dir()
+# is called inside those generators. Those two routes therefore compute their
+# own (work_dir, output_dir) up front and wrap their generator body in an
+# explicit `with config.chapter_scope(...)` - see their route functions below.
+# --------------------------------------------------------------------------- #
+def _scope_params() -> tuple[str | None, str | None]:
+    data = request.get_json(silent=True) if request.is_json else None
+    data = data or {}
+    form = request.form if request.form else {}
+    slug = request.args.get("project") or data.get("project") or form.get("project")
+    ch_no = request.args.get("ch_no") or data.get("ch_no") or form.get("ch_no")
+    return (slug or None), (str(ch_no) if ch_no else None)
+
+
+@app.before_request
+def _apply_chapter_scope():
+    slug, ch_no = _scope_params()
+    if slug and ch_no:
+        config.set_chapter_scope(projects.chapter_work_dir(slug, ch_no),
+                                  projects.chapter_output_dir(slug, ch_no))
+    else:
+        config.clear_chapter_scope()
+
+
+@app.teardown_request
+def _clear_chapter_scope(exc=None):
+    config.clear_chapter_scope()
+
+
+# --------------------------------------------------------------------------- #
 # helpers
 # --------------------------------------------------------------------------- #
+def _is_under(path: Path, root: Path) -> bool:
+    """True if `path` (already resolved) sits inside `root` (already resolved).
+    normcase handles Windows' case-insensitive / drive-letter-cased paths."""
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return os.path.normcase(str(path)).startswith(os.path.normcase(str(root)))
+
+
 def _sanitize_chapter(name: str) -> str:
     """A safe chapter_id from arbitrary text (used as a folder name)."""
     name = (name or "").strip()
@@ -257,38 +317,111 @@ def _pdf_page_count(pdf_path: Path) -> int:
         doc.close()
 
 
-def _split_for_gemini(pdf_path: Path, limit: int) -> list[dict]:
-    """Split `pdf_path` into <=`limit`-page parts at whole-page boundaries so each
-    can be uploaded to Gemini. A PDF already within the limit is returned as the
-    single (unsplit) part. Parts land in `<pdf dir>/split/` and old parts for this
-    PDF are cleared first so re-downloading is idempotent. Each entry is
-    {path, pages, from, to} with 1-based inclusive page numbers."""
+def _gemini_parts_dir(chapter_id: str) -> Path:
+    d = chapter_work_dir(chapter_id) / "gemini_parts"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _fmt_size(n: int) -> str:
+    """Human-readable file size (e.g. 3.4MB)."""
+    size = float(n)
+    for unit in ("B", "KB", "MB", "GB"):
+        if size < 1024 or unit == "GB":
+            return f"{size:.0f}{unit}" if unit == "B" else f"{size:.1f}{unit}"
+        size /= 1024
+    return f"{size:.1f}GB"  # pragma: no cover - unreachable, satisfies linters
+
+
+def _gemini_part_ranges(total: int, part_pages: int, overlap: int) -> list[tuple[int, int]]:
+    """0-based [start, end) page ranges covering `total` pages, each <=`part_pages`
+    long, where every part after the first repeats `overlap` pages from the tail of
+    the previous one (for cross-seam continuity). A chapter within `part_pages`
+    yields a single, non-overlapping part."""
+    part_pages = max(1, part_pages)
+    overlap = max(0, min(overlap, part_pages - 1))
+    step = part_pages - overlap
+    ranges: list[tuple[int, int]] = []
+    start = 0
+    while True:
+        end = min(start + part_pages, total)
+        ranges.append((start, end))
+        if end >= total:
+            break
+        start += step
+    return ranges
+
+
+def _compress_page_jpeg(fitz_mod, page, max_dim: int, quality: int) -> tuple[int, int, bytes]:
+    """Render one PDF page, downscale so its longest side is <=`max_dim`, and
+    re-encode as JPEG at `quality`. Returns (width, height, jpeg_bytes)."""
+    rect = page.rect
+    longest = max(rect.width, rect.height) or 1.0
+    zoom = max(0.05, max_dim / longest)
+    pix = page.get_pixmap(matrix=fitz_mod.Matrix(zoom, zoom), alpha=False)
+    img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+    if max(img.width, img.height) > max_dim:
+        scale = max_dim / max(img.width, img.height)
+        img = img.resize((max(1, round(img.width * scale)), max(1, round(img.height * scale))),
+                          Image.LANCZOS)
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=quality, optimize=True)
+    return img.width, img.height, buf.getvalue()
+
+
+def _build_gemini_parts_stream(pdf_path: Path, chapter_id: str,
+                                part_pages: int = PART_PAGES,
+                                overlap: int = PART_OVERLAP,
+                                max_dim: int = GEMINI_MAX_DIM,
+                                quality: int = GEMINI_JPEG_QUALITY):
+    """Generator: split `pdf_path` into <=`part_pages`-page parts (consecutive parts
+    OVERLAP by `overlap` pages), downscaling + JPEG-recompressing every page so each
+    part stays small but legible. ALWAYS runs, even for a chapter within
+    `part_pages` (it still becomes one compressed part). Parts land in
+    work/<chapter>/gemini_parts/, cleared first so re-downloading is idempotent.
+
+    Yields progress dicts as it works; the LAST item is always
+    {"type": "result", "parts": [...], "dir": str} with each part
+    {path, name, pages, from, to, size_bytes} (1-based inclusive page numbers).
+    This is the ONLY thing that reads/writes gemini_parts/ - it never touches the
+    full-res PDF or the stitched strip used by Stitch/Framer.
+    """
     import fitz
 
     doc = fitz.open(str(pdf_path))
     try:
         total = doc.page_count
-        if total <= limit:
-            return [{"path": str(pdf_path), "pages": total, "from": 1, "to": total}]
-
-        out_dir = pdf_path.parent / "split"
-        out_dir.mkdir(parents=True, exist_ok=True)
-        for old in out_dir.glob(f"{pdf_path.stem}_part*.pdf"):
+        ranges = _gemini_part_ranges(total, part_pages, overlap)
+        out_dir = _gemini_parts_dir(chapter_id)
+        for old in out_dir.glob("*.pdf"):
             old.unlink()
 
-        n_parts = math.ceil(total / limit)
-        width = len(str(n_parts))
+        width = len(str(len(ranges)))
         parts: list[dict] = []
-        for idx in range(n_parts):
-            a = idx * limit                      # 0-based start
-            b = min(a + limit, total)            # exclusive end
-            sub = fitz.open()
-            sub.insert_pdf(doc, from_page=a, to_page=b - 1)
-            out = out_dir / f"{pdf_path.stem}_part{idx + 1:0{width}d}_p{a + 1}-{b}.pdf"
-            sub.save(str(out))
-            sub.close()
-            parts.append({"path": str(out), "pages": b - a, "from": a + 1, "to": b})
-        return parts
+        for idx, (a, b) in enumerate(ranges):
+            part_no = idx + 1
+            yield {"type": "log",
+                   "line": f"Part {part_no}/{len(ranges)}: pages {a + 1}-{b} "
+                           f"({b - a}p) - downscaling to {max_dim}px + JPEG "
+                           f"q{quality}…"}
+            out_pdf = fitz.open()
+            for i, pno in enumerate(range(a, b)):
+                w, h, jpeg_bytes = _compress_page_jpeg(fitz, doc.load_page(pno), max_dim, quality)
+                out_page = out_pdf.new_page(width=w, height=h)
+                out_page.insert_image(out_page.rect, stream=jpeg_bytes)
+                if (i + 1) % 20 == 0 or (i + 1) == (b - a):
+                    yield {"type": "progress", "part": part_no, "of_parts": len(ranges),
+                           "page": i + 1, "of_pages": b - a}
+            name = f"{pdf_path.stem}_part{part_no:0{width}d}_p{a + 1}-{b}.pdf"
+            out_path = out_dir / name
+            out_pdf.save(str(out_path), garbage=4, deflate=True)
+            out_pdf.close()
+            size_bytes = out_path.stat().st_size
+            parts.append({"path": str(out_path), "name": name, "pages": b - a,
+                          "from": a + 1, "to": b, "size_bytes": size_bytes})
+            yield {"type": "log",
+                   "line": f"  -> {name}  ({b - a}p, {_fmt_size(size_bytes)})"}
+        yield {"type": "result", "parts": parts, "dir": str(out_dir)}
     finally:
         doc.close()
 
@@ -296,7 +429,7 @@ def _split_for_gemini(pdf_path: Path, limit: int) -> list[dict]:
 def _preview_payload(chapter_id: str) -> dict | None:
     """Rebuild the /load_pdf preview payload for an ALREADY-stitched chapter.
 
-    Used by /load_project so a saved session resumes WITHOUT re-stitching the PDF:
+    Used by /editor_state/load so a saved session resumes WITHOUT re-stitching the PDF:
     reads geometry from preview.json and re-derives the tile list. If the preview
     or its tiles are missing but the strip is on disk, it is regenerated; if there
     is no strip either, returns None (caller restores lines only).
@@ -338,15 +471,13 @@ def index():
 
 @app.post("/download")
 def download():
-    """Download ONE webtoon.com chapter as a PDF, then split it for Gemini.
+    """Download ONE webtoon.com chapter as a PDF. Gemini-part splitting/compression
+    is a SEPARATE step (see /gemini_parts_stream) so its progress can stream.
 
     Body: JSON {url, chapter_no?, chapter_id?}. Runs webtoon-downloader
-    (--save-as pdf) into work/<chapter>/download/, then, if the PDF exceeds
-    GEMINI_PAGE_LIMIT pages, splits it into <=limit-page parts at whole-page
-    boundaries. Returns {chapter_id, pdf, page_count, split, parts:[{path,pages,
-    from,to}], steps:[...]} - `pdf` is the full chapter PDF that feeds Stitch PDF;
-    `parts` are the (possibly split) files to hand to Gemini. We do NOT touch
-    Gemini - the paths are just reported back."""
+    (--save-as pdf) into work/<chapter>/download/. Returns {chapter_id, pdf,
+    page_count, steps:[...]} - `pdf` is the full chapter PDF that feeds BOTH
+    Stitch PDF (unchanged) and Gemini-part prep."""
     data = request.get_json(silent=True) or {}
     url = (data.get("url") or "").strip().strip('"')
     raw_id = (data.get("chapter_id") or "").strip()
@@ -385,21 +516,68 @@ def download():
     pages = _pdf_page_count(pdf)
     steps.append(f"Downloaded {pdf.name} — {pages} page(s):\n    {pdf}")
 
-    parts = _split_for_gemini(pdf, GEMINI_PAGE_LIMIT)
-    if len(parts) > 1:
-        steps.append(f"{pages} > {GEMINI_PAGE_LIMIT} pages → split into "
-                     f"{len(parts)} parts (≤{GEMINI_PAGE_LIMIT} pages each).")
-    else:
-        steps.append(f"{pages} ≤ {GEMINI_PAGE_LIMIT} pages → no split needed.")
+    slug, ch_no = _scope_params()
+    if slug and ch_no:
+        projects.set_status(slug, ch_no, "downloaded")
 
     return jsonify(
         chapter_id=chapter_id,
         pdf=str(pdf),
         page_count=pages,
-        split=len(parts) > 1,
-        parts=parts,
         steps=steps,
     )
+
+
+@app.get("/gemini_parts_stream")
+def gemini_parts_stream():
+    """Split + compress a chapter PDF into Gemini-ready parts, streaming progress.
+
+    EventSource (GET) only, params in the query string:
+        ?pdf_path=...&chapter_id=...&project=<slug>&ch_no=<n>
+    `project`+`ch_no` scope the run to the project chapter's work dir (see the
+    note above _scope_params - this generator re-enters the scope explicitly
+    since the request context is gone by the time it actually runs).
+    Always splits into <=PART_PAGES-page parts (PART_OVERLAP pages of overlap
+    between consecutive parts) and downscales/re-JPEGs every page (see
+    _build_gemini_parts_stream). Emits {type:start|log|progress|done|error}; `done`
+    carries {parts:[{path,name,pages,from,to,size_bytes}], dir}."""
+    raw = (request.args.get("pdf_path") or "").strip().strip('"')
+    chapter_id = _sanitize_chapter(request.args.get("chapter_id", ""))
+    pdf_path = Path(raw)
+    slug, ch_no = _scope_params()
+    work_dir = projects.chapter_work_dir(slug, ch_no) if slug and ch_no else chapter_work_dir(chapter_id)
+    output_dir = projects.chapter_output_dir(slug, ch_no) if slug and ch_no else chapter_output_dir(chapter_id)
+
+    def stream():
+        with config.chapter_scope(work_dir, output_dir):
+            if not raw or not pdf_path.is_file():
+                yield _sse({"type": "error", "message": f"PDF not found: {pdf_path}"})
+                return
+            try:
+                total = _pdf_page_count(pdf_path)
+            except Exception as e:  # noqa: BLE001 - report, don't crash the stream
+                yield _sse({"type": "error", "message": f"{type(e).__name__}: {e}"})
+                return
+
+            yield _sse({"type": "start", "total_pages": total,
+                        "message": f"Preparing Gemini parts for {pdf_path.name} "
+                                   f"({total} pages) — ≤{PART_PAGES}p/part, "
+                                   f"{PART_OVERLAP}p overlap, max {GEMINI_MAX_DIM}px, "
+                                   f"JPEG q{GEMINI_JPEG_QUALITY}…"})
+            try:
+                for item in _build_gemini_parts_stream(pdf_path, chapter_id):
+                    if item["type"] == "result":
+                        yield _sse({"type": "done", "ok": True,
+                                    "parts": item["parts"], "dir": item["dir"]})
+                    else:
+                        yield _sse(item)
+            except Exception as e:  # noqa: BLE001 - report, don't crash the stream
+                yield _sse({"type": "error", "message": f"{type(e).__name__}: {e}"})
+
+    return Response(stream(), mimetype="text/event-stream",
+                    headers={"Cache-Control": "no-cache",
+                             "X-Accel-Buffering": "no",
+                             "Connection": "keep-alive"})
 
 
 @app.post("/load_pdf")
@@ -735,6 +913,11 @@ def export():
     )
     m.save()
 
+    slug, ch_no = _scope_params()
+    if slug and ch_no:
+        projects.set_status(slug, ch_no, "boxed")
+        projects.write_media_snapshot(slug, ch_no)
+
     return jsonify(
         chapter_id=chapter_id,
         lines_written=len(beats),
@@ -771,85 +954,130 @@ def _beat_count(chapter_id: str) -> int:
 
 @app.get("/generate_stream")
 def generate_stream():
-    """Run the pipeline's audio+video (or video-only) for a chapter and stream
-    progress as SSE. EventSource (GET) only, params in the query string:
-        ?chapter=<id>&what=both|video
-    `what=both` runs s6 (TTS) then s7 (assemble) via `--from audio`; `what=video`
-    re-renders with s7 only via `--from video`. Emits {type:start|log|done|error}
-    frames; `done` carries the /output/<ch>/recap.mp4 URL when it exists."""
+    """Run the pipeline's audio+video, video-only, or audio-only for a chapter
+    and stream progress as SSE. EventSource (GET) only, params in the query
+    string:
+        ?chapter=<id>&what=both|voice|video&project=<slug>&ch_no=<n>
+    `project`+`ch_no` scope the run to projects/<slug>/chapters/<n>/{work,output}
+    (see config.chapter_scope) - required for a project chapter; the generator
+    re-enters the scope explicitly (see note above _scope_params) because the
+    request context is gone by the time this generator body actually runs.
+    `what=both` runs s6 (TTS) then s7 (assemble) via `--from audio`; `what=voice`
+    re-runs ONLY s6 via `--from audio --to audio` (e.g. after changing the
+    project's voice sample or speed, without re-selecting frames) - it never
+    touches recap.mp4 or the chapter's status, so a stale render stays valid
+    until you also re-render video; `what=video` re-renders with s7 only via
+    `--from video`. Emits {type:start|log|done|error} frames; `done` carries
+    the /output/<ch>/recap.mp4 URL when a video stage actually ran and produced
+    one."""
     chapter_id = _sanitize_chapter(request.args.get("chapter", ""))
     what = (request.args.get("what") or "both").strip().lower()
-    from_stage = "video" if what == "video" else "audio"
-    manifest = chapter_work_dir(chapter_id) / "manifest.json"
+    if what == "video":
+        from_stage, to_stage = "video", None
+    elif what == "voice":
+        from_stage, to_stage = "audio", "audio"
+    else:
+        what = "both"
+        from_stage, to_stage = "audio", None
+    slug, ch_no = _scope_params()
+    job_key = f"{slug}/{ch_no}" if slug and ch_no else chapter_id
+    video_url = (f"/output/{chapter_id}/recap.mp4?project={slug}&ch_no={ch_no}"
+                 if slug and ch_no else f"/output/{chapter_id}/recap.mp4")
+
+    work_dir = projects.chapter_work_dir(slug, ch_no) if slug and ch_no else chapter_work_dir(chapter_id)
+    output_dir = projects.chapter_output_dir(slug, ch_no) if slug and ch_no else chapter_output_dir(chapter_id)
+    manifest = work_dir / "manifest.json"
 
     def stream():
-        if not manifest.exists():
-            yield _sse({"type": "error",
-                        "message": f"No manifest for {chapter_id}. Export from the "
-                                   f"Framer first."})
-            return
+        with config.chapter_scope(work_dir, output_dir):
+            if not manifest.exists():
+                yield _sse({"type": "error",
+                            "message": f"No manifest for {chapter_id}. Export from the "
+                                       f"Framer first."})
+                return
 
-        # reserve the per-chapter slot WITHOUT yielding under the lock
-        with _GEN_LOCK:
-            busy = chapter_id in _GEN_JOBS
-            if not busy:
-                _GEN_JOBS[chapter_id] = None
-        if busy:
-            yield _sse({"type": "error",
-                        "message": f"A generate job is already running for "
-                                   f"{chapter_id}."})
-            return
-
-        total = _beat_count(chapter_id)
-        label = "audio + video" if from_stage == "audio" else "video"
-        yield _sse({"type": "start", "what": from_stage, "total_beats": total,
-                    "message": f"Starting {label} for {chapter_id} "
-                               f"({total or '?'} line(s))…"})
-
-        # -u + PYTHONUNBUFFERED so each print streams immediately; utf-8 so the
-        # child never dies on a unicode arrow and we decode the pipe cleanly.
-        env = dict(os.environ, PYTHONUNBUFFERED="1", PYTHONIOENCODING="utf-8")
-        cmd = [sys.executable, "-u", str(ROOT / "orchestrator.py"),
-               "--chapter", chapter_id, "--from", from_stage]
-        proc = None
-        try:
-            proc = subprocess.Popen(
-                cmd, cwd=str(ROOT), env=env,
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                stdin=subprocess.DEVNULL, text=True, bufsize=1,
-                encoding="utf-8", errors="replace")
+            # reserve the per-chapter slot WITHOUT yielding under the lock
             with _GEN_LOCK:
-                _GEN_JOBS[chapter_id] = proc
+                busy = job_key in _GEN_JOBS
+                if not busy:
+                    _GEN_JOBS[job_key] = None
+            if busy:
+                yield _sse({"type": "error",
+                            "message": f"A generate job is already running for "
+                                       f"{chapter_id}."})
+                return
 
-            yield _sse({"type": "log", "line": "$ " + " ".join(cmd)})
-            for line in proc.stdout:                       # streams as it arrives
-                yield _sse({"type": "log", "line": line.rstrip("\n")})
-            proc.wait()
+            total = _beat_count(chapter_id)
+            label = {"both": "audio + video", "voice": "audio (voice only)",
+                     "video": "video"}[what]
+            yield _sse({"type": "start", "what": what, "total_beats": total,
+                        "message": f"Starting {label} for {chapter_id} "
+                                   f"({total or '?'} line(s))…"})
 
-            if proc.returncode == 0:
-                mp4 = chapter_output_dir(chapter_id) / "recap.mp4"
-                yield _sse({"type": "done", "ok": True,
-                            "video": (f"/output/{chapter_id}/recap.mp4"
-                                      if mp4.exists() else None),
-                            "message": ("Done." if mp4.exists()
-                                        else "Finished, but recap.mp4 was not found.")})
-            else:
-                yield _sse({"type": "done", "ok": False,
-                            "message": f"Pipeline exited with code {proc.returncode}."})
-        except GeneratorExit:                              # client disconnected / Stop
-            if proc and proc.poll() is None:
-                proc.terminate()
-            raise
-        except Exception as e:  # noqa: BLE001 - report, don't crash the stream
-            yield _sse({"type": "error", "message": f"{type(e).__name__}: {e}"})
-        finally:
-            if proc and proc.poll() is None:
-                try:
+            if slug and ch_no:
+                # a settings change since the last generate must still land
+                projects.write_media_snapshot(slug, ch_no)
+
+            # -u + PYTHONUNBUFFERED so each print streams immediately; utf-8 so
+            # the child never dies on a unicode arrow and we decode the pipe
+            # cleanly. MANHWA_WORK_ROOT/OUTPUT_ROOT hand the same scope to the
+            # orchestrator subprocess (see config.py's env-var fallback).
+            env = dict(os.environ, PYTHONUNBUFFERED="1", PYTHONIOENCODING="utf-8")
+            if slug and ch_no:
+                env["MANHWA_WORK_ROOT"] = str(work_dir)
+                env["MANHWA_OUTPUT_ROOT"] = str(output_dir)
+            cmd = [sys.executable, "-u", str(ROOT / "orchestrator.py"),
+                   "--chapter", chapter_id, "--from", from_stage]
+            if to_stage:
+                cmd += ["--to", to_stage]
+            proc = None
+            try:
+                proc = subprocess.Popen(
+                    cmd, cwd=str(ROOT), env=env,
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    stdin=subprocess.DEVNULL, text=True, bufsize=1,
+                    encoding="utf-8", errors="replace")
+                with _GEN_LOCK:
+                    _GEN_JOBS[job_key] = proc
+
+                yield _sse({"type": "log", "line": "$ " + " ".join(cmd)})
+                for line in proc.stdout:                       # streams as it arrives
+                    yield _sse({"type": "log", "line": line.rstrip("\n")})
+                proc.wait()
+
+                if proc.returncode == 0:
+                    if what == "voice":
+                        # audio-only: no video ran, so recap.mp4/status are
+                        # untouched - a stale render stays valid until
+                        # "Re-render video" is run over the new audio.
+                        yield _sse({"type": "done", "ok": True, "video": None,
+                                    "message": "Audio regenerated. Re-render video "
+                                               "to hear it in the recap."})
+                    else:
+                        mp4 = output_dir / "recap.mp4"
+                        if mp4.exists() and slug and ch_no:
+                            projects.set_status(slug, ch_no, "rendered")
+                        yield _sse({"type": "done", "ok": True,
+                                    "video": (video_url if mp4.exists() else None),
+                                    "message": ("Done." if mp4.exists()
+                                                else "Finished, but recap.mp4 was not found.")})
+                else:
+                    yield _sse({"type": "done", "ok": False,
+                                "message": f"Pipeline exited with code {proc.returncode}."})
+            except GeneratorExit:                              # client disconnected / Stop
+                if proc and proc.poll() is None:
                     proc.terminate()
-                except Exception:  # noqa: BLE001
-                    pass
-            with _GEN_LOCK:
-                _GEN_JOBS.pop(chapter_id, None)
+                raise
+            except Exception as e:  # noqa: BLE001 - report, don't crash the stream
+                yield _sse({"type": "error", "message": f"{type(e).__name__}: {e}"})
+            finally:
+                if proc and proc.poll() is None:
+                    try:
+                        proc.terminate()
+                    except Exception:  # noqa: BLE001
+                        pass
+                with _GEN_LOCK:
+                    _GEN_JOBS.pop(job_key, None)
 
     return Response(stream(), mimetype="text/event-stream",
                     headers={"Cache-Control": "no-cache",
@@ -867,38 +1095,74 @@ def output_file(chapter_id: str, name: str):
     return send_from_directory(str(out_dir), name)
 
 
-# --------------------------------------------------------------------------- #
-# save / load project + autosave recovery
-# --------------------------------------------------------------------------- #
-def _project_path(chapter_id: str, recovery: bool) -> Path:
-    return _framer_dir(chapter_id) / ("recovery.json" if recovery else "project.json")
+@app.post("/open_folder")
+def open_folder():
+    """Open a folder in the OS file browser (Explorer on Windows). Body: JSON
+    {path}. Restricted to paths under work/ so this can't be used to open
+    arbitrary locations on disk."""
+    data = request.get_json(silent=True) or {}
+    raw = (data.get("path") or "").strip().strip('"')
+    if not raw:
+        return jsonify(error="path required"), 400
+    p = Path(raw).resolve()
+    allowed_roots = (WORK_DIR.resolve(), OUTPUT_DIR.resolve(), PROJECTS_DIR.resolve())
+    if not any(_is_under(p, root) for root in allowed_roots):
+        return jsonify(error="Refusing to open a path outside work/, output/, or projects/."), 400
+    if not p.is_dir():
+        return jsonify(error=f"No such folder: {p}"), 404
+    try:
+        if sys.platform == "win32":
+            os.startfile(str(p))  # noqa: S606 - path is validated above
+        elif sys.platform == "darwin":
+            subprocess.run(["open", str(p)], check=False)
+        else:
+            subprocess.run(["xdg-open", str(p)], check=False)
+    except Exception as e:  # noqa: BLE001 - report, don't crash
+        return jsonify(error=f"{type(e).__name__}: {e}"), 500
+    return jsonify(ok=True)
 
 
-@app.post("/save_project")
-def save_project():
+# --------------------------------------------------------------------------- #
+# editor state (per-chapter framer working state) + autosave recovery.
+#
+# NOTE: this is the FRAMER's own editing session (lines/frames/blur/etc.) - a
+# different concept from the "project" system in projects.py (a whole manhwa
+# series with a chapter list). Named /editor_state/* to avoid colliding with
+# the new /api/projects/* endpoints.
+# --------------------------------------------------------------------------- #
+def _editor_state_path(chapter_id: str, recovery: bool) -> Path:
+    return _framer_dir(chapter_id) / ("recovery.json" if recovery else "editor_state.json")
+
+
+@app.post("/editor_state/save")
+def save_editor_state():
     """Persist the FULL working state (lines, frames, modes, durations, strip ref).
 
-    Body: JSON {chapter_id, recovery?:bool, project:{...}}. `recovery` writes the
-    periodic autosave (recovery.json) so a closed tab never loses work; a normal
-    save writes project.json. The project blob is stored verbatim plus a stamp.
+    Body: JSON {chapter_id, recovery?:bool, state:{...}, project?, ch_no?}.
+    `project`/`ch_no` are ONLY the chapter-scope params (see _scope_params) -
+    the state blob itself is carried under `state`, deliberately NOT `project`,
+    so it can never collide with the scope param of the same request. `recovery`
+    writes the periodic autosave (recovery.json) so a closed tab never loses
+    work; a normal save writes editor_state.json. The blob is stored verbatim
+    plus a stamp.
     """
     data = request.get_json(silent=True) or {}
     chapter_id = _sanitize_chapter(data.get("chapter_id") or "")
-    project = data.get("project")
-    if not chapter_id or not isinstance(project, dict):
-        return jsonify(error="chapter_id and project required"), 400
+    state = data.get("state")
+    if not chapter_id or not isinstance(state, dict):
+        return jsonify(error="chapter_id and state required"), 400
     recovery = bool(data.get("recovery"))
-    project = dict(project)
-    project["chapter_id"] = chapter_id
-    project["saved_at"] = _now_iso()
-    path = _project_path(chapter_id, recovery)
-    path.write_text(json.dumps(project, indent=2, ensure_ascii=False), encoding="utf-8")
-    return jsonify(ok=True, path=str(path), saved_at=project["saved_at"])
+    state = dict(state)
+    state["chapter_id"] = chapter_id
+    state["saved_at"] = _now_iso()
+    path = _editor_state_path(chapter_id, recovery)
+    path.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
+    return jsonify(ok=True, path=str(path), saved_at=state["saved_at"])
 
 
-@app.get("/load_project")
-def load_project():
-    """Restore a saved session: returns {project, preview}.
+@app.get("/editor_state/load")
+def load_editor_state():
+    """Restore a saved session: returns {state, preview}.
 
     Query: chapter, recovery?(0/1). `preview` is the same payload /load_pdf returns
     (rebuilt from the persisted tiles, NO re-stitch) so the strip is shown again;
@@ -906,23 +1170,23 @@ def load_project():
     """
     chapter_id = _sanitize_chapter(request.args.get("chapter", ""))
     recovery = request.args.get("recovery") in ("1", "true", "yes")
-    path = _project_path(chapter_id, recovery)
+    path = _editor_state_path(chapter_id, recovery)
     if not path.exists():
-        return jsonify(error=f"No saved {'recovery' if recovery else 'project'} "
+        return jsonify(error=f"No saved {'recovery' if recovery else 'editor'} state "
                              f"for {chapter_id}."), 404
-    project = json.loads(path.read_text(encoding="utf-8"))
-    return jsonify(project=project, preview=_preview_payload(chapter_id))
+    state = json.loads(path.read_text(encoding="utf-8"))
+    return jsonify(state=state, preview=_preview_payload(chapter_id))
 
 
-@app.get("/project_status")
-def project_status():
-    """Report whether a chapter has a saved project / newer recovery (for the
+@app.get("/editor_state/status")
+def editor_state_status():
+    """Report whether a chapter has a saved state / newer recovery (for the
     'restore unsaved work?' prompt). Returns {project:{exists,mtime},
     recovery:{exists,mtime}}."""
     chapter_id = _sanitize_chapter(request.args.get("chapter", ""))
     out = {}
     for key, recovery in (("project", False), ("recovery", True)):
-        p = _project_path(chapter_id, recovery)
+        p = _editor_state_path(chapter_id, recovery)
         out[key] = {"exists": p.exists(), "mtime": (p.stat().st_mtime if p.exists() else 0)}
     return jsonify(**out)
 
@@ -941,10 +1205,565 @@ def set_settings():
         _SETTINGS["theme"] = data["theme"]
     if "split" in data:
         try:
-            _SETTINGS["split"] = max(280, min(1400, int(data["split"])))
+            # Sanity bounds only - the real clamp to the viewport happens
+            # client-side in applySplit()/splitMax(), which is allowed to go
+            # much wider than this on a large monitor.
+            _SETTINGS["split"] = max(240, min(6000, int(data["split"])))
         except (TypeError, ValueError):
             pass
     return jsonify(**_SETTINGS)
+
+
+# --------------------------------------------------------------------------- #
+# in-app update - "Check for updates" pulls the app's own CODE from git.
+# Deliberately just `git pull --ff-only` in ROOT: nothing here touches .venv,
+# installed packages, or the Hugging Face model cache - those all live
+# outside what git tracks (see .gitignore), so a pull can never reach them.
+# GIT_TERMINAL_PROMPT=0 makes a missing/expired credential fail fast with a
+# clear error instead of hanging the request on an invisible auth prompt.
+# --------------------------------------------------------------------------- #
+@app.post("/api/update")
+def api_update():
+    if not (ROOT / ".git").exists():
+        return jsonify(ok=False, not_git=True,
+                        message="This install wasn't set up with git, so in-app "
+                                "updates aren't available here. Reinstall with "
+                                "the latest installer to get this feature.")
+
+    def run_git(*args):
+        env = dict(os.environ, GIT_TERMINAL_PROMPT="0")
+        return subprocess.run(["git", *args], cwd=str(ROOT), env=env,
+                               capture_output=True, text=True, timeout=120)
+
+    try:
+        old = run_git("rev-parse", "HEAD")
+        if old.returncode != 0:
+            return jsonify(ok=False, message="Could not read the current version: "
+                                              + (old.stderr or old.stdout).strip())
+        old_hash = old.stdout.strip()
+
+        pull = run_git("pull", "--ff-only")
+        if pull.returncode != 0:
+            return jsonify(ok=False, message="Update failed: "
+                                              + (pull.stderr or pull.stdout).strip())
+
+        new = run_git("rev-parse", "HEAD")
+        new_hash = new.stdout.strip() if new.returncode == 0 else old_hash
+
+        if new_hash == old_hash:
+            return jsonify(ok=True, already_up_to_date=True, files_changed=0,
+                            requirements_changed=False, message="Already up to date.")
+
+        diff = run_git("diff", "--name-only", old_hash, new_hash)
+        changed = [ln for ln in (diff.stdout or "").splitlines() if ln.strip()]
+        requirements_changed = "requirements.txt" in changed
+
+        if requirements_changed:
+            message = (f"Updated {len(changed)} file(s). Dependencies changed - "
+                       f"please re-run setup.bat, then restart the app.")
+        else:
+            message = f"Updated {len(changed)} file(s). Restart the app to apply."
+
+        return jsonify(ok=True, already_up_to_date=False, files_changed=len(changed),
+                        requirements_changed=requirements_changed, message=message)
+    except subprocess.TimeoutExpired:
+        return jsonify(ok=False, message="Update timed out - check your internet "
+                                          "connection and try again.")
+    except FileNotFoundError:
+        return jsonify(ok=False, message="git is not installed or not on PATH.")
+    except Exception as e:  # noqa: BLE001 - report, don't crash the app
+        return jsonify(ok=False, message=f"{type(e).__name__}: {e}")
+
+
+# --------------------------------------------------------------------------- #
+# project system - list/create/open projects, chapter status, media settings +
+# live previews. See tools/framer/projects.py (storage) and webtoon_meta.py
+# (the best-effort series scraper). Chapter-scoped routes above are entered via
+# the before_request hook near the top of this file whenever a request carries
+# `project` + `ch_no`.
+# --------------------------------------------------------------------------- #
+@app.get("/api/projects")
+def api_list_projects():
+    return jsonify(projects=projects.list_projects())
+
+
+@app.post("/api/projects")
+def api_create_project():
+    """Body: JSON {name, url}. Creates the project, then tries to auto-fetch
+    series details from webtoons.com (title, chapter count, chapter list).
+    NEVER blocks on a failed fetch - `fetch.ok` tells the UI whether to fall
+    back to the manual "enter chapter range 1..N" input."""
+    data = request.get_json(silent=True) or {}
+    name = (data.get("name") or "").strip()
+    url = (data.get("url") or "").strip()
+    if not name:
+        return jsonify(error="Project name required."), 400
+    project = projects.create(name, url)
+
+    fetched = webtoon_meta.fetch_series(url) if url else None
+    if fetched:
+        project["series_title"] = fetched["title"]
+        project["source"] = "scraped"
+        projects.fill_chapters(project, fetched["chapters"])
+        projects.save(project)
+        fetch_result = {"ok": True, "title": fetched["title"], "total": fetched["total"]}
+    else:
+        fetch_result = {"ok": False, "reason": "Couldn't read the series page - enter "
+                                                "the chapter range manually."}
+
+    return jsonify(slug=project["slug"], project=project, fetch=fetch_result)
+
+
+@app.get("/api/projects/<slug>")
+def api_get_project(slug):
+    if not projects.exists(slug):
+        return jsonify(error=f"No such project: {slug}"), 404
+    project = projects.load(slug)
+    for ch in project["chapters"]:
+        try:
+            projects.derive_status(slug, ch["n"])
+        except Exception:  # noqa: BLE001 - a derive glitch must not break the page
+            pass
+    return jsonify(project=projects.load(slug))
+
+
+@app.delete("/api/projects/<slug>")
+def api_delete_project(slug):
+    if not projects.exists(slug):
+        return jsonify(error=f"No such project: {slug}"), 404
+    projects.delete(slug)
+    return jsonify(ok=True)
+
+
+@app.post("/api/projects/<slug>/chapters")
+def api_set_chapters(slug):
+    """Body: JSON {from, to} for the manual fallback range, or {refetch:true} to
+    retry the webtoons.com scrape."""
+    if not projects.exists(slug):
+        return jsonify(error=f"No such project: {slug}"), 404
+    data = request.get_json(silent=True) or {}
+    project = projects.load(slug)
+
+    if data.get("refetch"):
+        fetched = webtoon_meta.fetch_series(project["url"])
+        if not fetched:
+            return jsonify(error="Couldn't read the series page.", ok=False), 200
+        project["series_title"] = fetched["title"]
+        project["source"] = "scraped"
+        projects.fill_chapters(project, fetched["chapters"])
+        projects.save(project)
+        return jsonify(ok=True, project=project)
+
+    try:
+        start, end = int(data.get("from")), int(data.get("to"))
+    except (TypeError, ValueError):
+        return jsonify(error="from and to must be chapter numbers."), 400
+    if start < 1 or end < start:
+        return jsonify(error="Invalid chapter range."), 400
+    project["source"] = "manual"
+    projects.manual_range(project, start, end)
+    projects.save(project)
+    return jsonify(ok=True, project=project)
+
+
+@app.post("/api/projects/<slug>/chapters/<n>/status")
+def api_set_chapter_status(slug, n):
+    """Body: JSON {status, force?:bool}. `force` is used by "Mark complete" and
+    its reset action, which are manual overrides outside the normal ranking."""
+    data = request.get_json(silent=True) or {}
+    status = data.get("status")
+    try:
+        ch = projects.set_status(slug, n, status, force=bool(data.get("force")))
+    except (ValueError, KeyError) as e:
+        return jsonify(error=str(e)), 400
+    return jsonify(ok=True, chapter=ch)
+
+
+@app.get("/api/projects/<slug>/settings")
+def api_get_settings(slug):
+    if not projects.exists(slug):
+        return jsonify(error=f"No such project: {slug}"), 404
+    return jsonify(settings=projects.load(slug)["settings"])
+
+
+@app.post("/api/projects/<slug>/settings")
+def api_set_settings(slug):
+    """Body: JSON settings block (partial - deep-merged). Clamps sliders and
+    rewrites media_settings.json for every chapter that already has a work
+    dir, so a saved change reaches renders immediately."""
+    if not projects.exists(slug):
+        return jsonify(error=f"No such project: {slug}"), 404
+    data = request.get_json(silent=True) or {}
+    project = projects.update_settings(slug, data)
+    return jsonify(ok=True, settings=project["settings"])
+
+
+@app.post("/api/projects/<slug>/asset")
+def api_upload_asset(slug):
+    """Multipart: {kind: music|voice|watermark|background, file}. Saves the
+    file under projects/<slug>/assets/ and points the matching settings field
+    at it; does NOT switch mode/enabled by itself (stays whatever the
+    settings panel already has - selecting "custom" is a separate action)."""
+    if not projects.exists(slug):
+        return jsonify(error=f"No such project: {slug}"), 404
+    kind = (request.form.get("kind") or "").strip()
+    file_storage = request.files.get("file")
+    if not file_storage or not file_storage.filename:
+        return jsonify(error="file required"), 400
+    try:
+        rel_path = projects.save_asset(slug, kind, file_storage.filename, file_storage)
+    except ValueError as e:
+        return jsonify(error=str(e)), 400
+
+    project = projects.load(slug)
+    if kind == "music":
+        project["settings"]["music"]["file"] = rel_path
+    elif kind == "voice":
+        project["settings"]["voice"]["file"] = rel_path
+    elif kind == "watermark":
+        project["settings"]["watermark"]["file"] = rel_path
+    elif kind == "background":
+        project["settings"]["background"]["file"] = rel_path
+    projects.save(project)
+    projects.write_all_media_snapshots(slug)
+    return jsonify(ok=True, path=rel_path, name=Path(rel_path).name)
+
+
+@app.delete("/api/projects/<slug>/asset/<kind>")
+def api_delete_asset(slug, kind):
+    """Revert `kind` to its default (no file)."""
+    if kind not in projects.VALID_ASSET_KINDS:
+        return jsonify(error=f"unknown asset kind: {kind}"), 400
+    asset = projects.find_asset(slug, kind)
+    if asset:
+        asset.unlink(missing_ok=True)
+    project = projects.load(slug)
+    if kind == "music":
+        project["settings"]["music"] = {"mode": "default", "file": None}
+    elif kind == "voice":
+        project["settings"]["voice"] = {"mode": "default", "file": None}
+    elif kind == "watermark":
+        project["settings"]["watermark"]["file"] = None
+    elif kind == "background":
+        project["settings"]["background"] = {"mode": "blur", "file": None, "dim": 0.85}
+    projects.save(project)
+    projects.write_all_media_snapshots(slug)
+    return jsonify(ok=True)
+
+
+@app.get("/api/projects/<slug>/asset/<kind>")
+def api_get_asset(slug, kind):
+    asset = projects.find_asset(slug, kind)
+    if not asset:
+        return jsonify(error=f"No {kind} asset saved for this project."), 404
+    return send_from_directory(str(asset.parent), asset.name)
+
+
+# --------------------------------------------------------------------------- #
+# settings live previews - built with the SAME s7 compose/watermark helpers
+# used by the real render, so the preview is WYSIWYG by construction. Settings
+# are read from QUERY PARAMS (the in-progress form state), except an
+# image file, which must already be uploaded (see /asset above) since a
+# multi-megabyte file isn't practical to pass on every debounced preview tick.
+# --------------------------------------------------------------------------- #
+def _placeholder_frame(slug: str) -> Path:
+    """Any already-exported frame for this project to preview settings over,
+    else a simple generated character silhouette, cached on first use."""
+    chapters_dir = projects.project_dir(slug) / "chapters"
+    if chapters_dir.is_dir():
+        for frame in sorted(chapters_dir.glob("*/work/frames/frame_*.png")):
+            return frame
+    placeholder = projects.assets_dir(slug) / "_sample_placeholder.png"
+    if not placeholder.exists():
+        from PIL import ImageDraw
+        img = Image.new("RGB", (700, 1000), (58, 66, 86))
+        d = ImageDraw.Draw(img)
+        d.ellipse((210, 110, 490, 410), fill=(214, 196, 180))
+        d.rounded_rectangle((150, 420, 550, 900), radius=48, fill=(96, 108, 140))
+        img.save(placeholder)
+    return placeholder
+
+
+def _png_response(img) -> Response:
+    buf = io.BytesIO()
+    img.convert("RGB").save(buf, format="PNG")
+    buf.seek(0)
+    resp = send_file(buf, mimetype="image/png")
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
+@app.get("/api/projects/<slug>/preview/watermark.png")
+def api_preview_watermark(slug):
+    """Query: enabled, type, text, opacity, size, spacing, angle. An image-type
+    watermark uses the already-saved asset (see /asset).
+
+    BUG FIX: this used to build a non-empty `cfg` dict regardless of the
+    "Enabled" checkbox and never looked at it, so the preview always showed
+    the watermark tiled even when it was OFF - the actual render (via
+    media_settings_snapshot(), which correctly nulls the whole watermark
+    block when disabled) would then have no watermark at all, exactly
+    matching the "preview shows it, video doesn't" symptom. The preview now
+    mirrors the real gate: no watermark in the preview when disabled."""
+    enabled = (request.args.get("enabled", "1")).strip().lower() not in ("0", "false", "")
+    sample = _placeholder_frame(slug)
+    still = s7._compose_still(str(sample))
+
+    if enabled:
+        cfg = {
+            "type": request.args.get("type", "text"),
+            "text": request.args.get("text", ""),
+            "opacity": request.args.get("opacity", 0.12),
+            "size": request.args.get("size", 0.12),
+            "spacing": request.args.get("spacing", 1.0),
+            "angle": request.args.get("angle", -30),
+        }
+        watermark_asset = projects.find_asset(slug, "watermark")
+        cfg["file"] = str(watermark_asset) if watermark_asset else None
+        wm = s7._build_watermark_layer({"watermark": cfg})
+        if wm is not None:
+            still = Image.alpha_composite(still.convert("RGBA"), wm).convert("RGB")
+
+    return _png_response(still.resize((960, 540), Image.LANCZOS))
+
+
+@app.get("/api/projects/<slug>/preview/background.png")
+def api_preview_background(slug):
+    """Query: dim. Uses the already-saved background asset (see /asset)."""
+    bg_asset = projects.find_asset(slug, "background")
+    dim = request.args.get("dim", 0.85)
+    bg = s7._load_background({"background": {"file": str(bg_asset) if bg_asset else None,
+                                              "dim": dim}})
+    sample = _placeholder_frame(slug)
+    still = s7._compose_still(str(sample), bg)
+    return _png_response(still.resize((960, 540), Image.LANCZOS))
+
+
+# --------------------------------------------------------------------------- #
+# merge multiple chapters' rendered videos into one, in chapter order. Purely
+# a framer-side feature over already-rendered recap.mp4 files - it reads
+# finished output, nothing about the manifest/orchestrator/pipeline stages
+# needs to change for this.
+# --------------------------------------------------------------------------- #
+_MERGE_JOBS: dict[str, "subprocess.Popen | None"] = {}
+_MERGE_LOCK = threading.Lock()
+
+
+def _ffprobe_info(path: Path) -> dict | None:
+    """{"video": {width,height,codec_name}, "audio": {codec_name,sample_rate}}
+    for `path`, or None on any failure (missing ffprobe, unreadable file).
+    Used to decide whether a fast stream-copy merge is safe, or whether every
+    input needs normalizing first (see merge_stream)."""
+    ffprobe = shutil.which("ffprobe") or "ffprobe"
+    try:
+        out = subprocess.run(
+            [ffprobe, "-v", "error",
+             "-show_entries", "stream=index,codec_type,width,height,codec_name,sample_rate",
+             "-of", "json", str(path)],
+            capture_output=True, text=True, timeout=30)
+        streams = json.loads(out.stdout or "{}").get("streams") or []
+    except Exception:  # noqa: BLE001 - a bad probe must not crash the merge
+        return None
+    video = next((s for s in streams if s.get("codec_type") == "video"), None)
+    audio = next((s for s in streams if s.get("codec_type") == "audio"), None)
+    if video is None:
+        return None
+    return {"video": video, "audio": audio or {}}
+
+
+def _write_concat_list(paths: list[Path], dest: Path) -> None:
+    """ffmpeg concat-demuxer list file. Forward slashes side-step that format's
+    own backslash-escaping rules, which Windows paths would otherwise trip."""
+    lines = [f"file '{str(p).replace(chr(92), '/')}'" for p in paths]
+    dest.write_text("\n".join(lines), encoding="utf-8")
+
+
+def _build_merge_cmd_copy(ffmpeg: str, list_file: Path, out: Path) -> list[str]:
+    """Fast path: every input already shares video+audio codec and resolution,
+    so just concatenate the encoded bitstream - no re-encode, near-instant."""
+    return [ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-stats",
+            "-f", "concat", "-safe", "0", "-i", str(list_file),
+            "-c", "copy", str(out)]
+
+
+def _build_merge_cmd_reencode(ffmpeg: str, codec: str, paths: list[Path], out: Path) -> list[str]:
+    """Safe path for mismatched inputs: scale/letterbox every video to
+    1920x1080@24fps (never cropped or stretched) and resample audio to a
+    common format before concatenating, so a stray non-standard render can't
+    corrupt or desync the merge."""
+    cmd = [ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-stats"]
+    for p in paths:
+        cmd += ["-i", str(p)]
+    parts, vlabels, alabels = [], [], []
+    for i in range(len(paths)):
+        parts.append(f"[{i}:v]scale=1920:1080:force_original_aspect_ratio=decrease,"
+                     f"pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=24,format=yuv420p[v{i}]")
+        parts.append(f"[{i}:a]aresample=48000,aformat=channel_layouts=stereo[a{i}]")
+        vlabels.append(f"[v{i}]")
+        alabels.append(f"[a{i}]")
+    concat_inputs = "".join(v + a for v, a in zip(vlabels, alabels))
+    parts.append(f"{concat_inputs}concat=n={len(paths)}:v=1:a=1[vout][aout]")
+    cmd += ["-filter_complex", ";".join(parts), "-map", "[vout]", "-map", "[aout]"]
+    if codec == "h264_nvenc":
+        cmd += ["-c:v", "h264_nvenc", "-preset", "p4", "-b:v", "8M"]
+    else:
+        cmd += ["-c:v", "libx264", "-preset", "medium", "-crf", "20"]
+    cmd += ["-c:a", "aac", "-b:a", "192k", "-pix_fmt", "yuv420p", str(out)]
+    return cmd
+
+
+@app.get("/api/projects/<slug>/merges")
+def api_list_merges(slug):
+    if not projects.exists(slug):
+        return jsonify(error=f"No such project: {slug}"), 404
+    return jsonify(merges=projects.load(slug).get("merges", []))
+
+
+@app.get("/api/projects/<slug>/merge_stream")
+def merge_stream(slug):
+    """Concatenate several chapters' recap.mp4, in chapter order, into one
+    video under projects/<slug>/merged/. EventSource (GET) only:
+        ?chapters=1,3,5
+    Only chapters currently marked "complete" (re-derived fresh from disk, not
+    just the stored status) are accepted. When every input shares 1920x1080 +
+    a matching video AND audio codec, the merge is a fast stream copy;
+    otherwise every input is scaled/padded to 1920x1080@24fps first (see
+    _build_merge_cmd_reencode) so a mismatched render can't corrupt the merge.
+    Emits {type:start|log|done|error}; `done` carries the merged file's URL."""
+    raw = (request.args.get("chapters") or "").strip()
+    try:
+        chapters = sorted({int(x) for x in raw.split(",") if x.strip()})
+    except ValueError:
+        chapters = []
+
+    def stream():
+        if not projects.exists(slug):
+            yield _sse({"type": "error", "message": f"No such project: {slug}"})
+            return
+        if len(chapters) < 2:
+            yield _sse({"type": "error", "message": "Select at least 2 complete chapters to merge."})
+            return
+
+        with _MERGE_LOCK:
+            busy = slug in _MERGE_JOBS
+            if not busy:
+                _MERGE_JOBS[slug] = None
+        if busy:
+            yield _sse({"type": "error", "message": "A merge is already running for this project."})
+            return
+
+        proc = None
+        try:
+            yield _sse({"type": "start", "message": f"Checking {len(chapters)} chapter(s)…"})
+            paths: list[Path] = []
+            for n in chapters:
+                ch = projects.get_chapter(projects.load(slug), n)
+                if ch is None:
+                    yield _sse({"type": "error", "message": f"No chapter {n} in this project."})
+                    return
+                try:
+                    ch = projects.derive_status(slug, n)  # refuse a stale "complete" the disk disagrees with
+                except KeyError:
+                    yield _sse({"type": "error", "message": f"No chapter {n} in this project."})
+                    return
+                if ch["status"] != "complete":
+                    yield _sse({"type": "error",
+                                "message": f"Chapter {n} is not marked complete (status: {ch['status']})."})
+                    return
+                video = projects.chapter_video_path(slug, n)
+                if not video.is_file():
+                    yield _sse({"type": "error", "message": f"Chapter {n} has no rendered recap.mp4."})
+                    return
+                paths.append(video)
+
+            yield _sse({"type": "log", "line": f"Probing {len(paths)} video(s)…"})
+            infos = []
+            for n, p in zip(chapters, paths):
+                info = _ffprobe_info(p)
+                if info is None:
+                    yield _sse({"type": "error", "message": f"Could not read video info for chapter {n}."})
+                    return
+                infos.append(info)
+                v, a = info["video"], info.get("audio") or {}
+                yield _sse({"type": "log",
+                            "line": f"  ch {n}: {v.get('width')}x{v.get('height')} {v.get('codec_name')} "
+                                    f"/ audio {a.get('codec_name', '?')}@{a.get('sample_rate', '?')}"})
+
+            uniform = (
+                len({(i["video"].get("width"), i["video"].get("height"), i["video"].get("codec_name"))
+                     for i in infos}) == 1
+                and infos[0]["video"].get("width") == 1920 and infos[0]["video"].get("height") == 1080
+                and len({(i.get("audio") or {}).get("codec_name") for i in infos}) == 1
+                and len({(i.get("audio") or {}).get("sample_rate") for i in infos}) == 1
+            )
+            out_dir = projects.merged_dir(slug)
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+            name = f"merged_{stamp}_ch" + "-".join(str(n) for n in chapters) + ".mp4"
+            out = out_dir / name
+            ffmpeg = s7._ffmpeg()
+
+            if uniform:
+                yield _sse({"type": "log", "line": "All inputs are 1920x1080 with matching codecs - "
+                                                    "fast stream-copy merge (no re-encode)."})
+                list_file = out_dir / "_concat_list.txt"
+                _write_concat_list(paths, list_file)
+                cmd = _build_merge_cmd_copy(ffmpeg, list_file, out)
+                mode = "copy"
+            else:
+                codec = "h264_nvenc" if s7._has_nvenc(ffmpeg) else "libx264"
+                yield _sse({"type": "log",
+                            "line": f"Inputs differ in resolution/codec - normalizing every clip to "
+                                    f"1920x1080@24fps before merging ({codec}, slower)."})
+                cmd = _build_merge_cmd_reencode(ffmpeg, codec, paths, out)
+                mode = "reencode"
+
+            yield _sse({"type": "log", "line": "$ " + " ".join(cmd)})
+            proc = subprocess.Popen(cmd, cwd=str(ROOT), stdout=subprocess.PIPE,
+                                    stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                                    text=True, bufsize=1, encoding="utf-8", errors="replace")
+            with _MERGE_LOCK:
+                _MERGE_JOBS[slug] = proc
+            for line in proc.stdout:
+                yield _sse({"type": "log", "line": line.rstrip("\n")})
+            proc.wait()
+
+            if proc.returncode == 0 and out.is_file():
+                projects.record_merge(slug, {"file": f"merged/{name}", "chapters": chapters,
+                                             "mode": mode, "created_at": _now_iso()})
+                url = f"/projects/{slug}/merged/{name}"
+                yield _sse({"type": "done", "ok": True, "video": url,
+                            "message": f"Merged {len(chapters)} chapter(s) -> {name}"})
+            else:
+                yield _sse({"type": "done", "ok": False,
+                            "message": f"ffmpeg exited {proc.returncode}."})
+        except GeneratorExit:                              # client disconnected / Stop
+            if proc and proc.poll() is None:
+                proc.terminate()
+            raise
+        except Exception as e:  # noqa: BLE001 - report, don't crash the stream
+            yield _sse({"type": "error", "message": f"{type(e).__name__}: {e}"})
+        finally:
+            if proc and proc.poll() is None:
+                try:
+                    proc.terminate()
+                except Exception:  # noqa: BLE001
+                    pass
+            with _MERGE_LOCK:
+                _MERGE_JOBS.pop(slug, None)
+
+    return Response(stream(), mimetype="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no",
+                             "Connection": "keep-alive"})
+
+
+@app.get("/projects/<slug>/merged/<path:name>")
+def merged_file(slug, name):
+    """Serve a merged video for in-page play/download (Range-friendly, same
+    as /output/<chapter_id>/<name>)."""
+    d = projects.merged_dir(slug)
+    if not (d / name).exists():
+        return jsonify(error=f"{name} not found for this project."), 404
+    return send_from_directory(str(d), name)
 
 
 def main() -> None:

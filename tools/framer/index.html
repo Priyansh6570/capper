@@ -3,267 +3,935 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Framer — manual frame selection</title>
+<title>Framer - manual frame selection</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
-  /* DARK theme (default) — all colors flow through these vars so the LIGHT
-     override below re-themes the strip, cards and controls together. */
+  /* ==========================================================================
+     Framer skin: IBM Plex Sans, cool neutrals, a single blue accent for primary
+     actions, green frames / red blur, soft radii. LIGHT is the default
+     (body.light); DARK is the class-less fallback, so the existing theme toggle
+     and the server-side /settings persistence keep working unchanged.
+     ========================================================================== */
   :root {
-    --bg:#15171c; --panel:#1e2128; --line:#2a2e37;
-    --accent:#5aa9ff; --accent-ink:#06203f;
-    --frame:#34d399; --blur:#f87171; --blur-ink:#3a0d0d;
-    --txt:#e6e8ec; --muted:#9aa1ad;
-    --input:#12141a; --input2:#0e1014;
-    --btn:#2b303b; --btn-hover:#343a47;
-    --stage:#0c0d11; --pill:#262b34; --chip:#0c0d11; --toast:#222732;
-    --frame-fill:rgba(52,211,153,.08); --frame-fill2:rgba(52,211,153,.16);
-    --blur-fill:rgba(248,113,113,.16); --blur-fill2:rgba(248,113,113,.10);
-    --overlay:rgba(10,12,16,.74);
+    --bg:#0b0d10; --panel:#11141a; --surface:#171b22;
+    --line:#242a33; --rule:#242a33;
+    --txt:#e7eaf0; --muted:#98a2ae;
+    --accent:#4d84ff; --accent-ink:#ffffff; --accent-hover:#6a99ff; --accent-press:#3a6fe0;
+    --accent-tint:#152340;
+    --frame:#3ecf8e; --blur:#f4696b; --blur-ink:#1a0d0e;
+    --ok:#3ecf8e; --warn:#e9b949;
+    --input:#0e1116; --input2:#0a0c10;
+    --btn:#1e232b; --btn-hover:#272e38;
+    --stage:#07080b; --pill:#1e232b; --chip:#11141a; --toast:#151a21;
+    --frame-fill:rgba(62,207,142,.10); --frame-fill2:rgba(62,207,142,.20);
+    --blur-fill:rgba(244,105,107,.18); --blur-fill2:rgba(244,105,107,.12);
+    --overlay:rgba(8,10,14,.78);
+    --shadow:0 12px 32px rgba(0,0,0,.5);
+    --r:9px; --r2:7px; --r3:5px;
   }
   body.light {
-    --bg:#f4f5f7; --panel:#ffffff; --line:#d3d7de;
-    --accent:#1f6feb; --accent-ink:#ffffff;
-    --frame:#0f9d63; --blur:#d23b3b; --blur-ink:#ffffff;
-    --txt:#1c1f24; --muted:#5a626e;
-    --input:#ffffff; --input2:#eceef1;
-    --btn:#e7e9ee; --btn-hover:#dde0e7;
-    --stage:#dfe2e7; --pill:#e7eaef; --chip:#ffffff; --toast:#ffffff;
-    --frame-fill:rgba(15,157,99,.10); --frame-fill2:rgba(15,157,99,.20);
-    --blur-fill:rgba(210,59,59,.16); --blur-fill2:rgba(210,59,59,.12);
-    --overlay:rgba(244,245,247,.74);
+    --bg:#eef0f4; --panel:#ffffff; --surface:#f6f7f9;
+    --line:#dfe3e9; --rule:#dfe3e9;
+    --txt:#141821; --muted:#59616e;
+    --accent:#2f68e8; --accent-ink:#ffffff; --accent-hover:#1e52c4; --accent-press:#17429e;
+    --accent-tint:#e7eefd;
+    --frame:#0f8a4a; --blur:#c0332f; --blur-ink:#ffffff;
+    --ok:#0f8a4a; --warn:#8a6100;
+    --input:#ffffff; --input2:#eaedf2;
+    --btn:#eef1f5; --btn-hover:#e2e6ed;
+    --stage:#dce0e7; --pill:#eef1f5; --chip:#ffffff; --toast:#ffffff;
+    --frame-fill:rgba(15,138,74,.10); --frame-fill2:rgba(15,138,74,.20);
+    --blur-fill:rgba(192,51,47,.16); --blur-fill2:rgba(192,51,47,.11);
+    --overlay:rgba(238,240,244,.8);
+    --shadow:0 10px 28px rgba(20,30,60,.12);
   }
-  * { box-sizing: border-box; }
-  body { margin:0; font:14px/1.45 system-ui,Segoe UI,Roboto,sans-serif;
-         background:var(--bg); color:var(--txt); height:100vh; overflow:hidden; }
-  .app { display:flex; height:100vh; }
-  .left { flex:1; min-width:0; display:flex; flex-direction:column; position:relative; }
-  .divider { flex:0 0 6px; cursor:col-resize; background:var(--line); }
-  .divider:hover, .divider.active { background:var(--accent); }
-  .right { width:460px; flex:0 0 auto; display:flex; flex-direction:column;
-           border-left:1px solid var(--line); }
-  /* download panel (top of the strip column) */
-  .dlbar { padding:10px 12px; border-bottom:1px solid var(--line); background:var(--panel);
-           display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
-  .dltag { font-weight:600; color:var(--accent); margin-right:2px; }
-  header { padding:10px 12px; border-bottom:1px solid var(--line);
-           display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
-  h1 { font-size:14px; margin:0 8px 0 0; font-weight:600; }
-  input[type=text], textarea { background:var(--input); color:var(--txt);
-    border:1px solid var(--line); border-radius:6px; padding:6px 8px; font:inherit; }
-  input[type=text] { width:230px; }
-  textarea { width:100%; height:90px; resize:vertical; }
-  button { background:var(--btn); color:var(--txt); border:1px solid var(--line);
-    border-radius:6px; padding:6px 10px; cursor:pointer; font:inherit; }
-  button:hover { background:var(--btn-hover); }
-  button.primary { background:var(--accent); color:var(--accent-ink); border-color:var(--accent);
-    font-weight:600; }
-  button.on { background:var(--blur); color:var(--blur-ink); border-color:var(--blur); font-weight:600; }
-  select { background:var(--btn); color:var(--txt); border:1px solid var(--line);
-    border-radius:6px; padding:3px 6px; font:inherit; cursor:pointer; }
-  button.seg { padding:3px 9px; font-size:12px; }
-  button.seg.on { background:var(--accent); color:var(--accent-ink); border-color:var(--accent); font-weight:600; }
+  * { box-sizing:border-box; scrollbar-width:thin; scrollbar-color:var(--line) transparent; }
+  body { margin:0; height:100vh; overflow:hidden; background:var(--bg); color:var(--txt);
+         font:400 14px/1.5 "IBM Plex Sans", system-ui, sans-serif;
+         -webkit-font-smoothing:antialiased; }
+  .ic { flex:none; display:block; }
+  .lbl { font-size:10px; text-transform:uppercase; letter-spacing:.11em; color:var(--muted);
+         font-weight:700; }
   .muted { color:var(--muted); }
   .hint { font-size:12px; color:var(--muted); }
+  .mono { font-family:ui-monospace,SFMono-Regular,Consolas,monospace; }
+  :focus { outline:none; }
+  :focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+  ::selection { background:color-mix(in srgb, var(--accent) 30%, transparent); }
+  ::-webkit-scrollbar { width:11px; height:11px; }
+  ::-webkit-scrollbar-track { background:transparent; }
+  ::-webkit-scrollbar-thumb { background:var(--line); border:3px solid transparent;
+                              background-clip:content-box; }
+  ::-webkit-scrollbar-thumb:hover { background:var(--muted); background-clip:content-box; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+  @keyframes indet { 0% { margin-left:-38%; } 100% { margin-left:100%; } }
+  @keyframes pop { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:none; } }
 
-  /* zoom toolbar */
-  .toolbar { padding:8px 12px; border-bottom:1px solid var(--line);
-             display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
-  .pill { font-size:12px; padding:2px 8px; border-radius:20px; background:var(--pill); }
-  #zoom { width:160px; }
-  .zlbl { font-variant-numeric:tabular-nums; min-width:96px; }
+  /* --- controls ----------------------------------------------------------- */
+  input[type=text], input[type=number], textarea, select {
+    background:var(--input); color:var(--txt); border:1px solid var(--line);
+    border-radius:var(--r2); padding:7px 9px; font:inherit; font-size:13px; }
+  input[type=text] { width:230px; }
+  textarea { width:100%; height:86px; resize:vertical; }
+  input::placeholder, textarea::placeholder { color:var(--muted); }
+  input:focus, textarea:focus, select:focus { border-color:var(--accent); }
+  select { cursor:pointer; padding:6px 8px; }
+  input[type=range] { accent-color:var(--accent); }
+  button {
+    display:inline-flex; align-items:center; justify-content:flex-start; gap:7px;
+    background:var(--btn); color:var(--txt); border:1px solid var(--line); border-radius:var(--r2);
+    padding:8px 11px; cursor:pointer; font-family:inherit; font-size:13px; font-weight:700;
+    line-height:1.2; white-space:nowrap; }
+  button:hover { background:var(--btn-hover); }
+  button:active { background:var(--line); }
+  button.primary { background:var(--accent); color:var(--accent-ink); border-color:var(--accent); }
+  button.primary:hover { background:var(--accent-hover); }
+  button.primary:active { background:var(--accent-press); }
+  button.on { background:var(--accent); color:var(--accent-ink); border-color:var(--accent); }
+  button.ghost { background:transparent; }
+  button.ghost:hover { background:var(--btn); }
+  button.small { padding:6px 9px; font-size:12px; }
+  button.icon { padding:7px; }
+  button:disabled { opacity:.45; cursor:not-allowed; }
+  button.busy { position:relative; color:transparent !important; }
+  button.busy > * { visibility:hidden; }
+  button.busy::after { content:""; position:absolute; left:50%; top:50%; width:14px; height:14px;
+    margin:-7px 0 0 -7px; border:2px solid currentColor; border-top-color:transparent;
+    border-radius:50%; animation:spin .7s linear infinite;
+    color:var(--txt); visibility:visible; }
+  button.primary.busy::after { color:var(--accent-ink); }
+  .danger { color:var(--blur); }
+  .pill { font-size:11px; padding:3px 8px; background:var(--pill); border:1px solid var(--line);
+          border-radius:999px;
+          font-weight:700; letter-spacing:.03em; }
+  a { color:var(--accent); text-underline-offset:3px; }
+  a:hover { color:var(--accent-press); }
 
-  /* strip view: scrollable stage holding a zoomed "world" of stacked tiles */
+  /* --- shell: apphead / sidebar / workspace / script -----------------------
+     .app2 = column: .apphead, then .appbody (row: aside.sidebar, main.workspace,
+     .divider, aside.right), then the mobile-only .tabbar.
+     -------------------------------------------------------------------------- */
+  .app2 { display:flex; flex-direction:column; height:100vh; }
+  .appbody { flex:1; min-height:0; display:flex; }
+  .divider { flex:0 0 8px; cursor:col-resize; background:var(--line); touch-action:none; }
+  .divider:hover, .divider.active { background:var(--accent); }
+  .right { width:460px; flex:0 0 auto; min-height:0; display:flex; flex-direction:column;
+           border-left:1px solid var(--line); background:var(--bg); }
+
+  /* app header */
+  .apphead { flex:none; min-height:48px; display:flex; align-items:center; gap:10px;
+            padding:6px 12px; background:var(--panel); border-bottom:1px solid var(--line);
+            min-width:0; flex-wrap:wrap; }
+  .apphead #chapId, .apphead #globalProg { min-width:0; }
+  .apphead .actions { flex:none; margin-left:auto; display:flex; gap:8px; align-items:center; }
+  .apphead-chip { display:none; }
+  @media (min-width:640px) { .apphead-chip { display:inline; } }
+  .sidebar-toggle { display:none; }
+  .brandmark { width:24px; height:24px; background:var(--accent); color:var(--accent-ink);
+               border-radius:var(--r3);
+               display:flex; align-items:center; justify-content:center; flex:none; }
+  .brand { font-weight:800; font-size:14px; letter-spacing:.08em; text-transform:uppercase; }
+  .apphead .sep { width:1px; height:22px; background:var(--line); }
+  #chapId { width:132px; flex:0 1 132px; }
+
+  /* global progress */
+  #globalProg { display:none; align-items:center; gap:9px; flex:1 1 160px; max-width:360px; }
+  #globalProg.on { display:flex; }
+  #globalProg .gtrack { flex:1; height:6px; background:var(--input2); border:1px solid var(--line);
+                        border-radius:999px; overflow:hidden; }
+  #globalProg .gfill { height:100%; width:0; background:var(--accent); transition:width .3s ease; }
+  #globalProg.indet .gfill { width:38%; animation:indet 1.1s ease-in-out infinite; }
+  #globalProg .glbl { font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.1em;
+                      color:var(--accent); white-space:nowrap; }
+
+  /* left sidebar: Chapter Source / Stitch Strip / Draw Tool / Export & Render */
+  .sidebar { flex:0 0 300px; min-height:0; overflow-y:auto; background:var(--panel);
+             border-right:1px solid var(--line); display:flex; flex-direction:column;
+             gap:12px; padding:12px; }
+  #srcpanel { display:flex; flex-direction:column; gap:12px; }
+  #srcpanel[hidden] { display:none; }
+  .sidecard { background:var(--surface); border:1px solid var(--line); border-radius:var(--r);
+              padding:12px; display:flex; flex-direction:column; gap:9px; }
+  .sidecard h2 { margin:0; display:flex; align-items:center; gap:8px; font-size:11px;
+                 font-weight:800; text-transform:uppercase; letter-spacing:.09em; color:var(--muted); }
+  .sidefield { display:flex; flex-direction:column; gap:5px; }
+  .sidefield .lbl { display:block; }
+  .sidefield input[type=text] { width:100%; }
+  .sidecard .row2 { display:flex; gap:8px; }
+  .sidecard .row2 > input { flex:1; min-width:0; }
+  .sidecard button.wide { width:100%; justify-content:center; }
+  .drawtabs { display:flex; gap:6px; }
+  .drawtabs button { flex:1; justify-content:center; }
+  #dlHint { display:block; }
+
+  /* stage workspace */
+  .workspace { flex:1; min-width:0; min-height:0; display:flex; flex-direction:column; position:relative; }
+  .stagebar { flex:none; display:flex; align-items:center; gap:10px; padding:8px 12px;
+              background:var(--panel); border-bottom:1px solid var(--line); flex-wrap:wrap; }
+  .zoomrow { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+  #stageHint { flex:1 1 160px; min-width:0; overflow:hidden; text-overflow:ellipsis;
+               white-space:nowrap; }
+  #stripInfo { font-size:11px; color:var(--muted); font-family:ui-monospace,Consolas,monospace;
+               overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:290px;
+               flex:0 1 auto; }
+  #zoom { width:170px; flex:none; -webkit-appearance:none; appearance:none; height:20px;
+          background:transparent; cursor:pointer; }
+  #zoom::-webkit-slider-runnable-track { height:6px; background:var(--input2);
+          border:1px solid var(--line); border-radius:999px; }
+  #zoom::-webkit-slider-thumb { -webkit-appearance:none; appearance:none; width:15px; height:15px;
+          margin-top:-5px; border-radius:50%; background:var(--accent);
+          border:2px solid var(--panel); box-shadow:0 0 0 1px var(--accent); }
+  #zoom::-moz-range-track { height:6px; background:var(--input2); border:1px solid var(--line);
+          border-radius:999px; }
+  #zoom::-moz-range-thumb { width:13px; height:13px; border-radius:50%; background:var(--accent);
+          border:2px solid var(--panel); box-shadow:0 0 0 1px var(--accent); }
+  .zlbl { font-variant-numeric:tabular-nums; min-width:128px;
+          font-family:ui-monospace,Consolas,monospace; }
+
   .stage { flex:1; overflow:auto; background:var(--stage); position:relative; }
   #world { position:relative; transform-origin:0 0; cursor:crosshair; }
-  img.tile { position:absolute; left:0; display:block; image-rendering:auto;
-             pointer-events:none; user-select:none; }
+  img.tile { position:absolute; left:0; display:block; pointer-events:none; user-select:none; }
   #boxes, #rubber { position:absolute; left:0; top:0; pointer-events:none; }
   .box { position:absolute; pointer-events:none; box-sizing:border-box; }
   .box.frame { border:2px solid var(--frame); background:var(--frame-fill); }
   .box.frame.cur { border-width:3px; background:var(--frame-fill2); }
-  .box.frame::after { content:attr(data-lbl); position:absolute; left:0; top:-16px;
-    font-size:11px; color:var(--frame); background:var(--chip); padding:0 3px; border-radius:2px; }
+  .box.frame::after { content:attr(data-lbl); position:absolute; left:0; top:-18px; border-radius:3px;
+    font-size:10px;
+    font-weight:700; text-transform:uppercase; letter-spacing:.06em; color:var(--accent-ink);
+    background:var(--frame); padding:1px 5px; }
   .box.blur { border:2px solid var(--blur); background:var(--blur-fill); }
-  #rubber { display:none; border:1.5px dashed var(--frame); background:var(--frame-fill); }
+  #rubber { display:none; border:2px dashed var(--frame); background:var(--frame-fill); }
   #rubber.blur { border-color:var(--blur); background:var(--blur-fill2); }
 
-  /* loading overlay (covers the strip pane) */
-  .overlay { position:absolute; inset:0; background:var(--overlay); display:none;
-             flex-direction:column; align-items:center; justify-content:center; gap:14px; z-index:40; }
-  .overlay.show { display:flex; }
-  .spinner { width:42px; height:42px; border:4px solid var(--line); border-top-color:var(--accent);
-             border-radius:50%; animation:spin .8s linear infinite; }
-  @keyframes spin { to { transform:rotate(360deg); } }
-  .ovmsg { font-size:14px; color:var(--txt); font-weight:600; }
+  /* activity panel - docked under the stage, collapsible */
+  .actpanel { flex:none; max-height:190px; display:flex; flex-direction:column;
+              border-top:1px solid var(--line); background:var(--panel); }
+  .actpanel.collapsed #status { display:none; }
+  .acthead { flex:none; display:flex; align-items:center; gap:8px; padding:8px 12px; }
+  .acthead .lbl { margin-right:auto; }
+  .acthead .chev { transition:transform .15s ease; }
+  .actpanel.collapsed .acthead .chev { transform:rotate(-90deg); }
 
-  /* script list */
-  .rtop { padding:10px 12px; border-bottom:1px solid var(--line); }
-  .lines { flex:1; overflow:auto; padding:8px; }
-  .row { background:var(--panel); border:1px solid var(--line); border-radius:8px;
-         padding:8px; margin-bottom:0; display:flex; gap:8px; }
-  .row.active { border-color:var(--accent); box-shadow:0 0 0 1px var(--accent); }
+  /* loading overlay (covers the stage workspace only) */
+  .overlay { position:absolute; inset:0; background:var(--overlay); display:none;
+             flex-direction:column; align-items:center; justify-content:center; gap:16px; z-index:40; }
+  .overlay.show { display:flex; }
+  .spinner { width:38px; height:38px; border:3px solid var(--line); border-top-color:var(--accent);
+             border-radius:50%; animation:spin .8s linear infinite; }
+  .ovmsg { font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:.14em; }
+
+  /* mobile bottom tab bar (Strip / Script) + sidebar-drawer backdrop - hidden on desktop */
+  .tabbar { display:none; }
+  #sidebarBackdrop { display:none; }
+
+  /* --- script panel ------------------------------------------------------- */
+  .rtop { padding:11px 12px; border-bottom:1px solid var(--line); background:var(--panel); }
+  .lines { flex:1; min-height:0; overflow-y:auto; overflow-x:hidden; scrollbar-gutter:stable;
+           padding:9px; display:flex; flex-direction:column; }
+  .row { background:var(--panel); border:1px solid var(--line); border-radius:var(--r);
+         padding:9px; display:flex; gap:9px; }
+  .row.active { border-color:var(--accent); box-shadow:inset 3px 0 0 var(--accent); }
   .row.dragover { border-color:var(--frame); }
-  .grip { cursor:grab; color:var(--muted); user-select:none; padding:2px 2px 0; }
+  .grip { cursor:grab; color:var(--muted); user-select:none; padding:3px 1px 0; }
   .rbody { flex:1; min-width:0; }
   .ltext { width:100%; background:var(--input); color:var(--txt); border:1px solid var(--line);
-           border-radius:6px; padding:5px 6px; font:inherit; resize:vertical; min-height:34px; }
-  .rmeta { display:flex; gap:8px; align-items:center; margin-top:6px; flex-wrap:wrap; }
-  .rmeta label { font-size:12px; color:var(--muted); display:flex; gap:4px; align-items:center; }
-  .dur { width:62px; }
-  .idx { font-weight:600; color:var(--accent); margin-right:4px; }
-  .small { padding:3px 7px; font-size:12px; }
-  .danger { color:var(--blur); }
-  .status { padding:8px 12px; border-top:1px solid var(--line); font-size:12px;
-            color:var(--muted); white-space:pre-wrap; max-height:150px; overflow:auto; }
+           border-radius:var(--r2); padding:6px 8px; font:inherit; font-size:13px; resize:vertical; min-height:34px; }
+  .rmeta { display:flex; gap:7px; align-items:center; margin-top:7px; flex-wrap:wrap; }
+  .rmeta label { font-size:11px; color:var(--muted); display:flex; gap:5px; align-items:center; }
+  .dur { width:66px; }
+  .idx { font-weight:800; color:var(--accent); margin-right:3px;
+         font-family:ui-monospace,Consolas,monospace; }
+  .small { padding:6px 9px; font-size:12px; }
+  button.seg { padding:5px 10px; font-size:11px; text-transform:uppercase; letter-spacing:.06em; }
+  button.seg.on { background:var(--accent); color:var(--accent-ink); border-color:var(--accent); }
 
-  /* insert bar between lines (hover to reveal) */
-  .insbar { display:flex; align-items:center; justify-content:center; height:14px; }
-  .insbar button { padding:0 8px; font-size:11px; line-height:16px; opacity:.28;
-                   transition:opacity .12s; }
-  .insbar:hover button { opacity:1; }
+  .insbar { display:flex; align-items:center; justify-content:center; height:16px; }
+  .insbar button { padding:1px 9px; font-size:10px; line-height:16px; opacity:.25;
+                   transition:opacity .12s; text-transform:uppercase; letter-spacing:.08em;
+                   background:transparent; border-color:transparent; color:var(--muted); }
+  .insbar:hover button { opacity:1; background:var(--btn); color:var(--txt); }
 
-  /* per-line frame strip */
-  .frames { display:flex; gap:6px; margin-top:8px; flex-wrap:wrap; }
-  .fcard { width:96px; border:1px solid var(--line); border-radius:6px; padding:4px;
-           background:var(--stage); }
-  .fcard.cur { border-color:var(--frame); box-shadow:0 0 0 1px var(--frame); }
-  .fthumb { width:86px; height:64px; border-radius:4px; overflow:hidden; cursor:pointer;
-            background:#000 center/contain no-repeat; display:flex; align-items:center;
+  .frames { display:flex; gap:7px; margin-top:9px; flex-wrap:wrap; }
+  .fcard { width:100px; border:1px solid var(--line); border-radius:var(--r2); padding:4px;
+           background:var(--surface); }
+  .fcard.cur { border-color:var(--frame); box-shadow:inset 0 0 0 1px var(--frame); }
+  .fthumb { width:90px; height:66px; border-radius:var(--r3); overflow:hidden; cursor:pointer;
+            background:var(--input2) center/contain no-repeat; display:flex; align-items:center;
             justify-content:center; font-size:10px; color:var(--muted); }
   .fthumb.flip { transform:scaleX(-1); }
-  .fctl { display:flex; gap:2px; align-items:center; margin-top:3px; font-size:11px; }
-  .fctl button { padding:1px 5px; font-size:11px; }
-  .fn { color:var(--frame); font-weight:600; margin-right:auto; }
-  .blurchip { font-size:10px; color:var(--blur); }
-  .addhint { width:96px; height:88px; border:1px dashed var(--line); border-radius:6px;
-             display:flex; align-items:center; justify-content:center; text-align:center;
-             font-size:11px; color:var(--muted); padding:4px; }
+  .fctl { display:flex; gap:2px; align-items:center; margin-top:4px; font-size:11px; }
+  .fctl button { padding:2px 4px; font-size:11px; background:transparent; border-color:transparent;
+                 color:var(--muted); }
+  .fctl button:hover { background:var(--btn); color:var(--txt); }
+  .fctl label { font-size:10px; text-transform:uppercase; letter-spacing:.06em; }
+  .fn { color:var(--frame); font-weight:800; margin-right:auto;
+        font-family:ui-monospace,Consolas,monospace; }
+  .blurchip { font-size:9px; font-weight:700; text-transform:uppercase; letter-spacing:.06em;
+              color:var(--blur); }
+  .addhint { width:100px; height:92px; border:1px dashed var(--line); border-radius:var(--r2);
+             display:flex;
+             align-items:center; justify-content:center; text-align:center; font-size:10px;
+             text-transform:uppercase; letter-spacing:.06em; color:var(--muted); padding:6px; }
 
-  /* duration field clarity */
-  .durwrap { display:flex; gap:4px; align-items:center; }
-  .durwrap.auto { opacity:.6; }
+  .durwrap { display:flex; gap:5px; align-items:center; }
+  .durwrap.auto { opacity:.65; }
   .durwrap.auto .durlbl { font-style:italic; }
   .dur:disabled { background:var(--input2); color:var(--muted); cursor:not-allowed; }
-  button:disabled { opacity:.4; cursor:default; }
 
-  /* generate (audio+video) panel: buttons, progress bar, live log, result video */
-  .genbar { padding:10px 12px; border-top:1px solid var(--line);
-            display:flex; flex-direction:column; gap:7px; }
+  /* export + generate */
+  .exportbar { padding:10px 12px; border-top:1px solid var(--line); background:var(--panel);
+               display:flex; gap:9px; align-items:center; flex-wrap:wrap; }
+  #exportHint { font-family:ui-monospace,Consolas,monospace; font-size:11px; color:var(--muted);
+                overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1; min-width:0; }
+  .genbar { padding:10px 12px; border-top:1px solid var(--line); background:var(--panel);
+            display:flex; flex-direction:column; gap:8px; }
+  .genbar.running { box-shadow:inset 3px 0 0 var(--accent); }
   .progress { display:none; height:8px; background:var(--input2); border:1px solid var(--line);
-              border-radius:6px; overflow:hidden; }
-  .progress .bar { height:100%; width:0; background:var(--accent); border-radius:6px;
+              border-radius:999px; overflow:hidden; }
+  .progress .bar { height:100%; width:0; background:var(--accent); border-radius:999px;
                    transition:width .3s ease; }
-  .progress.indet .bar { width:35% !important;
-    background:linear-gradient(90deg, transparent, var(--accent), transparent);
-    animation:indet 1.1s ease-in-out infinite; }
-  @keyframes indet { 0% { margin-left:-35%; } 100% { margin-left:100%; } }
+  .progress.indet .bar { width:38% !important; animation:indet 1.1s ease-in-out infinite; }
   .progress.err .bar { background:var(--blur); width:100% !important; animation:none; }
-  .genlog { font:12px/1.45 ui-monospace,Consolas,monospace; color:var(--muted);
-            background:var(--input2); border:1px solid var(--line); border-radius:6px;
-            padding:6px 8px; max-height:170px; overflow:auto; white-space:pre-wrap;
-            display:none; }
+  .genlog { font:12px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace; color:var(--muted);
+            background:var(--input2); border:1px solid var(--line); border-radius:var(--r2);
+            padding:7px 9px; max-height:168px; overflow:auto; white-space:pre-wrap; display:none; }
   .genlog:not(:empty) { display:block; }
-  .genvideo { width:100%; border-radius:8px; background:#000; margin-top:2px; }
-  .dllink { color:var(--accent); text-decoration:none; font-weight:600; }
-  .dllink:hover { text-decoration:underline; }
+  .genvideo { width:100%; background:#000; border-radius:var(--r2); }
+  .jobcard { border:1px solid var(--ok); background:var(--surface); border-radius:var(--r);
+             padding:10px;
+             display:flex; flex-direction:column; gap:8px; }
+  .jobhead { display:flex; align-items:center; gap:7px; font-size:12px; font-weight:800;
+             text-transform:uppercase; letter-spacing:.08em; color:var(--ok); }
+  .jobpath { margin-left:auto; font:11px ui-monospace,Consolas,monospace; color:var(--muted);
+             text-transform:none; letter-spacing:0; font-weight:400; overflow:hidden;
+             text-overflow:ellipsis; white-space:nowrap; max-width:52%; }
+  .jobacts { display:flex; gap:8px; flex-wrap:wrap; }
+  .btnlink { display:inline-flex; align-items:center; gap:7px; padding:8px 11px;
+             border:1px solid var(--line); border-radius:var(--r2);
+             background:var(--btn); color:var(--txt);
+             text-decoration:none; font-size:12px; font-weight:700; }
+  .btnlink:hover { background:var(--btn-hover); color:var(--txt); text-decoration:none; }
 
-  /* undo toast */
-  .toast { position:fixed; left:50%; bottom:22px; transform:translateX(-50%) translateY(16px);
-           background:var(--toast); border:1px solid var(--line); border-radius:8px;
-           padding:8px 12px; display:flex; gap:10px; align-items:center;
-           box-shadow:0 8px 28px #0006; opacity:0; pointer-events:none;
-           transition:opacity .15s, transform .15s; z-index:50; font-size:13px; }
-  .toast.show { opacity:1; transform:translateX(-50%) translateY(0); pointer-events:auto; }
+  /* gemini parts result (Download panel) */
+  .gplist { display:flex; flex-direction:column; gap:5px; }
+  .gprow { display:flex; align-items:center; gap:8px; font:11px ui-monospace,Consolas,monospace;
+           color:var(--txt); background:var(--input2); border:1px solid var(--line);
+           border-radius:var(--r2); padding:6px 8px; }
+  .gprow .gpname { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .gprow .gpmeta { margin-left:auto; color:var(--muted); white-space:nowrap; }
+  .gprow .copybtn { flex:none; padding:3px 6px; border:1px solid var(--line);
+                     border-radius:6px; background:var(--btn); color:var(--muted); cursor:pointer; }
+  .gprow .copybtn:hover { background:var(--btn-hover); color:var(--txt); }
+
+  /* activity panel (layout rules are with the workspace CSS above; row styling only) */
+  #status { max-height:150px; overflow:auto; padding:0 12px 11px;
+            font:12px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace;
+            display:flex; flex-direction:column; gap:3px; }
+  .actrow { display:grid; grid-template-columns:54px 15px minmax(0,1fr); gap:8px;
+            align-items:start; white-space:pre-wrap; word-break:break-word; }
+  .acttime, .actico { color:var(--muted); }
+  .actmsg { color:var(--txt); }
+  .actrow.err .actmsg, .actrow.err .actico { color:var(--blur); }
+
+  /* toasts */
+  #toast { position:fixed; right:16px; bottom:16px; z-index:60; display:flex;
+           flex-direction:column; gap:8px; align-items:flex-end; }
+  .tst { display:flex; gap:10px; align-items:center; background:var(--toast);
+         border:1px solid var(--line); border-left:3px solid var(--muted); border-radius:var(--r);
+         padding:11px 12px;
+         box-shadow:var(--shadow); font-size:13px; max-width:380px; animation:pop .16s ease both; }
+  .tst.ok { border-left-color:var(--ok); } .tst.ok .tico { color:var(--ok); }
+  .tst.err { border-left-color:var(--blur); } .tst.err .tico { color:var(--blur); }
+  .tst.warn { border-left-color:var(--warn); } .tst.warn .tico { color:var(--warn); }
+  .tst.info .tico { color:var(--accent); }
+  .tmsg { flex:1; min-width:0; }
+  .tclose { padding:3px; background:transparent; border-color:transparent; color:var(--muted); }
+  .tclose:hover { background:var(--btn); color:var(--txt); }
+
+  /* ==========================================================================
+     Projects landing + project (chapter list + settings) screens. The editor
+     workspace (.app) is unchanged and lives inside #scr-editor; only ONE
+     top-level screen is visible at a time (see showScreen() in the script).
+     ========================================================================== */
+  .screen { display:none; }
+  .screen.on { display:block; }
+  #scr-editor { height:100vh; overflow:hidden; }
+  #scr-projects, #scr-project { height:100vh; overflow:auto; background:var(--bg); }
+
+  .shell { max-width:920px; margin:0 auto; padding:28px 20px 60px; }
+  .shellhead { display:flex; align-items:center; gap:12px; margin-bottom:22px; flex-wrap:wrap; }
+  .shellhead h1 { font-size:19px; margin:0; font-weight:800; }
+  .shellhead .back { flex:none; }
+  .shellhead .crumb { color:var(--muted); font-size:13px; }
+  .shellhead .spacer { flex:1; }
+
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:var(--r);
+          padding:16px; margin-bottom:18px; }
+  .card h2 { font-size:13px; margin:0 0 12px; text-transform:uppercase; letter-spacing:.08em;
+             color:var(--muted); font-weight:800; }
+  .field { display:flex; flex-direction:column; gap:5px; margin-bottom:11px; }
+  .field label { font-size:11px; font-weight:700; color:var(--muted); text-transform:uppercase;
+                 letter-spacing:.06em; }
+  .field input[type=text], .field input[type=number] { width:100%; }
+  .fieldrow { display:flex; gap:10px; flex-wrap:wrap; }
+  .fieldrow .field { flex:1; min-width:160px; }
+  .newprog { display:none; align-items:center; gap:9px; margin:4px 0 2px; font-size:12px; color:var(--muted); }
+  .newprog.on { display:flex; }
+  .newprog .spinner { width:14px; height:14px; border-width:2px; }
+  .fetchresult { font-size:12px; padding:8px 10px; border-radius:var(--r2); margin:6px 0 2px; display:none; }
+  .fetchresult.on { display:block; }
+  .fetchresult.ok { background:var(--frame-fill); color:var(--frame); border:1px solid var(--frame); }
+  .fetchresult.warn { background:var(--blur-fill); color:var(--blur); border:1px solid var(--blur); }
+
+  .plist { display:flex; flex-direction:column; gap:9px; }
+  .pcard { display:flex; align-items:center; gap:12px; padding:12px 14px; background:var(--panel);
+           border:1px solid var(--line); border-radius:var(--r); cursor:pointer; text-align:left; }
+  .pcard:hover { border-color:var(--accent); }
+  .pcard .pname { font-weight:800; font-size:14px; }
+  .pcard .purl { font-size:11px; color:var(--muted); overflow:hidden; text-overflow:ellipsis;
+                 white-space:nowrap; max-width:360px; }
+  .pcard .pmeta { margin-left:auto; display:flex; align-items:center; gap:10px; flex:none; }
+  .pcard .pcount { font-size:12px; color:var(--muted); white-space:nowrap; }
+  .pcard .ptrack { width:90px; height:6px; background:var(--input2); border:1px solid var(--line);
+                   border-radius:999px; overflow:hidden; flex:none; }
+  .pcard .pfill { height:100%; background:var(--ok); }
+  .empty { padding:30px 14px; text-align:center; color:var(--muted); font-size:13px; }
+
+  .chlist { display:flex; flex-direction:column; gap:7px; }
+  .chrow { display:flex; align-items:center; gap:11px; padding:9px 12px; background:var(--panel);
+           border:1px solid var(--line); border-radius:var(--r2); }
+  .chrow .mergeCk, .chrow .chck-spacer { flex:none; width:15px; height:15px; }
+  .chrow .chno { font-family:ui-monospace,Consolas,monospace; font-weight:800; color:var(--accent);
+                 width:44px; flex:none; }
+  .chrow .chtitle { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .stpill { font-size:10px; font-weight:800; text-transform:uppercase; letter-spacing:.05em;
+            padding:3px 8px; border-radius:999px; flex:none; border:1px solid var(--line); }
+  .stpill.st-not_started { color:var(--muted); }
+  .stpill.st-downloaded { color:var(--warn); border-color:var(--warn); }
+  .stpill.st-boxed { color:var(--accent); border-color:var(--accent); }
+  .stpill.st-rendered, .stpill.st-complete { color:var(--ok); border-color:var(--ok); }
+  .chacts { display:flex; gap:6px; flex:none; }
+
+  .settingswrap { display:none; flex-direction:column; gap:0; }
+  .settingswrap.on { display:flex; }
+  .setgrid { display:flex; gap:16px; flex-wrap:wrap; align-items:flex-start; }
+  .setcol { flex:1; min-width:240px; }
+  .setrow { display:flex; align-items:center; gap:9px; margin-bottom:9px; flex-wrap:wrap; }
+  .setrow .swatch { font-size:12px; color:var(--muted); flex:1; min-width:0; overflow:hidden;
+                     text-overflow:ellipsis; white-space:nowrap; }
+  .slider { display:flex; flex-direction:column; gap:3px; margin-bottom:10px; }
+  .slider .slbl { display:flex; justify-content:space-between; font-size:11px; color:var(--muted); }
+  .slider input[type=range] { width:100%; }
+  .previewbox { width:100%; aspect-ratio:16/9; background:var(--stage); border:1px solid var(--line);
+                border-radius:var(--r2); overflow:hidden; position:relative; margin-top:8px; }
+  .previewbox img { width:100%; height:100%; object-fit:cover; display:block; }
+  .previewbox .phmsg { position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+                        font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.08em; }
+  .radiorow { display:flex; gap:14px; margin-bottom:9px; flex-wrap:wrap; }
+  .radiorow label { display:flex; align-items:center; gap:6px; font-size:12px; cursor:pointer; }
+  #voicePreview { width:100%; height:32px; }
+
+  /* ==========================================================================
+     Fullscreen strip view - "read like a webtoon": hide everything except the
+     stage/world (already handles its own zoom+scroll), float the zoom
+     controls (.stagebar, reused as-is) over the bottom edge as minimal chrome.
+     ========================================================================== */
+  body.stripFullscreen .apphead, body.stripFullscreen .sidebar,
+  body.stripFullscreen .divider, body.stripFullscreen .right,
+  body.stripFullscreen .actpanel, body.stripFullscreen .tabbar { display:none; }
+  body.stripFullscreen .stagebar { position:fixed; left:0; right:0; bottom:0; z-index:60;
+    box-shadow:0 -6px 20px rgba(0,0,0,.25); }
+  body.stripFullscreen #fullscreenBtn { background:var(--accent); color:var(--accent-ink); border-color:var(--accent); }
+
+  /* ==========================================================================
+     Script-only view - hide the sidebar + strip, widen + center the script
+     column for a clean reading/editing layout. .right's inline width (set by
+     the split divider) is cleared by JS while this is on, so this rule applies.
+     ========================================================================== */
+  body.scriptOnlyView .apphead, body.scriptOnlyView .sidebar,
+  body.scriptOnlyView .workspace, body.scriptOnlyView .divider { display:none; }
+  body.scriptOnlyView .right { width:auto; flex:1 1 auto; max-width:860px; margin:0 auto;
+                                border-left:none; }
+  body.scriptOnlyView #scriptOnlyBtn { background:var(--accent); color:var(--accent-ink); border-color:var(--accent); }
+
+  /* ==========================================================================
+     Mobile / touch layout (<=900px, or any touch-primary device up to 1100px):
+     sidebar becomes a slide-over drawer; strip + script become two full-height
+     panes switched by a bottom tab bar (the choice persists for the session);
+     the app header collapses to essentials. Desktop rules above are untouched.
+     ========================================================================== */
+  @media (max-width:900px), (hover:none) and (max-width:1100px) {
+    .app2 { height:100vh; height:100dvh; }
+    .sidebar-toggle { display:inline-flex; }
+    .apphead-chip, .apphead .sep, #globalProg { flex-basis:100%; order:5; }
+    #globalProg.on { margin-top:4px; }
+    .apphead #saveProjBtn span, .apphead #loadProjBtn span, .apphead #themeBtn span,
+    .apphead #srcToggle span { display:none; }   /* icon-only Save / Load / theme / Source */
+
+    .appbody { position:relative; overflow:hidden; }
+    .sidebar { position:fixed; z-index:70; top:0; bottom:0; left:0; width:86vw; max-width:340px;
+               transform:translateX(-100%); transition:transform .18s ease;
+               box-shadow:0 0 32px rgba(0,0,0,.4); }
+    body.sidebarOpen .sidebar { transform:translateX(0); }
+    #sidebarBackdrop { display:none; position:fixed; inset:0; background:rgba(0,0,0,.45); z-index:65; }
+    body.sidebarOpen #sidebarBackdrop { display:block; }
+    #srcpanel { padding-top:2px; }   /* the Source drawer starts closed on mobile - see toggleSrc() default */
+
+    .workspace, .right { width:100%; flex:1 1 auto; }
+    .divider { display:none; }
+    .workspace { display:none; }
+    .right { display:none; border-left:none; }
+    body[data-mobiletab="strip"] .workspace { display:flex; }
+    body[data-mobiletab="script"] .right { display:flex; width:auto !important; }
+
+    .stagebar { flex-direction:column; align-items:stretch; gap:8px; }
+    .stagebar > .zoomrow { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+    #stageHint { display:none; }
+    .apphead button, .stagebar button, .tabbar button { min-height:40px; }
+    #zoom { flex:1 1 120px; }
+
+    #world { touch-action:none; }   /* one finger draws / two fingers pinch-zoom, see pointer handlers */
+
+    #toast { bottom:64px; left:16px; right:16px; }
+    #toast .tst { max-width:none; }
+
+    .tabbar { display:flex; flex:none; border-top:1px solid var(--line); background:var(--panel); }
+    .tabbar button { flex:1; flex-direction:column; gap:2px; border-radius:0; border:none;
+                     background:transparent; font-size:10px; text-transform:uppercase;
+                     letter-spacing:.05em; color:var(--muted); position:relative; }
+    .tabbar button.on { color:var(--accent); }
+    .tabbadge { position:absolute; top:2px; right:calc(50% - 26px); min-width:15px; height:15px;
+                border-radius:999px; background:var(--accent); color:var(--accent-ink);
+                font-size:9px; font-weight:800; display:flex; align-items:center; justify-content:center;
+                padding:0 3px; }
+    .tabbadge:empty { display:none; }
+  }
 </style>
 </head>
-<body>
-<div class="app">
-  <!-- LEFT: the chapter strip -->
-  <div class="left">
-    <div class="dlbar">
-      <span class="dltag">⬇ Download</span>
-      <input id="dlUrl" type="text" placeholder="webtoon.com chapter URL" style="flex:1; min-width:240px" />
-      <input id="dlNo" type="text" placeholder="chapter #" style="width:90px" />
-      <button id="dlBtn" class="primary">Download PDF</button>
-      <span class="hint" id="dlHint">Fetches the chapter PDF, splits it if &gt;127 pages so you can upload each part to Gemini. Then click Stitch PDF.</span>
+<body class="light">
+
+<!-- ==================== PROJECTS landing screen ==================== -->
+<section id="scr-projects" class="screen">
+  <div class="shell">
+    <div class="shellhead">
+      <div class="brandmark" data-icon="film" data-ic-size="15"></div>
+      <h1>Framer projects</h1>
+      <div class="spacer"></div>
+      <button id="checkUpdateBtn" class="small ghost" data-icon="refresh" data-ic-size="14" title="Pull the latest app code from git"><span>Check for updates</span></button>
+      <button id="themeBtnP" class="small ghost" data-icon="moon" data-ic-size="14"><span>Dark</span></button>
     </div>
-    <header>
-      <h1>Framer</h1>
-      <input id="pdfPath" type="text" placeholder="PDF path (e.g. D:\…\ch_001.pdf)" />
-      <input id="chapId" type="text" placeholder="chapter id (optional)" style="width:150px" />
-      <button id="loadPdfBtn">Stitch PDF</button>
-      <label class="hint">or <input id="pdfFile" type="file" accept="application/pdf" style="width:auto"></label>
-      <button id="loadProjBtn" class="small" title="Load a saved project for the chapter id above">📂 Load project</button>
-      <button id="themeBtn" class="small" style="margin-left:auto" title="Toggle light / dark">☀ Light</button>
-    </header>
-    <div class="toolbar">
-      <button id="zoomOut" class="small">−</button>
-      <input id="zoom" type="range" min="0" max="100" value="0" />
-      <button id="zoomIn" class="small">+</button>
-      <span class="zlbl pill" id="zoomLbl">Zoom —</span>
-      <button id="fitBtn" class="small">Fit width</button>
-      <button id="oneBtn" class="small">100%</button>
-      <span style="width:8px"></span>
-      <button id="frameModeBtn" class="small">Frame mode</button>
-      <button id="blurModeBtn" class="small">Blur mode</button>
-      <select id="blurStyle" class="small" title="Style for new blur regions — mosaic destroys text most reliably">
-        <option value="m">Blur: Mosaic (strongest)</option>
-        <option value="g">Blur: Heavy gaussian</option>
-      </select>
-      <span class="hint" id="stripInfo">No strip loaded.</span>
-    </div>
-    <div class="toolbar" style="border-top:0; padding-top:0">
-      <span class="hint">Scroll = navigate · <b>Ctrl/⌘ + wheel</b> = zoom (5%–400%) · drag = add a frame to the active line · Blur mode draws on the selected frame.</span>
-    </div>
-    <div class="stage" id="stage">
-      <div id="world">
-        <div id="tiles"></div>
-        <div id="boxes"></div>
-        <div id="rubber"></div>
+    <div class="fetchresult" id="updateResult"></div>
+
+    <div class="card">
+      <h2>New project</h2>
+      <div class="fieldrow">
+        <div class="field">
+          <label>Project name</label>
+          <input id="npName" type="text" placeholder="e.g. Omniscient Reader" style="width:100%" />
+        </div>
+        <div class="field">
+          <label>Manhwa URL</label>
+          <input id="npUrl" type="text" placeholder="webtoons.com series or chapter URL" style="width:100%" />
+        </div>
+      </div>
+      <button id="npCreateBtn" class="primary" data-icon="plus" data-ic-size="15"><span>Create project</span></button>
+      <div class="newprog" id="npProg"><div class="spinner"></div><span>Fetching series details…</span></div>
+      <div class="fetchresult" id="npFetchResult"></div>
+      <div class="fieldrow" id="npManualRow" style="display:none; margin-top:6px">
+        <div class="field" style="max-width:120px">
+          <label>First chapter</label>
+          <input id="npFrom" type="number" min="1" value="1" />
+        </div>
+        <div class="field" style="max-width:120px">
+          <label>Last chapter</label>
+          <input id="npTo" type="number" min="1" value="1" />
+        </div>
+        <div class="field" style="justify-content:flex-end">
+          <button id="npManualBtn" data-icon="check" data-ic-size="14"><span>Use this range</span></button>
+        </div>
       </div>
     </div>
-    <div class="overlay" id="overlay">
-      <div class="spinner"></div>
-      <div class="ovmsg" id="overlayMsg">Working…</div>
+
+    <div class="card">
+      <h2>Your projects</h2>
+      <div class="plist" id="pList"></div>
+    </div>
+  </div>
+</section>
+
+<!-- ==================== PROJECT screen: chapter list + settings ==================== -->
+<section id="scr-project" class="screen">
+  <div class="shell">
+    <div class="shellhead">
+      <button class="small ghost back" id="backToProjectsBtn" data-icon="chevleft" data-ic-size="15"><span>Projects</span></button>
+      <h1 id="pjTitle">Project</h1>
+      <div class="spacer"></div>
+      <button id="pjRefetchBtn" class="small ghost" data-icon="refresh" data-ic-size="14" title="Re-fetch chapter list from the series URL"><span>Refetch</span></button>
+      <button id="pjSettingsBtn" class="small" data-icon="settings" data-ic-size="14"><span>Settings</span></button>
+    </div>
+
+    <div class="card settingswrap" id="pjSettings">
+      <h2>Project settings</h2>
+      <div class="setgrid">
+        <div class="setcol">
+          <div class="field"><label>Background music</label></div>
+          <div class="radiorow">
+            <label><input type="radio" name="musicMode" value="default" /> Default track (assets/music)</label>
+            <label><input type="radio" name="musicMode" value="file" /> Custom file</label>
+          </div>
+          <div class="setrow">
+            <input id="musicFile" type="file" accept="audio/*" />
+            <span class="swatch" id="musicName"></span>
+          </div>
+        </div>
+
+        <div class="setcol">
+          <div class="field"><label>Narration voice</label></div>
+          <div class="radiorow">
+            <label><input type="radio" name="voiceMode" value="default" /> Default voice (assets/voice_ref.wav)</label>
+            <label><input type="radio" name="voiceMode" value="file" /> Custom voice sample</label>
+          </div>
+          <div class="setrow">
+            <input id="voiceFile" type="file" accept=".wav,audio/wav" />
+            <span class="swatch" id="voiceName"></span>
+          </div>
+          <div class="setrow">
+            <audio id="voicePreview" controls hidden></audio>
+          </div>
+          <div class="hint" id="voiceActiveHint"></div>
+          <div class="hint">Reuses the default's float32/mono/24kHz preprocessing for Chatterbox cloning. After changing this, use <b>Re-render voice</b> in the chapter editor to regenerate narration without redoing frame selection.</div>
+        </div>
+
+        <div class="setcol">
+          <div class="field"><label>Watermark</label></div>
+          <div class="radiorow">
+            <label><input type="checkbox" id="wmEnabled" /> Enabled (tiled across the whole video)</label>
+          </div>
+          <div class="radiorow">
+            <label><input type="radio" name="wmType" value="text" /> Text</label>
+            <label><input type="radio" name="wmType" value="image" /> Logo image</label>
+          </div>
+          <div class="setrow">
+            <input id="wmText" type="text" placeholder="watermark text" style="flex:1" />
+          </div>
+          <div class="setrow">
+            <input id="wmFile" type="file" accept="image/*" />
+            <span class="swatch" id="wmFileName"></span>
+          </div>
+          <div class="slider"><div class="slbl"><span>Opacity</span><span id="wmOpacityLbl"></span></div>
+            <input id="wmOpacity" type="range" min="2" max="50" value="12" /></div>
+          <div class="slider"><div class="slbl"><span>Size</span><span id="wmSizeLbl"></span></div>
+            <input id="wmSize" type="range" min="4" max="40" value="12" /></div>
+          <div class="slider"><div class="slbl"><span>Spacing</span><span id="wmSpacingLbl"></span></div>
+            <input id="wmSpacing" type="range" min="20" max="300" value="100" /></div>
+          <div class="slider"><div class="slbl"><span>Angle</span><span id="wmAngleLbl"></span></div>
+            <input id="wmAngle" type="range" min="-90" max="90" value="-30" /></div>
+          <div class="previewbox" id="wmPreviewBox"><span class="phmsg">Preview</span></div>
+        </div>
+
+        <div class="setcol">
+          <div class="field"><label>Video background</label></div>
+          <div class="radiorow">
+            <label><input type="radio" name="bgMode" value="blur" /> Blurred crop (default)</label>
+            <label><input type="radio" name="bgMode" value="image" /> Custom image</label>
+          </div>
+          <div class="setrow">
+            <input id="bgFile" type="file" accept="image/*" />
+            <span class="swatch" id="bgFileName"></span>
+          </div>
+          <div class="slider"><div class="slbl"><span>Dim</span><span id="bgDimLbl"></span></div>
+            <input id="bgDim" type="range" min="10" max="100" value="85" /></div>
+          <div class="previewbox" id="bgPreviewBox"><span class="phmsg">Preview</span></div>
+        </div>
+      </div>
+      <div style="margin-top:6px"><span class="hint" id="pjSettingsSaved"></span></div>
+    </div>
+
+    <div class="card">
+      <h2>Chapters</h2>
+      <div class="hint" style="margin-bottom:9px">Check the box on any <b>complete</b> chapter to select it for merging.</div>
+      <div class="chlist" id="chList"></div>
+    </div>
+
+    <div class="card" id="mergeCard">
+      <h2>Merge complete chapters</h2>
+      <div class="rmeta" style="margin:0 0 9px">
+        <span class="hint" id="mergeSelHint">No chapters selected.</span>
+        <button id="mergeBtn" class="primary" data-icon="film" data-ic-size="14" disabled style="margin-left:auto"><span>Merge selected videos</span></button>
+        <button id="mergeCancelBtn" class="small danger" data-icon="stop" data-ic-size="14" disabled title="Stop the running merge"><span>Stop</span></button>
+      </div>
+      <div class="progress" id="mergeProgress"><div class="bar" id="mergeBar"></div></div>
+      <div class="genlog" id="mergeStatus"></div>
+      <div class="result" id="mergeResult"></div>
+      <div id="pastMerges"></div>
+    </div>
+  </div>
+</section>
+
+<!-- ==================== CHAPTER EDITOR (unchanged workspace) ==================== -->
+<section id="scr-editor" class="screen">
+<div class="app2" id="app2">
+
+  <div class="apphead">
+    <button id="sidebarToggleBtn" class="small ghost icon sidebar-toggle" data-icon="layout" data-ic-size="16" title="Chapter source, stitch, draw tool, export"></button>
+    <button id="backToProjectBtn" class="small ghost" data-icon="chevleft" data-ic-size="14" title="Back to the chapter list"></button>
+    <div class="brandmark" data-icon="film" data-ic-size="15"></div>
+    <span class="brand">Framer</span>
+    <span class="apphead-chip pill">webtoon recap studio</span>
+    <span class="sep"></span>
+    <span class="lbl">Chapter</span>
+    <input id="chapId" type="text" placeholder="chapter id" />
+    <button id="srcToggle" class="small ghost" data-icon="chevup" title="Show or hide the download and stitch panel"><span>Source</span></button>
+    <div id="globalProg"><span class="glbl">Working</span><span class="gtrack"><span class="gfill"></span></span></div>
+    <div class="actions">
+      <button id="saveProjBtn" class="small" data-icon="save" data-ic-size="14" title="Save the full working state to editor_state.json"><span>Save</span></button>
+      <button id="loadProjBtn" class="small" data-icon="folder" data-ic-size="14" title="Load the saved editor state for the chapter id above"><span>Load</span></button>
+      <button id="themeBtn" class="small ghost" data-icon="moon" data-ic-size="14" title="Toggle light / dark"><span>Dark</span></button>
     </div>
   </div>
 
-  <!-- draggable split between the strip and the script panel -->
-  <div class="divider" id="divider" title="drag to resize"></div>
+  <div class="appbody">
+    <div id="sidebarBackdrop"></div>
 
-  <!-- RIGHT: the script lines -->
-  <div class="right" id="right">
-    <div class="rtop">
-      <textarea id="scriptText" placeholder="Paste narration script — one segment per line"></textarea>
-      <div class="rmeta" style="margin-top:6px">
-        <input id="txtPath" type="text" placeholder="…or a .txt path" style="flex:1" />
-        <button id="loadScriptBtn">Load script</button>
-        <button id="addLineBtn" class="small">+ line</button>
-        <button id="undoBtn" class="small" title="Nothing to undo" disabled>↶ Undo</button>
-        <button id="redoBtn" class="small" title="Nothing to redo" disabled>↷ Redo</button>
-        <button id="saveProjBtn" class="small" title="Save the full working state to project.json">💾 Save project</button>
-        <span id="saveState" class="hint"></span>
+    <!-- LEFT: sidebar - Chapter Source / Stitch Strip / Draw Tool / Export & Render -->
+    <aside class="sidebar" id="sidebar">
+
+      <div id="srcpanel">
+        <div class="sidecard">
+          <h2 data-icon="download" data-ic-size="14">Chapter Source</h2>
+          <div class="sidefield">
+            <label class="lbl">Webtoon URL</label>
+            <input id="dlUrl" type="text" placeholder="webtoon chapter URL" />
+          </div>
+          <div class="sidefield">
+            <label class="lbl">Chapter</label>
+            <div class="row2">
+              <input id="dlNo" type="text" placeholder="chapter #" />
+              <button id="dlBtn" class="primary" data-icon="download" data-ic-size="15"><span>Download PDF</span></button>
+            </div>
+          </div>
+          <span class="hint" id="dlHint">Fetches the chapter PDF, then ALWAYS splits it into ≤100-page parts (5p overlap between parts) and compresses each for Gemini. Then stitch the full PDF.</span>
+          <div id="gpRow" hidden><span class="hint" id="gpStatus"></span></div>
+          <div id="gpResult"></div>
+        </div>
+
+        <div class="sidecard">
+          <h2 data-icon="layers" data-ic-size="14">Stitch Strip</h2>
+          <div class="sidefield">
+            <label class="lbl">PDF path</label>
+            <div class="row2">
+              <input id="pdfPath" type="text" placeholder="PDF path (e.g. D:\...\ch_001.pdf)" />
+              <button id="pdfBrowseBtn" class="icon" data-icon="folder" data-ic-size="15" title="Choose a PDF file"></button>
+            </div>
+            <input id="pdfFile" type="file" accept="application/pdf" style="position:absolute; width:1px; height:1px; opacity:0; pointer-events:none" tabindex="-1" />
+          </div>
+          <button id="loadPdfBtn" class="wide" data-icon="layers" data-ic-size="15"><span>Stitch PDF</span></button>
+        </div>
       </div>
-    </div>
-    <div class="lines" id="lines"></div>
-    <div class="rmeta" style="padding:10px 12px; border-top:1px solid var(--line)">
-      <button id="exportBtn" class="primary">Export frames + mapping</button>
-      <span class="hint" id="exportHint"></span>
-    </div>
-    <div class="genbar">
-      <div class="rmeta" style="margin:0">
-        <button id="genAVBtn" class="primary" title="Run the pipeline: TTS voiceover then video">🔊 Generate Audio + Video</button>
-        <button id="genVidBtn" class="small" title="Re-render the video from the existing audio (fast)">🎬 Re-render Video</button>
-        <button id="genCancelBtn" class="small danger" disabled title="Stop the running job">■ Stop</button>
+
+      <div class="sidecard">
+        <h2 data-icon="crop" data-ic-size="14">Draw Tool</h2>
+        <div class="drawtabs">
+          <button id="frameModeBtn" data-icon="crop" data-ic-size="16" title="Frame mode: drag on the strip to add a frame"><span>Frame</span></button>
+          <button id="blurModeBtn" data-icon="droplet" data-ic-size="16" title="Blur mode: drag on the selected frame to blur it"><span>Blur</span></button>
+        </div>
+        <div class="sidefield">
+          <label class="lbl">Blur style</label>
+          <select id="blurStyle" title="Style for new blur regions - mosaic destroys text most reliably">
+            <option value="m">Blur: Mosaic (strongest)</option>
+            <option value="g">Blur: Heavy gaussian</option>
+          </select>
+        </div>
+        <span class="hint">Drag on the strip to draw. On a phone: one finger draws, two fingers pinch-zoom - precise boxing is easiest on desktop.</span>
       </div>
-      <div class="progress" id="genProgress"><div class="bar" id="genBar"></div></div>
-      <div class="genlog" id="genStatus"></div>
-      <div class="result" id="genResult"></div>
-    </div>
-    <div class="status" id="status">Load a PDF, then a script. Click a line to make it active, then drag boxes on the strip to add frames. Ctrl+Z undoes edits.</div>
+
+      <div class="sidecard">
+        <h2 data-icon="file" data-ic-size="14">Export &amp; Render</h2>
+        <button id="exportBtn" class="primary wide" data-icon="file" data-ic-size="15"><span>Export frames + mapping</span></button>
+        <span id="exportHint" class="hint"></span>
+        <div class="genbar" id="genbar">
+          <button id="genAVBtn" class="primary wide" data-icon="audio" data-ic-size="15" title="Run the pipeline: TTS voiceover then video"><span>Generate audio + video</span></button>
+          <div class="row2">
+            <button id="genVoiceBtn" class="small" data-icon="audio" data-ic-size="14" title="Regenerate ONLY the narration (e.g. after changing the voice sample or speed) - frames/selection are untouched, and the existing video is left as-is"><span>Re-render voice</span></button>
+            <button id="genVidBtn" class="small" data-icon="film" data-ic-size="14" title="Re-render the video from the existing audio (fast)"><span>Re-render video</span></button>
+          </div>
+          <button id="genCancelBtn" class="small danger wide" data-icon="stop" data-ic-size="14" disabled title="Stop the running job"><span>Stop</span></button>
+          <div class="progress" id="genProgress"><div class="bar" id="genBar"></div></div>
+          <div class="genlog" id="genStatus"></div>
+          <div class="result" id="genResult"></div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- CENTER: the stage workspace -->
+    <main class="workspace">
+      <div class="stagebar">
+        <div class="zoomrow">
+          <button id="zoomOut" class="small icon" data-icon="zoomout" data-ic-size="15" title="Zoom out"></button>
+          <input id="zoom" type="range" min="0" max="100" value="0" title="Zoom (5% to 400%)" />
+          <button id="zoomIn" class="small icon" data-icon="zoomin" data-ic-size="15" title="Zoom in"></button>
+          <span class="zlbl pill" id="zoomLbl">Zoom</span>
+          <button id="fitBtn" class="small" data-icon="fit" data-ic-size="14"><span>Fit width</span></button>
+          <button id="oneBtn" class="small" data-icon="one" data-ic-size="14"><span>100%</span></button>
+          <button id="fullscreenBtn" class="small ghost" data-icon="maximize" data-ic-size="14" title="View the strip fullscreen, like reading a webtoon"><span>Fullscreen</span></button>
+        </div>
+        <span id="stripInfo" class="mono">No strip loaded.</span>
+        <span class="hint" id="stageHint">Ctrl or Cmd + wheel zooms, 5% to 400%. Drag to add a frame to the active line.</span>
+      </div>
+
+      <div class="stage" id="stage">
+        <div id="world">
+          <div id="tiles"></div>
+          <div id="boxes"></div>
+          <div id="rubber"></div>
+        </div>
+      </div>
+
+      <div class="overlay" id="overlay">
+        <div class="spinner"></div>
+        <div class="ovmsg" id="overlayMsg">Working</div>
+      </div>
+
+      <div class="actpanel" id="actpanel">
+        <div class="acthead">
+          <button id="actCollapseBtn" class="ghost icon small chev" data-icon="chevdown" data-ic-size="14" title="Collapse the activity log"></button>
+          <span class="lbl" data-icon="terminal" data-ic-size="13" style="display:flex; gap:7px; align-items:center">Activity</span>
+          <button id="actClearBtn" class="ghost small" style="margin-left:auto" data-icon="trash" data-ic-size="13"><span>Clear</span></button>
+        </div>
+        <div class="status" id="status"></div>
+      </div>
+    </main>
+
+    <!-- draggable split between the strip and the script panel -->
+    <div class="divider" id="divider" title="drag to resize"></div>
+
+    <!-- RIGHT: the script lines -->
+    <aside class="right" id="right">
+      <div class="rtop">
+        <div class="rmeta" style="margin:0 0 8px"><span class="lbl">Narration script</span>
+          <span class="pill" id="lineCountBadge">0 lines</span>
+          <button id="scriptOnlyBtn" class="small ghost" data-icon="layout" data-ic-size="13" title="Show just the script, without the strip" style="margin-left:auto"><span>Script only</span></button>
+          <span id="saveState" class="hint"></span></div>
+        <textarea id="scriptText" placeholder="Paste the narration script, one segment per line"></textarea>
+        <div class="rmeta">
+          <input id="txtPath" type="text" placeholder="or a .txt path" style="flex:1; min-width:120px" />
+          <button id="loadScriptBtn" data-icon="text" data-ic-size="14"><span>Load script</span></button>
+          <button id="addLineBtn" class="small" data-icon="plus" data-ic-size="14"><span>Line</span></button>
+          <button id="undoBtn" class="small" data-icon="undo" data-ic-size="14" title="Nothing to undo" disabled><span>Undo</span></button>
+          <button id="redoBtn" class="small" data-icon="redo" data-ic-size="14" title="Nothing to redo" disabled><span>Redo</span></button>
+        </div>
+      </div>
+
+      <div class="lines" id="lines"></div>
+    </aside>
+  </div>
+
+  <!-- mobile-only: switches the Strip / Script panes -->
+  <div class="tabbar" id="tabbar">
+    <button class="tabbtn" data-tab="strip" data-icon="crop" data-ic-size="18"><span>Strip</span></button>
+    <button class="tabbtn" data-tab="script" data-icon="text" data-ic-size="18"><span>Script</span><span class="tabbadge" id="tabScriptBadge"></span></button>
   </div>
 </div>
+</section>
 
-<div class="toast" id="toast"></div>
+<div id="toast"></div>
+
+<script>
+/* Lucide-style line icons (stroke, 24 grid) - no emoji anywhere in the UI. */
+const ICONS = {
+  download:'<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/>',
+  layers:'<path d="M12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z"/><path d="m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65"/><path d="m22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65"/>',
+  crop:'<path d="M6 2v14a2 2 0 0 0 2 2h14"/><path d="M18 22V8a2 2 0 0 0-2-2H2"/>',
+  droplet:'<path d="M12 22a7 7 0 0 0 7-7c0-2-1-3.9-3-5.5s-3.5-4-4-6.5c-.5 2.5-2 4.9-4 6.5C6 11.1 5 13 5 15a7 7 0 0 0 7 7z"/>',
+  zoomin:'<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/><path d="M11 8v6"/><path d="M8 11h6"/>',
+  zoomout:'<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/><path d="M8 11h6"/>',
+  fit:'<path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/>',
+  one:'<rect x="3" y="3" width="18" height="18"/><path d="M12 8v8"/>',
+  save:'<path d="M15.2 3a2 2 0 0 1 1.4.6l3.8 3.8a2 2 0 0 1 .6 1.4V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"/><path d="M17 21v-7a1 1 0 0 0-1-1H8a1 1 0 0 0-1 1v7"/><path d="M7 3v4a1 1 0 0 0 1 1h7"/>',
+  folder:'<path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"/>',
+  undo:'<path d="M3 7v6h6"/><path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13"/>',
+  redo:'<path d="M21 7v6h-6"/><path d="M3 17a9 9 0 0 1 9-9 9 9 0 0 1 6 2.3l3 2.7"/>',
+  plus:'<path d="M5 12h14"/><path d="M12 5v14"/>',
+  trash:'<path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>',
+  x:'<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
+  xcircle:'<circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/><path d="m9 9 6 6"/>',
+  check:'<path d="M20 6 9 17l-5-5"/>',
+  alert:'<circle cx="12" cy="12" r="10"/><path d="M12 8v4"/><path d="M12 16h.01"/>',
+  info:'<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>',
+  chevleft:'<path d="m15 18-6-6 6-6"/>',
+  chevright:'<path d="m9 18 6-6-6-6"/>',
+  chevdown:'<path d="m6 9 6 6 6-6"/>',
+  chevup:'<path d="m18 15-6-6-6 6"/>',
+  audio:'<path d="M2 10v3"/><path d="M6 6v11"/><path d="M10 3v18"/><path d="M14 8v7"/><path d="M18 5v13"/><path d="M22 10v3"/>',
+  film:'<rect x="2" y="2" width="20" height="20"/><path d="M7 2v20"/><path d="M17 2v20"/><path d="M2 12h20"/><path d="M2 7h5"/><path d="M17 7h5"/><path d="M2 17h5"/><path d="M17 17h5"/>',
+  stop:'<rect x="5" y="5" width="14" height="14" fill="currentColor" stroke="none"/>',
+  play:'<path d="m6 3 14 9-14 9V3z" fill="currentColor" stroke="none"/>',
+  sun:'<circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/>',
+  moon:'<path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>',
+  grip:'<circle cx="9" cy="6" r="1.4" fill="currentColor" stroke="none"/><circle cx="9" cy="12" r="1.4" fill="currentColor" stroke="none"/><circle cx="9" cy="18" r="1.4" fill="currentColor" stroke="none"/><circle cx="15" cy="6" r="1.4" fill="currentColor" stroke="none"/><circle cx="15" cy="12" r="1.4" fill="currentColor" stroke="none"/><circle cx="15" cy="18" r="1.4" fill="currentColor" stroke="none"/>',
+  scissors:'<circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M20 4 8.12 15.88"/><path d="M14.47 14.48 20 20"/><path d="M8.12 8.12 12 12"/>',
+  arrowup:'<path d="m5 12 7-7 7 7"/><path d="M12 19V5"/>',
+  terminal:'<path d="m4 17 6-6-6-6"/><path d="M12 19h8"/>',
+  text:'<path d="M17 6.1H3"/><path d="M21 12.1H3"/><path d="M15.1 18H3"/>',
+  file:'<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v5h6"/>',
+  copy:'<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
+  settings:'<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/>',
+  image:'<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.1-3.1a2 2 0 0 0-2.8 0L6 21"/>',
+  music:'<path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>',
+  refresh:'<path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 16h5v5"/>',
+  logo:'<path d="M4 4h16v16H4z"/><path d="m4 15 4-4 4 4 8-8"/>',
+  maximize:'<path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/>',
+  minimize:'<path d="M8 3v3a2 2 0 0 1-2 2H3"/><path d="M21 8h-3a2 2 0 0 1-2-2V3"/><path d="M3 16h3a2 2 0 0 1 2 2v3"/><path d="M16 21v-3a2 2 0 0 1 2-2h3"/>',
+  layout:'<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/><path d="M9 21V9"/>',
+  checkbox:'<rect x="3" y="3" width="18" height="18" rx="2"/><path d="m9 12 2 2 4-4"/>'
+};
+function ic(n, s) {
+  s = s || 16;
+  return '<svg class="ic" viewBox="0 0 24 24" width="' + s + '" height="' + s + '" fill="none" ' +
+         'stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ' +
+         'aria-hidden="true">' + (ICONS[n] || '') + '</svg>';
+}
+function paintIcons(root) {
+  (root || document).querySelectorAll('[data-icon]').forEach(el => {
+    if (el.getAttribute('data-ic') === '1') return;
+    el.insertAdjacentHTML('afterbegin', ic(el.dataset.icon, +el.dataset.icSize || 15));
+    el.setAttribute('data-ic', '1');
+  });
+}
+
+/* Inline button busy state: disables + shows a spinner in place of the label. */
+function btnBusy(btn, on) {
+  if (!btn) return;
+  btn.classList.toggle('busy', !!on);
+  btn.disabled = !!on;
+}
+
+/* Header progress: pass a 0..1 fraction, or null for an indeterminate pulse. */
+function setGlobalProg(frac, label) {
+  const w = document.getElementById('globalProg');
+  if (!w) return;
+  w.classList.add('on');
+  w.classList.toggle('indet', frac == null);
+  if (label) w.querySelector('.glbl').textContent = label;
+  if (frac != null) w.querySelector('.gfill').style.width = Math.round(frac * 100) + '%';
+}
+function clearGlobalProg() {
+  const w = document.getElementById('globalProg');
+  if (!w) return;
+  w.classList.remove('on', 'indet');
+  w.querySelector('.gfill').style.width = '0';
+}
+
+/* the source drawer (download + stitch) collapses so the strip gets the height */
+function toggleSrc() {
+  const p = document.getElementById('srcpanel'), b = document.getElementById('srcToggle');
+  const open = p.hasAttribute('hidden');
+  if (open) p.removeAttribute('hidden'); else p.setAttribute('hidden', '');
+  b.innerHTML = ic(open ? 'chevup' : 'chevdown', 15) + '<span>Source</span>';
+}
+</script>
 
 <script>
 // ---------------------------------------------------------------------------
@@ -273,6 +941,8 @@
 //   frame = { bbox:[tx,ty,tw,th], flip:bool, blur:[[tx,ty,tw,th],...] }
 // ---------------------------------------------------------------------------
 const S = {
+  project: null,           // project slug (scopes chapter_work_dir/chapter_output_dir server-side)
+  ch_no: null,             // chapter NUMBER within the project (see config.chapter_scope)
   chapter_id: null,
   source_pdf: null,
   strip_w: 0, strip_h: 0,
@@ -294,10 +964,34 @@ const stage = $('stage'), world = $('world');
 const tilesDiv = $('tiles'), boxesDiv = $('boxes'), rubber = $('rubber');
 const clamp = (v,a,b) => Math.max(a, Math.min(b, v));
 
+// ---------------------------------------------------------------------------
+// project scoping - every editor request carries the current project + chapter
+// number so the backend redirects chapter_work_dir()/chapter_output_dir() (see
+// config.chapter_scope in config.py) to projects/<slug>/chapters/<n>/{work,
+// output} instead of the legacy global work/<chapter>/ tree.
+// ---------------------------------------------------------------------------
+function scopeQS() {
+  return S.project && S.ch_no ? `&project=${encodeURIComponent(S.project)}&ch_no=${encodeURIComponent(S.ch_no)}` : '';
+}
+function scopeBody(obj) {
+  return S.project && S.ch_no ? Object.assign({}, obj, { project: S.project, ch_no: S.ch_no }) : obj;
+}
+
 function setStatus(msg, isErr) {
   const el = $('status');
-  el.textContent = msg;
-  el.style.color = isErr ? 'var(--blur)' : 'var(--muted)';
+  if (!el) return;
+  const row = document.createElement('div');
+  row.className = 'actrow' + (isErr ? ' err' : '');
+  const t = new Date();
+  const time = [t.getHours(), t.getMinutes(), t.getSeconds()].map(n => String(n).padStart(2,'0')).join(':');
+  row.innerHTML = '<span class="acttime">' + time + '</span>' +
+    '<span class="actico">' + ic(isErr ? 'alert' : 'info', 13) + '</span>' +
+    '<span class="actmsg"></span>';
+  row.querySelector('.actmsg').textContent = String(msg);
+  el.appendChild(row);
+  while (el.children.length > 80) el.removeChild(el.firstChild);
+  el.scrollTop = el.scrollHeight;
+  if (isErr) showToast(String(msg).split('\n')[0], null, null, 'err');
 }
 
 // ---------------------------------------------------------------------------
@@ -308,7 +1002,7 @@ function setOverlay(msg) { $('overlayMsg').textContent = msg; }
 function hideOverlay() { $('overlay').classList.remove('show'); }
 
 // ---------------------------------------------------------------------------
-// undo / redo — snapshot the editable state BEFORE each destructive edit, so any
+// undo / redo - snapshot the editable state BEFORE each destructive edit, so any
 // listed action (remove line/frame, reorder, add box, add/clear blur, flip, play
 // mode) is reversible. Keeps the last UNDO_LIMIT steps; redo mirrors it.
 // ---------------------------------------------------------------------------
@@ -364,6 +1058,7 @@ function updateUndoUI() {
 // Ctrl/Cmd+Z = undo, Ctrl/Cmd+Shift+Z or Ctrl+Y = redo. Ignored while typing in a
 // text field so the browser's native text-undo still works there.
 window.addEventListener('keydown', e => {
+  if (SCREEN !== 'editor') return;   // only the editor screen owns undo/redo
   const t = e.target;
   if (t && (t.tagName === 'TEXTAREA' || t.tagName === 'INPUT')) return;
   if (!(e.ctrlKey || e.metaKey)) return;
@@ -373,45 +1068,54 @@ window.addEventListener('keydown', e => {
 });
 
 // ---------------------------------------------------------------------------
-// toast — transient message with an optional action button (used as the
+// toast - transient message with an optional action button (used as the
 // "are you sure?" safety net for remove-line: shows an inline Undo).
 // ---------------------------------------------------------------------------
-let toastTimer = null;
-function showToast(msg, actionLabel, actionFn) {
-  const el = $('toast');
-  el.innerHTML = '';
-  const span = document.createElement('span'); span.textContent = msg;
-  el.appendChild(span);
+function showToast(msg, actionLabel, actionFn, kind) {
+  const stack = $('toast');
+  if (!stack) return;
+  const el = document.createElement('div');
+  el.className = 'tst ' + (kind || 'info');
+  const icon = (kind === 'err' || kind === 'warn') ? 'alert' : kind === 'ok' ? 'check' : 'info';
+  el.innerHTML = '<span class="tico">' + ic(icon, 16) + '</span><span class="tmsg"></span>';
+  el.querySelector('.tmsg').textContent = msg;
   if (actionLabel && actionFn) {
     const btn = document.createElement('button');
     btn.className = 'small'; btn.textContent = actionLabel;
-    btn.onclick = () => { actionFn(); hideToast(); };
+    btn.onclick = () => { actionFn(); el.remove(); };
     el.appendChild(btn);
   }
-  el.classList.add('show');
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(hideToast, 6000);
+  const close = document.createElement('button');
+  close.className = 'small tclose'; close.title = 'dismiss';
+  close.innerHTML = ic('x', 13);
+  close.onclick = () => el.remove();
+  el.appendChild(close);
+  stack.appendChild(el);
+  while (stack.children.length > 4) stack.firstChild.remove();
+  setTimeout(() => el.remove(), kind === 'err' ? 12000 : 6000);
 }
-function hideToast() { $('toast').classList.remove('show'); }
+function hideToast() { const s = $('toast'); if (s && s.lastChild) s.lastChild.remove(); }
 
 // ---------------------------------------------------------------------------
-// download a chapter (webtoon-downloader) -> PDF (+ split >127pg for Gemini)
-// The result feeds the existing "Stitch PDF" flow: we drop the downloaded PDF
-// path into the PDF-path field and the chapter id into its field, ready to load.
+// download a chapter (webtoon-downloader) -> PDF, then ALWAYS split+compress it
+// into Gemini-ready parts (streamed over SSE so a long chapter shows progress).
+// The full-res PDF still feeds the existing "Stitch PDF" flow unchanged: we drop
+// its path into the PDF-path field and the chapter id into its field.
 // ---------------------------------------------------------------------------
 async function doDownload() {
   const url = $('dlUrl').value.trim();
   const no = $('dlNo').value.trim();
   if (!url) { setStatus('Paste a webtoon.com chapter URL.', true); return; }
   const chap = $('chapId').value.trim() || no;   // reuse the chapter-id field; default to the number
-  showOverlay('Downloading chapter…');
+  showOverlay('Downloading chapter');
+  setGlobalProg(null, 'Downloading chapter');
   setStatus(`Downloading chapter ${no || ''} with webtoon-downloader…\n` +
-            `This can take a while for image-heavy chapters — leave it running.`);
-  $('dlBtn').disabled = true;
+            `This can take a while for image-heavy chapters - leave it running.`);
+  btnBusy($('dlBtn'), true);
   try {
     const res = await fetch('/download', { method:'POST',
       headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ url, chapter_no: no, chapter_id: chap }) });
+      body: JSON.stringify(scopeBody({ url, chapter_no: no, chapter_id: chap })) });
     const d = await res.json();
     if (!res.ok) throw new Error(d.error || 'download failed');
 
@@ -419,24 +1123,129 @@ async function doDownload() {
     $('chapId').value = d.chapter_id;
     $('pdfPath').value = d.pdf;
 
-    let msg = (d.steps || []).join('\n') + '\n\n';
-    if (d.split) {
-      msg += `Split into ${d.parts.length} part(s) for Gemini (≤127 pages each) — ` +
-             `upload these:\n` +
-             d.parts.map((p, i) =>
-               `  part ${i + 1}  (pages ${p.from}–${p.to}, ${p.pages}p):  ${p.path}`).join('\n');
-    } else {
-      msg += `One PDF (≤127 pages) — upload this to Gemini:\n  ${d.parts[0].path}`;
-    }
-    msg += `\n\n✔ Ready. Click “Stitch PDF” to load this chapter for framing.`;
-    setStatus(msg);
-    $('stripInfo').textContent = `Downloaded ${d.page_count}p` +
-      (d.split ? ` → ${d.parts.length} Gemini parts. Click Stitch PDF.` : `. Click Stitch PDF.`);
+    setStatus((d.steps || []).join('\n'));
+    showToast('Downloaded ' + d.page_count + ' pages. Preparing Gemini parts…', null, null, 'ok');
+    $('stripInfo').textContent = `Downloaded ${d.page_count}p. Preparing Gemini parts…`;
+    hideOverlay();               // the download itself is done; parts stream on its own
+    startGeminiParts(d.chapter_id, d.pdf, d.page_count);
   } catch (e) {
     setStatus('Download error: ' + e.message, true);
-  } finally {
-    $('dlBtn').disabled = false;
     hideOverlay();
+  } finally {
+    btnBusy($('dlBtn'), false);
+    clearGlobalProg();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// split + compress the downloaded PDF into Gemini-ready parts (SSE progress) -
+// always runs (even a short chapter becomes one compressed part). Parts land in
+// work/<chapter>/gemini_parts/; the result panel lists them with sizes and a
+// copyable folder path / "open folder" button.
+// ---------------------------------------------------------------------------
+let gpES = null;
+
+function startGeminiParts(chapterId, pdfPath, pageCount) {
+  if (gpES) { gpES.close(); gpES = null; }
+  $('gpRow').removeAttribute('hidden');
+  $('gpStatus').textContent = 'Preparing Gemini parts…';
+  $('gpResult').innerHTML = '';
+  setGlobalProg(0.02, 'Preparing Gemini parts');
+
+  const url = `/gemini_parts_stream?pdf_path=${encodeURIComponent(pdfPath)}` +
+              `&chapter_id=${encodeURIComponent(chapterId)}${scopeQS()}`;
+  gpES = new EventSource(url);
+  gpES.onmessage = e => { try { handleGeminiPartsEvent(JSON.parse(e.data), chapterId, pageCount); } catch (_) {} };
+  gpES.onerror = () => {
+    if (!gpES) return;           // already closed on a clean done/error
+    $('gpStatus').textContent = 'Gemini-parts stream disconnected.';
+    setStatus('Gemini-parts stream disconnected.', true);
+    finishGeminiParts();
+  };
+}
+
+function handleGeminiPartsEvent(ev, chapterId, pageCount) {
+  if (ev.type === 'start') {
+    $('gpStatus').textContent = ev.message || 'Preparing Gemini parts…';
+    setStatus(ev.message || 'Preparing Gemini parts…');
+  } else if (ev.type === 'log') {
+    $('gpStatus').textContent = ev.line || '';
+    setStatus(ev.line || '');
+  } else if (ev.type === 'progress') {
+    const frac = ev.of_parts ? (ev.part - 1 + ev.page / ev.of_pages) / ev.of_parts : null;
+    setGlobalProg(frac == null ? null : Math.max(0.02, Math.min(0.98, frac)), 'Preparing Gemini parts');
+    $('gpStatus').textContent =
+      `Part ${ev.part}/${ev.of_parts}: page ${ev.page}/${ev.of_pages}…`;
+  } else if (ev.type === 'done') {
+    setGlobalProg(1, 'Preparing Gemini parts');
+    showGeminiPartsResult(ev.dir, ev.parts || []);
+    $('gpStatus').textContent = `${ev.parts.length} Gemini part(s) ready in ${ev.dir}`;
+    showToast(`${ev.parts.length} Gemini part(s) ready.`, null, null, 'ok');
+    $('stripInfo').textContent = `Downloaded ${pageCount}p → ${ev.parts.length} Gemini ` +
+      `part(s). Click Stitch PDF.`;
+    setStatus(`✔ ${ev.parts.length} Gemini part(s) ready in ${ev.dir}. ` +
+              `Click "Stitch PDF" to load this chapter for framing.`);
+    finishGeminiParts();
+  } else if (ev.type === 'error') {
+    $('gpStatus').textContent = ev.message || 'Gemini-parts prep failed.';
+    setStatus(ev.message || 'Gemini-parts prep failed.', true);
+    finishGeminiParts();
+  }
+}
+
+function finishGeminiParts() {
+  if (gpES) { gpES.close(); gpES = null; }
+  clearGlobalProg();
+}
+
+function showGeminiPartsResult(dir, parts) {
+  const rows = parts.map(p =>
+    `<div class="gprow">
+       <span class="gpname">${p.name}</span>
+       <span class="gpmeta">p${p.from}-${p.to} (${p.pages}p) · ${fmtSize(p.size_bytes)}</span>
+       <button class="copybtn" type="button" data-path="${escAttr(p.path)}" title="Copy this part's path">${ic('copy',12)}</button>
+     </div>`).join('');
+  $('gpResult').innerHTML =
+    `<div class="jobcard">
+       <div class="jobhead">${ic('check',15)}<b>Gemini parts ready</b><span class="jobpath">${dir}</span></div>
+       <div class="gplist">${rows}</div>
+       <div class="jobacts">
+         <button class="btnlink" type="button" id="gpCopyDirBtn" data-path="${escAttr(dir)}">${ic('copy',14)}<span>Copy folder path</span></button>
+         <button class="btnlink" type="button" id="gpOpenDirBtn" data-path="${escAttr(dir)}">${ic('folder',14)}<span>Open folder</span></button>
+       </div>
+     </div>`;
+  $('gpResult').querySelectorAll('.copybtn, #gpCopyDirBtn').forEach(btn => {
+    btn.addEventListener('click', () => copyToClipboard(btn.dataset.path));
+  });
+  const openBtn = $('gpOpenDirBtn');
+  if (openBtn) openBtn.addEventListener('click', () => openFolder(openBtn.dataset.path));
+}
+
+function fmtSize(n) {
+  if (!n && n !== 0) return '';
+  const units = ['B','KB','MB','GB']; let v = n, i = 0;
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+  return (i === 0 ? Math.round(v) : v.toFixed(1)) + units[i];
+}
+function escAttr(s) { return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;'); }
+
+async function copyToClipboard(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    showToast('Copied to clipboard.', null, null, 'ok');
+  } catch (_) {
+    setStatus('Copy this path: ' + text, false);
+  }
+}
+
+async function openFolder(path) {
+  try {
+    const res = await fetch('/open_folder', { method:'POST',
+      headers:{'Content-Type':'application/json'}, body: JSON.stringify({ path }) });
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.error || 'could not open folder');
+  } catch (e) {
+    setStatus('Open folder: ' + e.message, true);
   }
 }
 
@@ -448,7 +1257,9 @@ async function loadPdf() {
   const path = $('pdfPath').value.trim();
   const chap = $('chapId').value.trim();
   if (!file && !path) { setStatus('Enter a PDF path or choose a file.', true); return; }
-  showOverlay('Stitching PDF…');
+  showOverlay('Stitching PDF');
+  btnBusy($('loadPdfBtn'), true);
+  setGlobalProg(null, 'Stitching PDF');
   setStatus('Stitching PDF… (rendering every page + tiling the preview, this can take a moment)');
   try {
     let res;
@@ -456,11 +1267,12 @@ async function loadPdf() {
       const fd = new FormData();
       fd.append('pdf', file);
       if (chap) fd.append('chapter_id', chap);
+      if (S.project && S.ch_no) { fd.append('project', S.project); fd.append('ch_no', S.ch_no); }
       res = await fetch('/load_pdf', { method:'POST', body:fd });
     } else {
       res = await fetch('/load_pdf', { method:'POST',
         headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ pdf_path: path, chapter_id: chap || undefined }) });
+        body: JSON.stringify(scopeBody({ pdf_path: path, chapter_id: chap || undefined })) });
     }
     const d = await res.json();
     if (!res.ok) throw new Error(d.error || 'load failed');
@@ -480,9 +1292,10 @@ async function loadPdf() {
     $('stripInfo').textContent =
       `strip ${d.strip_w}×${d.strip_h}px · preview ${d.preview_w}×${d.preview_h} (${d.tiles.length} tiles) · base ${d.preview_scale.toFixed(4)}`;
     setStatus(`Loaded ${d.chapter_id}. Full-res ${d.strip_w}×${d.strip_h}. Zoom out to navigate, in to see the art.`);
+    showToast('Stitched ' + d.tiles.length + ' tiles - strip ' + d.strip_w + 'x' + d.strip_h + 'px.', null, null, 'ok');
     maybeOfferRecovery(d.chapter_id);
   } catch (e) { setStatus('PDF load error: ' + e.message, true); }
-  finally { hideOverlay(); }
+  finally { btnBusy($('loadPdfBtn'), false); clearGlobalProg(); hideOverlay(); }
 }
 
 function buildTiles() {
@@ -492,7 +1305,7 @@ function buildTiles() {
     img.className = 'tile';
     img.loading = idx === 0 ? 'eager' : 'lazy';   // eager first tile so we can wait on it
     img.dataset.y = t.y; img.dataset.h = t.h;
-    img.src = t.url + '?t=' + Date.now();
+    img.src = t.url + '?t=' + Date.now() + scopeQS();
     tilesDiv.appendChild(img);
   });
 }
@@ -514,7 +1327,7 @@ function firstTilePromise() {
 // ---------------------------------------------------------------------------
 function computeZoomRange() {
   S.fitZoom = stage.clientWidth / S.preview_w;   // for the Fit-width button
-  S.minZoom = 0.05;                              // 5%  — whole strip for navigation
+  S.minZoom = 0.05;                              // 5%  - whole strip for navigation
   S.maxZoom = 4.0;                               // 400%
 }
 
@@ -569,7 +1382,7 @@ stage.addEventListener('wheel', e => {
 window.addEventListener('resize', () => { if (S.preview_w) { computeZoomRange(); layout(); } });
 
 // ---------------------------------------------------------------------------
-// coordinate mapping (screen <-> TRUE strip px) — exact at ANY zoom/scroll.
+// coordinate mapping (screen <-> TRUE strip px) - exact at ANY zoom/scroll.
 // world.getBoundingClientRect() folds in scroll AND the zoom-scaled CSS size,
 // so dividing by vscale (= preview_scale * zoom) yields TRUE px directly.
 // ---------------------------------------------------------------------------
@@ -580,14 +1393,39 @@ function screenToTrue(clientX, clientY) {
 function trueToWorld(v) { return v * S.vscale; }
 
 // ---------------------------------------------------------------------------
-// drawing boxes on the strip
+// drawing boxes on the strip - Pointer Events cover mouse AND touch/pen with
+// the SAME clientX/clientY semantics as the old mousedown/mousemove/mouseup,
+// so screenToTrue()/the box math below are byte-identical to before.
+//
+// Touch adds one thing on top: a SECOND simultaneous pointer cancels any
+// in-progress box and enters pinch - each move recomputes the live midpoint
+// and distance and feeds them straight into the existing setZoom(z, cx, cy),
+// which re-anchors the view on that point. Because the midpoint itself moves
+// as the fingers drag, this gives pinch-zoom AND two-finger pan for free,
+// with no change to setZoom itself.
 // ---------------------------------------------------------------------------
 let dragging = false, startTrue = null;
+const activePointers = new Map();   // pointerId -> {x,y} (client px)
+let pinch = null;                   // {startDist, startZoom}
 
 function activeLine() { return S.lines[S.active]; }
+function ptDist(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
+function ptMid(a, b) { return [(a.x + b.x) / 2, (a.y + b.y) / 2]; }
 
-world.addEventListener('mousedown', ev => {
-  if (ev.button !== 0 || !S.tiles.length) return;
+world.addEventListener('pointerdown', ev => {
+  if (document.body.classList.contains('stripFullscreen')) return;   // fullscreen is read-only
+  if (ev.pointerType === 'mouse' && ev.button !== 0) return;
+  activePointers.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+
+  if (activePointers.size >= 2) {
+    if (dragging) { dragging = false; rubber.style.display = 'none'; }   // a 2nd touch cancels any box in progress
+    const pts = [...activePointers.values()];
+    pinch = { startDist: ptDist(pts[0], pts[1]), startZoom: S.zoom };
+    ev.preventDefault();
+    return;
+  }
+
+  if (!S.tiles.length) return;
   if (S.active < 0) { setStatus('Click a script line first to make it active.', true); return; }
   if (S.mode === 'blur' && (!activeLine() || S.activeFrame < 0)) {
     setStatus('Add a frame first, then select it to draw blur on it.', true); return;
@@ -599,11 +1437,22 @@ world.addEventListener('mousedown', ev => {
   drawRubber(startTrue, startTrue);
   ev.preventDefault();
 });
-window.addEventListener('mousemove', ev => {
+window.addEventListener('pointermove', ev => {
+  if (activePointers.has(ev.pointerId)) activePointers.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+
+  if (pinch && activePointers.size >= 2) {
+    const pts = [...activePointers.values()];
+    const dist = ptDist(pts[0], pts[1]);
+    const mid = ptMid(pts[0], pts[1]);
+    if (pinch.startDist > 0) setZoom(pinch.startZoom * (dist / pinch.startDist), mid[0], mid[1]);
+    return;
+  }
   if (!dragging) return;
   drawRubber(startTrue, screenToTrue(ev.clientX, ev.clientY));
 });
-window.addEventListener('mouseup', ev => {
+function endPointer(ev) {
+  activePointers.delete(ev.pointerId);
+  if (activePointers.size < 2) pinch = null;
   if (!dragging) return;
   dragging = false;
   rubber.style.display = 'none';
@@ -630,7 +1479,9 @@ window.addEventListener('mouseup', ev => {
   }
   redrawBoxes();
   renderRow(S.active);
-});
+}
+window.addEventListener('pointerup', endPointer);
+window.addEventListener('pointercancel', endPointer);
 
 function drawRubber(a, b) {
   const x = Math.min(a[0],b[0]), y = Math.min(a[1],b[1]);
@@ -674,13 +1525,13 @@ function redrawBoxes() {
 }
 
 // ---------------------------------------------------------------------------
-// thumbnails — server crops from the preview tiles (always correct, light)
+// thumbnails - server crops from the preview tiles (always correct, light)
 // ---------------------------------------------------------------------------
 function cropUrl(box, blurRegions) {
   let q = `chapter=${encodeURIComponent(S.chapter_id)}&x=${box[0]}&y=${box[1]}&w=${box[2]}&h=${box[3]}`;
   if (blurRegions && blurRegions.length)
     q += `&blur=${blurRegions.map(b => b.join(',')).join(';')}`;
-  return `/crop?${q}`;
+  return `/crop?${q}${scopeQS()}`;
 }
 // a frame's thumbnail includes its blur regions, so the blur shows LIVE
 function thumbUrl(f) { return cropUrl(f.bbox, f.blur); }
@@ -734,6 +1585,9 @@ function renderLines() {
     box.appendChild(buildRow(ln, i));
     box.appendChild(buildInsertBar(i + 1));           // ...and between every pair
   });
+  const n = S.lines.length;
+  const badge = $('lineCountBadge'); if (badge) badge.textContent = `${n} line${n===1?'':'s'}`;
+  const tabBadge = $('tabScriptBadge'); if (tabBadge) tabBadge.textContent = n ? String(n) : '';
 }
 
 // a thin "+ insert" affordance that drops a blank line at the given position
@@ -790,7 +1644,7 @@ function buildRow(ln, i) {
   row.className = 'row' + (i===S.active ? ' active':'');
   row.dataset.i = i;
   row.innerHTML = `
-    <span class="grip" title="drag to reorder lines" draggable="true">⠿</span>
+    <span class="grip" title="drag to reorder lines" draggable="true">${ic('grip',15)}</span>
     <div class="rbody">
       <textarea class="ltext" rows="2"></textarea>
       <div class="rmeta">
@@ -799,9 +1653,9 @@ function buildRow(ln, i) {
         <span class="pill" style="padding:1px 4px">play:</span>
         <button class="seg seqbtn ${ln.mode==='sequence'?'on':''}">sequence</button>
         <button class="seg togbtn ${ln.mode==='together'?'on':''}">together</button>
-        <button class="small splitbtn" title="split this line at the cursor">split</button>
-        <button class="small mergebtn" title="merge into the line above">merge ↑</button>
-        <button class="small danger del">✕ line</button>
+        <button class="small splitbtn" title="split this line at the cursor">${ic('scissors',13)}<span>split</span></button>
+        <button class="small mergebtn" title="merge into the line above">${ic('arrowup',13)}<span>merge</span></button>
+        <button class="small danger del" title="remove this line">${ic('trash',13)}<span>line</span></button>
       </div>
       <div class="frames"></div>
     </div>`;
@@ -825,7 +1679,7 @@ function buildRow(ln, i) {
     S.lines.splice(i,1);
     if (S.active>=S.lines.length) S.active=S.lines.length-1;
     S.activeFrame = -1; renderLines(); redrawBoxes();
-    showToast(`Removed ${lbl}.`, '↶ Undo', undo); });
+    showToast(`Removed ${lbl}.`, 'Undo', undo, 'warn'); });
   row.addEventListener('mousedown', () => { if (i!==S.active) setActiveLine(i); });
   updateDurUI(row, ln);
 
@@ -868,7 +1722,7 @@ function updateDurUI(row, ln) {
   wrap.classList.toggle('auto', narrated);
   wrap.querySelector('.durlbl').textContent = narrated ? 'auto (audio length)' : 'dur s';
   wrap.title = narrated
-    ? 'This line has narration text, so the frame is shown for the generated AUDIO length — this value is ignored unless the line ends up with no audio.'
+    ? 'This line has narration text, so the frame is shown for the generated AUDIO length - this value is ignored unless the line ends up with no audio.'
     : 'No narration text → the frame is shown for this many seconds.';
 }
 
@@ -879,10 +1733,10 @@ function buildFrameCard(ln, i, f, j) {
     <div class="fthumb${f.flip?' flip':''}"></div>
     <div class="fctl">
       <span class="fn">${j+1}</span>
-      ${f.blur && f.blur.length ? `<span class="blurchip">${f.blur.length}b</span><button class="blurclr danger" title="clear blur on this frame">⌫</button>`:''}
-      <button class="mvL" title="move left">◀</button>
-      <button class="mvR" title="move right">▶</button>
-      <button class="fdel danger" title="remove frame">✕</button>
+      ${f.blur && f.blur.length ? `<span class="blurchip">${f.blur.length} blur</span><button class="blurclr danger" title="clear blur on this frame">${ic('xcircle',13)}</button>`:''}
+      <button class="mvL" title="move left">${ic('chevleft',13)}</button>
+      <button class="mvR" title="move right">${ic('chevright',13)}</button>
+      <button class="fdel danger" title="remove frame">${ic('x',13)}</button>
     </div>
     <div class="fctl">
       <label><input type="checkbox" class="fflip" ${f.flip?'checked':''}> flip</label>
@@ -937,11 +1791,13 @@ async function doExport() {
   const lines = entries.filter(e => e.frames.length).length;
   const frames = entries.reduce((n,e) => n + e.frames.length, 0);
   if (!lines) { setStatus('No lines have a frame. Draw a box on the strip first.', true); return; }
-  setStatus(`Exporting ${frames} frame(s) across ${lines} line(s)…`);
+  setStatus(`Exporting ${frames} frame(s) across ${lines} line(s)...`);
+  btnBusy($('exportBtn'), true);
+  setGlobalProg(null, 'Exporting frames');
   try {
     const res = await fetch('/export', { method:'POST',
       headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ chapter_id: S.chapter_id, entries }) });
+      body: JSON.stringify(scopeBody({ chapter_id: S.chapter_id, entries })) });
     const d = await res.json();
     if (!res.ok) throw new Error(d.error || 'export failed');
     setStatus(
@@ -950,25 +1806,35 @@ async function doExport() {
       `mapping:  ${d.mapping_path}\n` +
       `manifest: ${d.manifest_path}\n\n` +
       `Next, run the pipeline's audio + video:\n  ${d.next_command}`);
-    $('exportHint').textContent = `→ ${d.frames_dir}`;
+    $('exportHint').textContent = d.frames_dir;
+    showToast('Exported ' + d.frames_written + ' frames across ' + d.lines_written + ' lines.', null, null, 'ok');
   } catch (e) { setStatus('Export error: ' + e.message, true); }
+  finally { btnBusy($('exportBtn'), false); clearGlobalProg(); }
 }
 
 // ---------------------------------------------------------------------------
-// generate audio + video — stream the pipeline (s6 TTS, s7 assemble) over SSE so
+// generate audio + video - stream the pipeline (s6 TTS, s7 assemble) over SSE so
 // the long model-load + per-line synth shows live, then play/download the result.
 // ---------------------------------------------------------------------------
 let genES = null, genDone = false;
 const genLines = [];
 const gen = { total: 0, audio: 0, video: 0, what: 'both' };
 
+const GEN_LABELS = { both: 'Generating audio + video', voice: 'Re-rendering voice', video: 'Re-rendering video' };
+
 function setGenBusy(b) {
-  $('genAVBtn').disabled = b; $('genVidBtn').disabled = b;
+  btnBusy($('genAVBtn'), b && gen.what === 'both');
+  btnBusy($('genVoiceBtn'), b && gen.what === 'voice');
+  btnBusy($('genVidBtn'), b && gen.what === 'video');
+  $('genAVBtn').disabled = b; $('genVoiceBtn').disabled = b; $('genVidBtn').disabled = b;
   $('genCancelBtn').disabled = !b;
+  const gb = $('genbar'); if (gb) gb.classList.toggle('running', !!b);
+  if (!b) clearGlobalProg();
 }
 function setGenBar(frac, indet) {
   const wrap = $('genProgress'), bar = $('genBar');
   wrap.style.display = 'block';
+  setGlobalProg(indet ? null : Math.max(0, Math.min(1, frac)), GEN_LABELS[gen.what] || GEN_LABELS.both);
   wrap.classList.remove('err');
   wrap.classList.toggle('indet', !!indet);
   if (!indet) bar.style.width = Math.round(clamp(frac, 0, 1) * 100) + '%';
@@ -988,13 +1854,14 @@ function startGenerate(what) {
   genLines.length = 0; genDone = false;
   $('genStatus').textContent = ''; $('genResult').innerHTML = '';
   setGenBusy(true); setGenBar(0, true);
-  appendGenLog(`Requesting ${what === 'video' ? 'video re-render' : 'audio + video'} for ${S.chapter_id}…`);
+  const reqLabel = { both: 'audio + video', voice: 'voice re-render', video: 'video re-render' }[what] || 'audio + video';
+  appendGenLog(`Requesting ${reqLabel} for ${S.chapter_id}…`);
 
-  const url = `/generate_stream?chapter=${encodeURIComponent(S.chapter_id)}&what=${encodeURIComponent(what)}`;
+  const url = `/generate_stream?chapter=${encodeURIComponent(S.chapter_id)}&what=${encodeURIComponent(what)}${scopeQS()}`;
   genES = new EventSource(url);
   genES.onmessage = e => { try { handleGenEvent(JSON.parse(e.data)); } catch (_) {} };
   genES.onerror = () => {
-    if (genDone) return;                 // normal end-of-stream close — ignore
+    if (genDone) return;                 // normal end-of-stream close - ignore
     appendGenLog('[connection lost]');
     setStatus('Generate stream disconnected.', true);
     finishGen();
@@ -1013,19 +1880,20 @@ function handleGenEvent(ev) {
     genDone = true;
     if (ev.ok) {
       setGenBar(1, false);
-      appendGenLog('✔ ' + (ev.message || 'Done.'));
+      appendGenLog('OK  ' + (ev.message || 'Done.'));
+      showToast(ev.video ? 'Video ready.' : (ev.message || 'Done.'), null, null, 'ok');
       if (ev.video) showGenResult(ev.video);
-      setStatus(ev.video ? 'Render complete — playing below.' : (ev.message || 'Done.'));
+      setStatus(ev.video ? 'Render complete - playing below.' : (ev.message || 'Done.'));
     } else {
       $('genProgress').classList.add('err');
-      appendGenLog('✖ ' + (ev.message || 'Failed.'));
-      setStatus(ev.message || 'Generation failed — see the log.', true);
+      appendGenLog('FAILED  ' + (ev.message || 'Failed.'));
+      setStatus(ev.message || 'Generation failed - see the log.', true);
     }
     finishGen();
   } else if (ev.type === 'error') {
     genDone = true;
     $('genProgress').classList.add('err');
-    appendGenLog('✖ ' + (ev.message || 'Error'));
+    appendGenLog('FAILED  ' + (ev.message || 'Error'));
     setStatus(ev.message || 'Generation error.', true);
     finishGen();
   }
@@ -1033,7 +1901,8 @@ function handleGenEvent(ev) {
 
 // Advance the bar from the pipeline's own log lines: s6 prints one "[NNN] …" per
 // voiced line, s7 prints one "line N: …" per rendered line. Audio is the slow
-// part, so weight it heavier for the combined run; a video-only run is all s7.
+// part, so weight it heavier for the combined run; a video-only or voice-only
+// run is entirely s7 or entirely s6 respectively.
 function updateGenProgress(line) {
   if (/^\s*\[\d{1,4}\]/.test(line)) gen.audio++;
   else if (/^\s*line \d+:/.test(line)) gen.video++;
@@ -1041,17 +1910,23 @@ function updateGenProgress(line) {
   if (gen.total <= 0 || !counted) { setGenBar(0, true); return; }   // pulse until first tick
   const a = clamp(gen.audio / gen.total, 0, 1);
   const v = clamp(gen.video / gen.total, 0, 1);
-  const frac = gen.what === 'video' ? (0.05 + 0.90 * v) : (0.05 + 0.70 * a + 0.22 * v);
+  const frac = gen.what === 'video' ? (0.05 + 0.90 * v)
+             : gen.what === 'voice' ? (0.05 + 0.90 * a)
+             : (0.05 + 0.70 * a + 0.22 * v);
   setGenBar(frac, false);
 }
 
 function showGenResult(videoUrl) {
-  const src = videoUrl + '?t=' + Date.now();   // cache-bust so a re-render updates
+  const sep = videoUrl.includes('?') ? '&' : '?';
+  const src = videoUrl + sep + 't=' + Date.now();   // cache-bust so a re-render updates
   $('genResult').innerHTML =
-    `<video class="genvideo" src="${src}" controls preload="metadata"></video>
-     <div class="rmeta" style="margin-top:4px">
-       <a class="dllink" href="${src}" download="recap.mp4">⬇ Download recap.mp4</a>
-       <span class="hint">${videoUrl}</span>
+    `<div class="jobcard">
+       <div class="jobhead">${ic('check',15)}<b>Video ready</b><span class="jobpath">${videoUrl}</span></div>
+       <video class="genvideo" src="${src}" controls preload="metadata"></video>
+       <div class="jobacts">
+         <a class="btnlink" href="${src}" target="_blank">${ic('play',14)}<span>Play full size</span></a>
+         <a class="btnlink" href="${src}" download="recap.mp4">${ic('download',14)}<span>Download recap.mp4</span></a>
+       </div>
      </div>`;
 }
 
@@ -1066,7 +1941,9 @@ function cancelGenerate() {
   finishGen();
   $('genProgress').style.display = 'none';
   appendGenLog('[stopped by user]');
+  clearGlobalProg();
   setStatus('Generation stopped.');
+  showToast('Job stopped.', null, null, 'warn');
 }
 
 // ---------------------------------------------------------------------------
@@ -1092,17 +1969,17 @@ function projectObject() {
 }
 function setSaveState(msg) { const el = $('saveState'); if (el) el.textContent = msg; }
 
-async function saveProject(recovery) {
+async function saveEditorState(recovery) {
   if (!S.chapter_id) { if (!recovery) setStatus('Load a PDF (or a project) first.', true); return; }
   try {
-    const res = await fetch('/save_project', { method:'POST',
+    const res = await fetch('/editor_state/save', { method:'POST',
       headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ chapter_id: S.chapter_id, recovery: !!recovery, project: projectObject() }) });
+      body: JSON.stringify(scopeBody({ chapter_id: S.chapter_id, recovery: !!recovery, state: projectObject() })) });
     const d = await res.json();
     if (!res.ok) throw new Error(d.error || 'save failed');
     const t = new Date().toLocaleTimeString();
     if (recovery) setSaveState(`auto-saved ${t}`);
-    else { setSaveState(`saved ${t}`); setStatus(`Project saved → ${d.path}`); }
+    else { setSaveState(`saved ${t}`); setStatus('Editor state saved to ' + d.path); showToast('Saved.', null, null, 'ok'); }
   } catch (e) {
     if (recovery) setSaveState('autosave failed');
     else setStatus('Save error: ' + e.message, true);
@@ -1122,7 +1999,7 @@ function applyProject(project, preview) {
       `strip ${preview.strip_w}×${preview.strip_h}px · preview ${preview.preview_w}×${preview.preview_h} (${preview.tiles.length} tiles)`;
   } else {
     S.chapter_id = project.chapter_id;
-    setStatus('Project loaded, but no stitched strip found — re-stitch the PDF to box frames.', true);
+    setStatus('Project loaded, but no stitched strip found - re-stitch the PDF to box frames.', true);
   }
   S.source_pdf = project.source_pdf || null;
   S.lines = (project.lines || []).map(normLine);
@@ -1132,53 +2009,56 @@ function applyProject(project, preview) {
   renderLines(); redrawBoxes();
 }
 
-async function loadProject(recovery) {
+async function loadEditorState(recovery) {
   const chap = ($('chapId').value.trim() || S.chapter_id || '');
-  if (!chap) { setStatus('Enter a chapter id to load its saved project.', true); return; }
-  showOverlay(recovery ? 'Restoring recovery…' : 'Loading project…');
+  if (!chap) { setStatus('Enter a chapter id to load its saved state.', true); return; }
+  showOverlay(recovery ? 'Restoring recovery' : 'Loading editor state');
+  setGlobalProg(null, recovery ? 'Restoring recovery' : 'Loading editor state');
   try {
-    const res = await fetch(`/load_project?chapter=${encodeURIComponent(chap)}${recovery ? '&recovery=1' : ''}`);
+    const res = await fetch(`/editor_state/load?chapter=${encodeURIComponent(chap)}${recovery ? '&recovery=1' : ''}${scopeQS()}`);
     const d = await res.json();
     if (!res.ok) throw new Error(d.error || 'load failed');
-    applyProject(d.project, d.preview);
+    applyProject(d.state, d.preview);
     await firstTilePromise();
-    setStatus(`Loaded ${recovery ? 'recovery' : 'project'} ${d.project.chapter_id} — ${S.lines.length} line(s).`);
+    setStatus(`Loaded ${recovery ? 'recovery' : 'saved'} state for ${d.state.chapter_id} - ${S.lines.length} line(s).`);
     setSaveState(`loaded ${new Date().toLocaleTimeString()}`);
+    showToast('Editor state loaded - ' + S.lines.length + ' lines.', null, null, 'ok');
   } catch (e) { setStatus('Load error: ' + e.message, true); }
-  finally { hideOverlay(); }
+  finally { clearGlobalProg(); hideOverlay(); }
 }
 
 // after a chapter is opened, offer to restore newer unsaved (recovery) work
 async function maybeOfferRecovery(chap) {
   try {
-    const res = await fetch(`/project_status?chapter=${encodeURIComponent(chap)}`);
+    const res = await fetch(`/editor_state/status?chapter=${encodeURIComponent(chap)}${scopeQS()}`);
     const d = await res.json();
     if (d.recovery && d.recovery.exists &&
         (!d.project || !d.project.exists || d.recovery.mtime > d.project.mtime)) {
-      showToast('Unsaved recovery found for this chapter.', 'Restore', () => loadProject(true));
+      showToast('Unsaved recovery found for this chapter.', 'Restore', () => loadEditorState(true));
     }
   } catch (_) { /* non-fatal */ }
 }
 
-// debounced autosave on every edit + a 30s backstop, both to the recovery file
+// debounced autosave on every edit + a 30s backstop, both to the recovery file -
+// only while the editor screen is actually open (see showScreen()).
 let autosaveTimer = null;
 function markDirty() {
   if (!S.chapter_id) return;
   setSaveState('unsaved…');
   clearTimeout(autosaveTimer);
-  autosaveTimer = setTimeout(() => saveProject(true), 1500);
+  autosaveTimer = setTimeout(() => saveEditorState(true), 1500);
 }
-setInterval(() => { if (S.chapter_id) saveProject(true); }, 30000);
+setInterval(() => { if (SCREEN === 'editor' && S.chapter_id) saveEditorState(true); }, 30000);
 
 // ---------------------------------------------------------------------------
-// theme (light / dark) + split position — both persisted SERVER-SIDE per session
+// theme (light / dark) + split position - both persisted SERVER-SIDE per session
 // ---------------------------------------------------------------------------
-let curTheme = 'dark';
+let curTheme = 'light';
 function applyTheme(name) {
   curTheme = name === 'light' ? 'light' : 'dark';
   document.body.classList.toggle('light', curTheme === 'light');
-  const b = $('themeBtn');
-  if (b) b.textContent = curTheme === 'light' ? '🌙 Dark' : '☀ Light';
+  const label = ic(curTheme === 'light' ? 'moon' : 'sun', 15) + '<span>' + (curTheme === 'light' ? 'Dark' : 'Light') + '</span>';
+  ['themeBtn', 'themeBtnP'].forEach(id => { const b = $(id); if (b) b.innerHTML = label; });
 }
 function toggleTheme() { applyTheme(curTheme === 'light' ? 'dark' : 'light'); saveSetting({ theme: curTheme }); }
 
@@ -1194,27 +2074,48 @@ async function loadSettings() {
   } catch (_) { /* non-fatal */ }
 }
 
+// Wider drag range than the strip needs a hard minimum for: down to 240px
+// (a narrow script-only view) and up to within 220px of the full window (the
+// strip keeps just its rail + a sliver), so the split can go much wider than
+// before while never fully swallowing either pane.
+const SPLIT_MIN = 240;
+function splitMax() { return Math.max(360, window.innerWidth - 220); }
 function applySplit(px) {
-  px = clamp(px, 280, Math.max(320, window.innerWidth - 360));
+  px = clamp(px, SPLIT_MIN, splitMax());
   $('right').style.width = px + 'px';
   if (S.preview_w) { computeZoomRange(); layout(); }
 }
 
-// drag the divider to resize the strip / script split (rAF-throttled), then persist
+// drag the divider to resize the strip / script split (rAF-throttled), then persist.
+// Pointer Events + setPointerCapture (rather than mousedown/mousemove/mouseup on
+// window) so the drag survives the cursor leaving the divider - or the whole
+// window - mid-gesture (fast drags, a trackpad, or the panel briefly covering
+// the cursor): captured events keep targeting the divider regardless of where
+// the pointer physically is, and a capture always gets a matching pointerup/
+// pointercancel, so `resizing` can never get stuck.
 let resizing = false, pendW = null, rafId = null;
 function scheduleSplit(w) { pendW = w; if (rafId) return; rafId = requestAnimationFrame(() => { rafId = null; applySplit(pendW); }); }
-$('divider').addEventListener('mousedown', e => {
+function beginResize(e) {
   resizing = true; $('divider').classList.add('active');
   document.body.style.cursor = 'col-resize'; document.body.style.userSelect = 'none';
+  try { $('divider').setPointerCapture(e.pointerId); } catch (_) { /* older browser - falls back to plain listeners */ }
   e.preventDefault();
-});
-window.addEventListener('mousemove', e => { if (resizing) scheduleSplit(window.innerWidth - e.clientX); });
-window.addEventListener('mouseup', () => {
+}
+function moveResize(e) { if (resizing) scheduleSplit(window.innerWidth - e.clientX); }
+function endResize() {
   if (!resizing) return;
   resizing = false; $('divider').classList.remove('active');
   document.body.style.cursor = ''; document.body.style.userSelect = '';
   saveSetting({ split: parseInt($('right').style.width) || 460 });
-});
+}
+$('divider').addEventListener('pointerdown', beginResize);
+$('divider').addEventListener('pointermove', moveResize);
+$('divider').addEventListener('pointerup', endResize);
+$('divider').addEventListener('pointercancel', endResize);
+// Fallback for browsers without Pointer Events (or if capture silently no-ops):
+// window-level mouse listeners cover the same gesture as before.
+window.addEventListener('mousemove', moveResize);
+window.addEventListener('mouseup', endResize);
 
 // ---------------------------------------------------------------------------
 // keyboard navigation: ↑/↓ or j/k move the active line; Enter focuses its text;
@@ -1247,6 +2148,7 @@ function focusActive() {
   if (ta) { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }
 }
 window.addEventListener('keydown', e => {
+  if (SCREEN !== 'editor') return;   // j/k/Enter navigation is editor-only
   const t = e.target;
   if (t && (t.tagName === 'TEXTAREA' || t.tagName === 'INPUT')) {
     if (e.key === 'Escape') t.blur();
@@ -1259,14 +2161,629 @@ window.addEventListener('keydown', e => {
 });
 
 // ---------------------------------------------------------------------------
+// PROJECT SYSTEM - Projects landing screen, per-project chapter list +
+// settings, and screen switching. The editor workspace above is unchanged; it
+// is simply one of three top-level screens (see the <section id="scr-*">
+// wrappers in the body). Navigation is deep-linked via ?project=&chapter=.
+// ---------------------------------------------------------------------------
+let SCREEN = 'projects';
+let CURRENT_PROJECT = null;   // the project object backing the open Project screen
+
+function showScreen(name) {
+  SCREEN = name;
+  ['projects', 'project', 'editor'].forEach(n => {
+    const el = $('scr-' + n);
+    if (el) el.classList.toggle('on', n === name);
+  });
+  if (name === 'editor') {
+    // the workspace was hidden (display:none => 0 client size); its zoom/fit
+    // math needs real geometry, so recompute once it is actually visible.
+    requestAnimationFrame(() => { if (S.preview_w) { computeZoomRange(); layout(); redrawBoxes(); } });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// fullscreen strip view - "read like a webtoon": everything but the stage is
+// hidden via CSS (body.stripFullscreen), the zoom/scroll mechanics themselves
+// are untouched (same #stage/#world, same S.zoom), just recomputed once the
+// container actually resizes (display:none -> real size takes a layout tick).
+// ---------------------------------------------------------------------------
+function setFullscreen(on) {
+  document.body.classList.toggle('stripFullscreen', on);
+  const btn = $('fullscreenBtn');
+  btn.innerHTML = ic(on ? 'minimize' : 'maximize', 14) + '<span>' + (on ? 'Exit fullscreen' : 'Fullscreen') + '</span>';
+  requestAnimationFrame(() => { if (S.preview_w) { computeZoomRange(); layout(); redrawBoxes(); } });
+}
+
+// ---------------------------------------------------------------------------
+// script-only view - hide the strip, let the script column fill/center
+// itself for a cleaner read. The divider may have set an inline width on
+// #right; stash it while script-only is on and restore it on the way out so
+// the remembered split isn't lost.
+// ---------------------------------------------------------------------------
+let savedRightWidth = null;
+function setScriptOnly(on) {
+  document.body.classList.toggle('scriptOnlyView', on);
+  $('scriptOnlyBtn').classList.toggle('on', on);
+  if (on) {
+    savedRightWidth = $('right').style.width;
+    $('right').style.width = '';
+  } else if (savedRightWidth !== null) {
+    $('right').style.width = savedRightWidth;
+    savedRightWidth = null;
+  }
+  requestAnimationFrame(() => { if (S.preview_w && !on) { computeZoomRange(); layout(); redrawBoxes(); } });
+}
+
+function navTo(params, push) {
+  const qs = new URLSearchParams();
+  if (params.project) qs.set('project', params.project);
+  if (params.chapter) qs.set('chapter', params.chapter);
+  const url = location.pathname + (qs.toString() ? '?' + qs.toString() : '');
+  if (push !== false) history.pushState(params, '', url);
+  dispatchRoute(params);
+}
+function dispatchRoute(params) {
+  if (params.project && params.chapter) openChapterEditor(params.project, params.chapter);
+  else if (params.project) openProjectScreen(params.project);
+  else { showScreen('projects'); renderProjectsList(); }
+}
+function route() {
+  const qs = new URLSearchParams(location.search);
+  dispatchRoute({ project: qs.get('project'), chapter: qs.get('chapter') });
+}
+window.addEventListener('popstate', () => route());
+
+// --- Projects landing screen -------------------------------------------------
+async function renderProjectsList() {
+  const list = $('pList');
+  list.innerHTML = '<div class="empty">Loading…</div>';
+  try {
+    const d = await (await fetch('/api/projects')).json();
+    const items = d.projects || [];
+    if (!items.length) { list.innerHTML = '<div class="empty">No projects yet - create one above.</div>'; return; }
+    list.innerHTML = '';
+    items.forEach(p => {
+      const done = (p.counts && ((p.counts.rendered || 0) + (p.counts.complete || 0))) || 0;
+      const pct = p.chapters ? Math.round(100 * done / p.chapters) : 0;
+      const card = document.createElement('button');
+      card.className = 'pcard';
+      card.innerHTML = '<div><div class="pname"></div><div class="purl"></div></div>' +
+        `<div class="pmeta"><span class="pcount">${done}/${p.chapters} done</span>` +
+        `<span class="ptrack"><span class="pfill" style="width:${pct}%"></span></span></div>`;
+      card.querySelector('.pname').textContent = p.name;
+      card.querySelector('.purl').textContent = p.url || '(no URL set)';
+      card.onclick = () => navTo({ project: p.slug });
+      list.appendChild(card);
+    });
+  } catch (e) { list.innerHTML = '<div class="empty">Could not load projects.</div>'; }
+}
+
+async function createProject() {
+  const name = $('npName').value.trim();
+  const url = $('npUrl').value.trim();
+  if (!name) { setStatus('Enter a project name.', true); return; }
+  btnBusy($('npCreateBtn'), true);
+  $('npProg').classList.add('on');
+  $('npFetchResult').classList.remove('on', 'ok', 'warn');
+  $('npManualRow').style.display = 'none';
+  try {
+    const res = await fetch('/api/projects', { method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ name, url }) });
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.error || 'create failed');
+    if (d.fetch && d.fetch.ok) {
+      $('npFetchResult').textContent = `Found ${d.fetch.total} chapter(s) - "${d.fetch.title}".`;
+      $('npFetchResult').classList.add('on', 'ok');
+      $('npName').value = ''; $('npUrl').value = '';
+      setTimeout(() => navTo({ project: d.slug }), 600);
+    } else {
+      $('npFetchResult').textContent = (d.fetch && d.fetch.reason) || "Couldn't read the series page.";
+      $('npFetchResult').classList.add('on', 'warn');
+      $('npManualRow').style.display = 'flex';
+      $('npManualRow').dataset.slug = d.slug;
+    }
+  } catch (e) { setStatus('Create project error: ' + e.message, true); }
+  finally { btnBusy($('npCreateBtn'), false); $('npProg').classList.remove('on'); }
+}
+
+async function useManualRange() {
+  const slug = $('npManualRow').dataset.slug;
+  if (!slug) return;
+  const from = parseInt($('npFrom').value, 10) || 1;
+  const to = parseInt($('npTo').value, 10) || from;
+  btnBusy($('npManualBtn'), true);
+  try {
+    const res = await fetch(`/api/projects/${encodeURIComponent(slug)}/chapters`, { method:'POST',
+      headers:{'Content-Type':'application/json'}, body: JSON.stringify({ from, to }) });
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.error || 'failed');
+    navTo({ project: slug });
+  } catch (e) { setStatus('Chapter range error: ' + e.message, true); }
+  finally { btnBusy($('npManualBtn'), false); }
+}
+
+// --- Project screen: chapter list + settings ---------------------------------
+async function openProjectScreen(slug) {
+  showScreen('project');
+  $('pjTitle').textContent = 'Loading…';
+  $('chList').innerHTML = '<div class="empty">Loading…</div>';
+  $('pjSettings').classList.remove('on');
+  MERGE_SELECTION.clear();
+  $('mergeStatus').textContent = ''; $('mergeResult').innerHTML = ''; $('pastMerges').innerHTML = '';
+  try {
+    const d = await (await fetch(`/api/projects/${encodeURIComponent(slug)}`)).json();
+    if (!d.project) throw new Error(d.error || 'not found');
+    CURRENT_PROJECT = d.project;
+    $('pjTitle').textContent = CURRENT_PROJECT.name;
+    renderChapterList();
+    fillSettingsForm();
+    refreshPastMerges();
+  } catch (e) {
+    setStatus('Open project error: ' + e.message, true);
+    $('chList').innerHTML = '<div class="empty">Could not load this project.</div>';
+  }
+}
+
+let MERGE_SELECTION = new Set();   // chapter numbers currently checked for merging
+
+function renderChapterList() {
+  const list = $('chList');
+  const chapters = CURRENT_PROJECT.chapters || [];
+  if (!chapters.length) { list.innerHTML = '<div class="empty">No chapters yet.</div>'; return; }
+  // a chapter that stopped being "complete" (reset, or a fresh derive_status)
+  // can't stay selected for merging
+  for (const n of [...MERGE_SELECTION]) {
+    const ch = chapters.find(c => c.n === n);
+    if (!ch || ch.status !== 'complete') MERGE_SELECTION.delete(n);
+  }
+  list.innerHTML = '';
+  chapters.forEach(ch => {
+    const row = document.createElement('div');
+    row.className = 'chrow';
+    const primary = ch.status === 'not_started'
+      ? '<button class="small primary" data-icon="download" data-ic-size="13"><span>Download</span></button>'
+      : '<button class="small" data-icon="crop" data-ic-size="13"><span>Open editor</span></button>';
+    const markBtn = ch.status === 'complete'
+      ? '<button class="small ghost" data-icon="refresh" data-ic-size="13" title="Reset to rendered"><span>Reset</span></button>'
+      : '<button class="small ghost" data-icon="check" data-ic-size="13" title="Mark complete"><span>Complete</span></button>';
+    const checkbox = ch.status === 'complete'
+      ? `<input type="checkbox" class="mergeCk" title="Select for merging" ${MERGE_SELECTION.has(ch.n) ? 'checked' : ''} />`
+      : `<span class="chck-spacer"></span>`;
+    row.innerHTML = `${checkbox}<span class="chno">#${ch.n}</span><span class="chtitle"></span>` +
+      `<span class="stpill st-${ch.status}"></span><div class="chacts"></div>`;
+    row.querySelector('.chtitle').textContent = ch.title;
+    row.querySelector('.stpill').textContent = ch.status.replace('_', ' ');
+    const acts = row.querySelector('.chacts');
+    acts.insertAdjacentHTML('beforeend', primary);
+    acts.insertAdjacentHTML('beforeend', markBtn);
+    paintIcons(acts);
+    acts.children[0].onclick = () => {
+      if (ch.status === 'not_started') openChapterEditor(CURRENT_PROJECT.slug, ch.n, { autoDownload:true, url: CURRENT_PROJECT.url });
+      else navTo({ project: CURRENT_PROJECT.slug, chapter: ch.n });
+    };
+    acts.children[1].onclick = () => toggleComplete(ch);
+    const ck = row.querySelector('.mergeCk');
+    if (ck) ck.onchange = () => {
+      if (ck.checked) MERGE_SELECTION.add(ch.n); else MERGE_SELECTION.delete(ch.n);
+      updateMergeBar();
+    };
+    list.appendChild(row);
+  });
+  updateMergeBar();
+}
+
+function updateMergeBar() {
+  const n = MERGE_SELECTION.size;
+  $('mergeSelHint').textContent = n === 0 ? 'No chapters selected.'
+    : `${n} chapter(s) selected: ${[...MERGE_SELECTION].sort((a,b) => a - b).join(', ')}`;
+  $('mergeBtn').disabled = n < 2 || !!mergeES;
+}
+
+// ---------------------------------------------------------------------------
+// merge selected "complete" chapters' recap.mp4 into one video, in chapter
+// order - same SSE pattern as generate (see startGenerate above).
+// ---------------------------------------------------------------------------
+let mergeES = null, mergeDone = false;
+const mergeLines = [];
+
+function setMergeBusy(b) {
+  btnBusy($('mergeBtn'), b);
+  $('mergeBtn').disabled = b || MERGE_SELECTION.size < 2;
+  $('mergeCancelBtn').disabled = !b;
+}
+function setMergeBar(frac, indet) {
+  const wrap = $('mergeProgress'), bar = $('mergeBar');
+  wrap.style.display = 'block';
+  wrap.classList.remove('err');
+  wrap.classList.toggle('indet', !!indet);
+  if (!indet) bar.style.width = Math.round(clamp(frac, 0, 1) * 100) + '%';
+}
+function appendMergeLog(line) {
+  mergeLines.push(line);
+  if (mergeLines.length > 500) mergeLines.shift();
+  const el = $('mergeStatus');
+  el.textContent = mergeLines.join('\n');
+  el.scrollTop = el.scrollHeight;
+}
+
+function startMerge() {
+  if (mergeES) { setStatus('A merge is already running.', true); return; }
+  const chapters = [...MERGE_SELECTION].sort((a, b) => a - b);
+  if (chapters.length < 2) { setStatus('Select at least 2 complete chapters.', true); return; }
+  mergeLines.length = 0; mergeDone = false;
+  $('mergeStatus').textContent = ''; $('mergeResult').innerHTML = '';
+  setMergeBusy(true); setMergeBar(0, true);
+  appendMergeLog(`Requesting merge of chapters ${chapters.join(', ')}…`);
+
+  const url = `/api/projects/${encodeURIComponent(CURRENT_PROJECT.slug)}/merge_stream?chapters=${chapters.join(',')}`;
+  mergeES = new EventSource(url);
+  mergeES.onmessage = e => { try { handleMergeEvent(JSON.parse(e.data)); } catch (_) {} };
+  mergeES.onerror = () => {
+    if (mergeDone) return;
+    appendMergeLog('[connection lost]');
+    setStatus('Merge stream disconnected.', true);
+    finishMerge();
+  };
+}
+
+function handleMergeEvent(ev) {
+  if (ev.type === 'start') {
+    appendMergeLog(ev.message || 'Starting…');
+    setMergeBar(0.05, true);
+  } else if (ev.type === 'log') {
+    appendMergeLog(ev.line || '');
+    setMergeBar(0.5, true);   // ffmpeg concat is fast/bursty - a pulse reads better than a fake %
+  } else if (ev.type === 'done') {
+    mergeDone = true;
+    if (ev.ok) {
+      setMergeBar(1, false);
+      appendMergeLog('OK  ' + (ev.message || 'Done.'));
+      showToast('Merged video ready.', null, null, 'ok');
+      if (ev.video) showMergeResult(ev.video);
+      setStatus(ev.message || 'Merge complete.');
+      refreshPastMerges();
+    } else {
+      $('mergeProgress').classList.add('err');
+      appendMergeLog('FAILED  ' + (ev.message || 'Failed.'));
+      setStatus(ev.message || 'Merge failed - see the log.', true);
+    }
+    finishMerge();
+  } else if (ev.type === 'error') {
+    mergeDone = true;
+    $('mergeProgress').classList.add('err');
+    appendMergeLog('FAILED  ' + (ev.message || 'Error'));
+    setStatus(ev.message || 'Merge error.', true);
+    finishMerge();
+  }
+}
+
+function showMergeResult(videoUrl) {
+  const sep = videoUrl.includes('?') ? '&' : '?';
+  const src = videoUrl + sep + 't=' + Date.now();
+  $('mergeResult').innerHTML =
+    `<div class="jobcard">
+       <div class="jobhead">${ic('check',15)}<b>Merged video ready</b><span class="jobpath">${videoUrl}</span></div>
+       <video class="genvideo" src="${src}" controls preload="metadata"></video>
+       <div class="jobacts">
+         <a class="btnlink" href="${src}" target="_blank">${ic('play',14)}<span>Play full size</span></a>
+         <a class="btnlink" href="${src}" download="merged.mp4">${ic('download',14)}<span>Download</span></a>
+       </div>
+     </div>`;
+}
+
+function finishMerge() {
+  if (mergeES) { mergeES.close(); mergeES = null; }
+  setMergeBusy(false);
+}
+function cancelMerge() {
+  if (!mergeES) return;
+  mergeDone = true;
+  finishMerge();
+  $('mergeProgress').style.display = 'none';
+  appendMergeLog('[stopped by user]');
+  setStatus('Merge stopped.');
+  showToast('Merge stopped.', null, null, 'warn');
+}
+
+async function refreshPastMerges() {
+  if (!CURRENT_PROJECT) return;
+  try {
+    const d = await (await fetch(`/api/projects/${encodeURIComponent(CURRENT_PROJECT.slug)}/merges`)).json();
+    const merges = d.merges || [];
+    const box = $('pastMerges');
+    if (!merges.length) { box.innerHTML = ''; return; }
+    box.innerHTML = '<div class="hint" style="margin:10px 0 6px">Past merges (click to play):</div>' +
+      merges.map((m, i) =>
+        `<div class="gprow" data-i="${i}" style="cursor:pointer">` +
+        `<span class="gpname">ch ${m.chapters.join(', ')} (${m.mode})</span>` +
+        `<span class="gpmeta">${new Date(m.created_at).toLocaleString()}</span></div>`).join('');
+    box.querySelectorAll('.gprow').forEach((el, i) =>
+      el.onclick = () => showMergeResult(`/projects/${CURRENT_PROJECT.slug}/${merges[i].file}`));
+  } catch (_) { /* non-fatal */ }
+}
+
+async function toggleComplete(ch) {
+  const status = ch.status === 'complete' ? 'rendered' : 'complete';
+  try {
+    const res = await fetch(`/api/projects/${encodeURIComponent(CURRENT_PROJECT.slug)}/chapters/${ch.n}/status`,
+      { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ status, force:true }) });
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.error || 'failed');
+    ch.status = d.chapter.status;
+    renderChapterList();
+  } catch (e) { setStatus('Status update error: ' + e.message, true); }
+}
+
+async function refetchChapters() {
+  if (!CURRENT_PROJECT) return;
+  btnBusy($('pjRefetchBtn'), true);
+  try {
+    const res = await fetch(`/api/projects/${encodeURIComponent(CURRENT_PROJECT.slug)}/chapters`,
+      { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ refetch:true }) });
+    const d = await res.json();
+    if (!res.ok || d.ok === false) throw new Error(d.error || 'Refetch failed.');
+    CURRENT_PROJECT = d.project;
+    renderChapterList();
+    showToast('Chapter list refreshed.', null, null, 'ok');
+  } catch (e) { setStatus('Refetch error: ' + e.message, true); }
+  finally { btnBusy($('pjRefetchBtn'), false); }
+}
+
+// --- Project settings (music / voice / watermark / background) + live previews
+function fillSettingsForm() {
+  const s = CURRENT_PROJECT.settings;
+  document.querySelector(`input[name=musicMode][value="${s.music.mode}"]`).checked = true;
+  $('musicName').textContent = s.music.file ? s.music.file.split('/').pop() : '';
+
+  document.querySelector(`input[name=voiceMode][value="${s.voice.mode}"]`).checked = true;
+  $('voiceName').textContent = s.voice.file ? s.voice.file.split('/').pop() : '';
+  refreshVoiceActive();
+
+  $('wmEnabled').checked = !!s.watermark.enabled;
+  document.querySelector(`input[name=wmType][value="${s.watermark.type}"]`).checked = true;
+  $('wmText').value = s.watermark.text || '';
+  $('wmFileName').textContent = s.watermark.file ? s.watermark.file.split('/').pop() : '';
+  $('wmOpacity').value = Math.round(s.watermark.opacity * 100);
+  $('wmSize').value = Math.round(s.watermark.size * 100);
+  $('wmSpacing').value = Math.round(s.watermark.spacing * 100);
+  $('wmAngle').value = Math.round(s.watermark.angle);
+
+  document.querySelector(`input[name=bgMode][value="${s.background.mode}"]`).checked = true;
+  $('bgFileName').textContent = s.background.file ? s.background.file.split('/').pop() : '';
+  $('bgDim').value = Math.round(s.background.dim * 100);
+
+  updateSliderLabels();
+  refreshWatermarkPreview();
+  refreshBackgroundPreview();
+}
+
+function updateSliderLabels() {
+  $('wmOpacityLbl').textContent = $('wmOpacity').value + '%';
+  $('wmSizeLbl').textContent = $('wmSize').value + '%';
+  $('wmSpacingLbl').textContent = $('wmSpacing').value + '%';
+  $('wmAngleLbl').textContent = $('wmAngle').value + '°';
+  $('bgDimLbl').textContent = $('bgDim').value + '%';
+}
+
+function refreshVoiceActive() {
+  if (!CURRENT_PROJECT) return;
+  // mode reads the LIVE radio (updates instantly on click, before the
+  // debounced save round-trips); the filename comes from the last-known
+  // upload, kept in sync by fillSettingsForm() and uploadAsset().
+  const mode = document.querySelector('input[name=voiceMode]:checked').value;
+  const file = CURRENT_PROJECT.settings.voice.file;
+  const custom = mode === 'file' && file;
+  $('voiceActiveHint').textContent = custom
+    ? `Active: ${file.split('/').pop()} (project)` : 'Active: default (assets/voice_ref.wav)';
+  const audio = $('voicePreview');
+  if (custom) {
+    audio.src = `/api/projects/${encodeURIComponent(CURRENT_PROJECT.slug)}/asset/voice?t=${Date.now()}`;
+    audio.hidden = false;
+  } else {
+    audio.removeAttribute('src');
+    audio.hidden = true;
+  }
+}
+
+function currentSettingsFromForm() {
+  return {
+    music: { mode: document.querySelector('input[name=musicMode]:checked').value },
+    voice: { mode: document.querySelector('input[name=voiceMode]:checked').value },
+    watermark: {
+      enabled: $('wmEnabled').checked,
+      type: document.querySelector('input[name=wmType]:checked').value,
+      text: $('wmText').value,
+      opacity: (+$('wmOpacity').value) / 100,
+      size: (+$('wmSize').value) / 100,
+      spacing: (+$('wmSpacing').value) / 100,
+      angle: +$('wmAngle').value,
+    },
+    background: {
+      mode: document.querySelector('input[name=bgMode]:checked').value,
+      dim: (+$('bgDim').value) / 100,
+    },
+  };
+}
+
+let settingsSaveTimer = null;
+function saveSettingsDebounced() {
+  updateSliderLabels();
+  refreshVoiceActive();
+  refreshWatermarkPreview();
+  refreshBackgroundPreview();
+  $('pjSettingsSaved').textContent = 'saving…';
+  clearTimeout(settingsSaveTimer);
+  settingsSaveTimer = setTimeout(async () => {
+    try {
+      const res = await fetch(`/api/projects/${encodeURIComponent(CURRENT_PROJECT.slug)}/settings`,
+        { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(currentSettingsFromForm()) });
+      const d = await res.json();
+      if (!res.ok) throw new Error(d.error || 'save failed');
+      CURRENT_PROJECT.settings = d.settings;
+      $('pjSettingsSaved').textContent = 'saved ' + new Date().toLocaleTimeString();
+    } catch (e) { $('pjSettingsSaved').textContent = 'save failed'; }
+  }, 400);
+}
+
+let wmPreviewTimer = null;
+function refreshWatermarkPreview() {
+  clearTimeout(wmPreviewTimer);
+  wmPreviewTimer = setTimeout(() => {
+    if (!CURRENT_PROJECT) return;
+    const type = document.querySelector('input[name=wmType]:checked').value;
+    // `enabled` must travel with the preview request: the render (via
+    // media_settings_snapshot) omits the watermark entirely when this
+    // checkbox is off, so the preview has to match or it lies about what
+    // will actually be in the video.
+    const q = new URLSearchParams({
+      enabled: $('wmEnabled').checked ? '1' : '0',
+      type, text: $('wmText').value,
+      opacity: (+$('wmOpacity').value) / 100, size: (+$('wmSize').value) / 100,
+      spacing: (+$('wmSpacing').value) / 100, angle: $('wmAngle').value, t: Date.now(),
+    });
+    setPreviewImage('wmPreviewBox', `/api/projects/${encodeURIComponent(CURRENT_PROJECT.slug)}/preview/watermark.png?${q}`);
+  }, 250);
+}
+let bgPreviewTimer = null;
+function refreshBackgroundPreview() {
+  clearTimeout(bgPreviewTimer);
+  bgPreviewTimer = setTimeout(() => {
+    if (!CURRENT_PROJECT) return;
+    const q = new URLSearchParams({ dim: (+$('bgDim').value) / 100, t: Date.now() });
+    setPreviewImage('bgPreviewBox', `/api/projects/${encodeURIComponent(CURRENT_PROJECT.slug)}/preview/background.png?${q}`);
+  }, 250);
+}
+function setPreviewImage(boxId, url) {
+  const box = $(boxId);
+  const img = new Image();
+  img.onload = () => { box.innerHTML = ''; box.appendChild(img); };
+  img.onerror = () => { box.innerHTML = '<span class="phmsg">Preview unavailable</span>'; };
+  img.src = url;
+}
+
+async function uploadAsset(kind, file) {
+  if (!file || !CURRENT_PROJECT) return;
+  const fd = new FormData();
+  fd.append('kind', kind);
+  fd.append('file', file);
+  try {
+    const res = await fetch(`/api/projects/${encodeURIComponent(CURRENT_PROJECT.slug)}/asset`, { method:'POST', body: fd });
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.error || 'upload failed');
+    showToast(kind + ' uploaded.', null, null, 'ok');
+    const nameEl = { music:'musicName', voice:'voiceName', watermark:'wmFileName', background:'bgFileName' }[kind];
+    if (nameEl) $(nameEl).textContent = d.name;
+    if (kind === 'voice') { CURRENT_PROJECT.settings.voice.file = d.path; refreshVoiceActive(); }
+    if (kind === 'watermark') refreshWatermarkPreview();
+    if (kind === 'background') refreshBackgroundPreview();
+  } catch (e) { setStatus('Upload error: ' + e.message, true); }
+}
+
+// --- opening a chapter in the editor ------------------------------------------
+function resetEditorState() {
+  if (genES) { try { genES.close(); } catch (_) {} genES = null; }
+  if (gpES) { try { gpES.close(); } catch (_) {} gpES = null; }
+  S.chapter_id = null; S.source_pdf = null; S.strip_w = 0; S.strip_h = 0;
+  S.preview_w = 0; S.preview_h = 0; S.tiles = [];
+  S.lines = []; S.active = -1; S.activeFrame = -1;
+  undoStack = []; redoStack = []; updateUndoUI();
+  tilesDiv.innerHTML = ''; boxesDiv.innerHTML = '';
+  $('scriptText').value = ''; $('txtPath').value = '';
+  $('pdfPath').value = ''; $('dlUrl').value = ''; $('dlNo').value = '';
+  $('genStatus').textContent = ''; $('genResult').innerHTML = '';
+  $('gpResult').innerHTML = ''; $('gpRow').setAttribute('hidden', '');
+  $('stripInfo').textContent = 'No strip loaded.';
+  setSaveState('');
+  renderLines();
+  if (document.body.classList.contains('stripFullscreen')) setFullscreen(false);
+  if (document.body.classList.contains('scriptOnlyView')) setScriptOnly(false);
+}
+
+async function openChapterEditor(slug, chNo, opts) {
+  opts = opts || {};
+  resetEditorState();
+  S.project = slug; S.ch_no = String(chNo);
+  S.chapter_id = `${slug}_ch${chNo}`;
+  $('chapId').value = S.chapter_id;
+  showScreen('editor');
+
+  if (opts.autoDownload) {
+    $('dlUrl').value = opts.url || '';
+    $('dlNo').value = String(chNo);
+    await doDownload();
+    return;
+  }
+  try {
+    const res = await fetch(`/editor_state/status?chapter=${encodeURIComponent(S.chapter_id)}${scopeQS()}`);
+    const d = await res.json();
+    if (d.project && d.project.exists) { await loadEditorState(false); return; }
+  } catch (_) { /* fall through - nothing saved yet for this chapter */ }
+  setStatus(`Opened ${S.chapter_id}. Download or stitch a PDF to begin.`);
+}
+
+function backToProject() { navTo(S.project ? { project: S.project } : {}); }
+
+// ---------------------------------------------------------------------------
+// in-app update - pulls the app's own code from git (see /api/update in
+// app.py). Never touches .venv/packages/the model cache - only tracked
+// source files change. A restart applies a code-only update; if the pull
+// touched requirements.txt, setup.bat needs re-running first (the message
+// says so explicitly either way).
+// ---------------------------------------------------------------------------
+async function checkForUpdate() {
+  const box = $('updateResult');
+  box.classList.remove('on', 'ok', 'warn');
+  btnBusy($('checkUpdateBtn'), true);
+  try {
+    const res = await fetch('/api/update', { method: 'POST' });
+    const d = await res.json();
+    const kind = (d.ok && !d.requirements_changed) ? 'ok' : 'warn';
+    box.textContent = d.message || (d.ok ? 'Updated.' : 'Update check failed.');
+    box.classList.add('on', kind);
+    if (!d.ok) showToast('Update check failed.', null, null, 'err');
+    else if (d.already_up_to_date) showToast('Already up to date.', null, null, 'ok');
+    else showToast(d.message, null, null, d.requirements_changed ? 'warn' : 'ok');
+  } catch (e) {
+    box.textContent = 'Update check failed: ' + e.message;
+    box.classList.add('on', 'warn');
+    showToast('Update check failed.', null, null, 'err');
+  } finally {
+    btnBusy($('checkUpdateBtn'), false);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // wire up
 // ---------------------------------------------------------------------------
+$('npCreateBtn').onclick = createProject;
+$('npManualBtn').onclick = useManualRange;
+$('checkUpdateBtn').onclick = checkForUpdate;
+$('themeBtnP').onclick = toggleTheme;
+$('backToProjectsBtn').onclick = () => navTo({});
+$('backToProjectBtn').onclick = backToProject;
+$('pjRefetchBtn').onclick = refetchChapters;
+$('mergeBtn').onclick = startMerge;
+$('mergeCancelBtn').onclick = cancelMerge;
+$('pjSettingsBtn').onclick = () => $('pjSettings').classList.toggle('on');
+['musicMode', 'voiceMode', 'wmType', 'bgMode'].forEach(name => {
+  document.querySelectorAll(`input[name=${name}]`).forEach(el => el.onchange = saveSettingsDebounced);
+});
+$('wmEnabled').onchange = saveSettingsDebounced;
+$('wmText').oninput = saveSettingsDebounced;
+['wmOpacity', 'wmSize', 'wmSpacing', 'wmAngle', 'bgDim'].forEach(id => { $(id).oninput = saveSettingsDebounced; });
+$('musicFile').onchange = e => uploadAsset('music', e.target.files[0]);
+$('voiceFile').onchange = e => uploadAsset('voice', e.target.files[0]);
+$('wmFile').onchange = e => uploadAsset('watermark', e.target.files[0]);
+$('bgFile').onchange = e => uploadAsset('background', e.target.files[0]);
+
 $('dlBtn').onclick = doDownload;
 $('loadPdfBtn').onclick = loadPdf;
 $('loadScriptBtn').onclick = loadScript;
 $('addLineBtn').onclick = addLine;
 $('exportBtn').onclick = doExport;
 $('genAVBtn').onclick = () => startGenerate('both');
+$('genVoiceBtn').onclick = () => startGenerate('voice');
 $('genVidBtn').onclick = () => startGenerate('video');
 $('genCancelBtn').onclick = cancelGenerate;
 $('frameModeBtn').onclick = () => setMode('frame');
@@ -1274,12 +2791,64 @@ $('blurModeBtn').onclick = () => setMode('blur');
 $('blurStyle').onchange = e => { S.blurStyle = e.target.value; };
 $('undoBtn').onclick = undo;
 $('redoBtn').onclick = redo;
-$('saveProjBtn').onclick = () => saveProject(false);
-$('loadProjBtn').onclick = () => loadProject(false);
+$('saveProjBtn').onclick = async () => { btnBusy($('saveProjBtn'), true); await saveEditorState(false); btnBusy($('saveProjBtn'), false); };
+$('loadProjBtn').onclick = async () => { btnBusy($('loadProjBtn'), true); await loadEditorState(false); btnBusy($('loadProjBtn'), false); };
 $('themeBtn').onclick = toggleTheme;
+$('srcToggle').onclick = toggleSrc;
+$('fullscreenBtn').onclick = () => setFullscreen(!document.body.classList.contains('stripFullscreen'));
+$('scriptOnlyBtn').onclick = () => setScriptOnly(!document.body.classList.contains('scriptOnlyView'));
+window.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && document.body.classList.contains('stripFullscreen')) setFullscreen(false);
+});
+
+// pdf file picker proxy: the folder icon just opens the (visually hidden) native
+// file input; loadPdf() already reads $('pdfFile').files[0] unchanged.
+$('pdfBrowseBtn').onclick = () => $('pdfFile').click();
+$('pdfFile').addEventListener('change', () => {
+  // loadPdf() already prefers $('pdfFile').files[0] over the path field when both
+  // are set - just mirror the chosen name into the path field for visual feedback
+  // (the hidden native input gives none of its own).
+  const f = $('pdfFile').files[0];
+  if (f) $('pdfPath').value = f.name;
+});
+
+// activity log: collapse (client-only) + clear
+$('actCollapseBtn').onclick = () => $('actpanel').classList.toggle('collapsed');
+$('actClearBtn').onclick = () => { $('status').innerHTML = ''; };
+
+// ---------------------------------------------------------------------------
+// mobile layout: sidebar slide-over drawer + bottom tab bar (Strip / Script).
+// Both are purely client-side view state; every control they show/hide is the
+// exact same element (same id) used on desktop, so no backend call changes.
+// ---------------------------------------------------------------------------
+function isMobileLayout() {
+  return window.matchMedia('(max-width:900px), (hover:none) and (max-width:1100px)').matches;
+}
+function openSidebar(on) { document.body.classList.toggle('sidebarOpen', on); }
+$('sidebarToggleBtn').onclick = () => openSidebar(!document.body.classList.contains('sidebarOpen'));
+$('sidebarBackdrop').onclick = () => openSidebar(false);
+
+const MOBILE_TAB_KEY = 'framerMobileTab';
+function setMobileTab(tab, persist) {
+  document.body.dataset.mobiletab = tab;
+  document.querySelectorAll('.tabbar .tabbtn').forEach(b => b.classList.toggle('on', b.dataset.tab === tab));
+  if (persist !== false) { try { sessionStorage.setItem(MOBILE_TAB_KEY, tab); } catch (_) {} }
+  if (tab === 'strip' && S.preview_w) { computeZoomRange(); layout(); redrawBoxes(); }
+}
+document.querySelectorAll('.tabbar .tabbtn').forEach(b => b.onclick = () => { setMobileTab(b.dataset.tab); openSidebar(false); });
+(function initMobileLayout() {
+  let savedTab = 'strip';
+  try { savedTab = sessionStorage.getItem(MOBILE_TAB_KEY) || 'strip'; } catch (_) {}
+  setMobileTab(savedTab, false);
+  if (isMobileLayout()) toggleSrc();   // Source drawer starts closed on mobile to give the strip height
+})();
+
 setMode('frame');
 updateUndoUI();
 loadSettings();
+paintIcons();
+setStatus('Ready. Stitch a PDF, load a script, then click a line and drag a box on the strip. Ctrl+Z undoes edits.');
+route();   // deep-link into ?project=&chapter=, else show the Projects landing screen
 </script>
 </body>
 </html>

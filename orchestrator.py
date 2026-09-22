@@ -12,29 +12,40 @@ Usage (run from the project root):
     python orchestrator.py --chapter ch_002
     python orchestrator.py --from script   # re-run from a given stage onward
     python orchestrator.py --force         # re-run everything from scratch
+    python orchestrator.py --from audio --to audio   # regenerate ONLY the
+        # narration (s6), e.g. after changing the voice sample or speed,
+        # without re-running frame selection or touching the existing video
 """
 from __future__ import annotations
 
 import argparse
+import importlib
 
 from config import INPUTS_DIR, chapter_work_dir
 from manifest import Manifest, STAGE_ORDER
-from stages import (s1_pdf_to_pages, s2_detect_panels, s2a_vision, s2b_select,
-                    s3_context, s4_inpaint, s5_script, s6_tts, s7_assemble)
+from stages import s1_pdf_to_pages  # also used directly by list_input_images() below
 
-# (marker this stage produces, module). Order must match manifest.STAGE_ORDER.
-# STORY-FIRST: s5 writes the full script (STAGE A) BEFORE s2b matches frames to
-# its segments (STAGE B); context/audio/video then consume the matched beats.
+# (marker this stage produces, module name under stages/). Order must match
+# manifest.STAGE_ORDER. STORY-FIRST: s5 writes the full script (STAGE A) BEFORE
+# s2b matches frames to its segments (STAGE B); context/audio/video then consume
+# the matched beats.
+#
+# Modules are imported LAZILY (importlib, right before a stage actually runs -
+# see run() below), not at the top of this file: the current real workflow
+# (Framer boxing -> Generate audio+video) always hands the orchestrator a
+# manifest already at stage "clean", so only s6_tts and s7_assemble ever import,
+# and dead-stage-only deps (groq, httpx, ultralytics, opencv, the OCR engines,
+# ...) are never required just to launch `orchestrator.py --from audio`.
 STAGES = [
-    ("pages",   s1_pdf_to_pages),
-    ("panels",  s2_detect_panels),
-    ("vision",  s2a_vision),
-    ("script",  s5_script),     # STAGE A - story-first full script -> segments
-    ("match",   s2b_select),    # STAGE B - match one frame to each segment
-    ("context", s3_context),
-    ("clean",   s4_inpaint),
-    ("audio",   s6_tts),
-    ("video",   s7_assemble),
+    ("pages",   "s1_pdf_to_pages"),
+    ("panels",  "s2_detect_panels"),
+    ("vision",  "s2a_vision"),
+    ("script",  "s5_script"),     # STAGE A - story-first full script -> segments
+    ("match",   "s2b_select"),    # STAGE B - match one frame to each segment
+    ("context", "s3_context"),
+    ("clean",   "s4_inpaint"),
+    ("audio",   "s6_tts"),
+    ("video",   "s7_assemble"),
 ]
 
 
@@ -88,7 +99,7 @@ def load_or_init(chapter_id: str, doc_type: str | None = None) -> Manifest:
 
 
 def run(chapter_id: str, from_stage: str | None, force: bool,
-        doc_type: str | None = None) -> None:
+        doc_type: str | None = None, to_stage: str | None = None) -> None:
     m = load_or_init(chapter_id, doc_type)
     if m.stage not in STAGE_ORDER:
         # A manifest from the old (pre-story-first) pipeline used a marker that no
@@ -101,14 +112,20 @@ def run(chapter_id: str, from_stage: str | None, force: bool,
     elif from_stage:
         m.stage = STAGE_ORDER[STAGE_ORDER.index(from_stage) - 1]
 
+    stop_at = STAGE_ORDER.index(to_stage) if to_stage else None
     print(f"Chapter {chapter_id} - resuming after marker: {m.stage}")
-    for produces, module in STAGES:
+    for produces, module_name in STAGES:
         if STAGE_ORDER.index(m.stage) >= STAGE_ORDER.index(produces):
             print(f"[skip] {produces}")
             continue
-        print(f"[run ] {module.__name__.split('.')[-1]} -> {produces}")
+        module = importlib.import_module(f"stages.{module_name}")  # lazy: only
+        # this stage's (and its dependencies') import happens, nothing skipped
+        print(f"[run ] {module_name} -> {produces}")
         m = module.run(m)
         m.save()
+        if stop_at is not None and STAGE_ORDER.index(produces) >= stop_at:
+            print(f"\nStopped after stage {produces!r} (--to {to_stage}).")
+            return
     print(f"\nDone. Final stage: {m.stage}")
     print(f"Open output/{chapter_id}/storyboard.html in your browser to see the result.")
 
@@ -117,11 +134,14 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="Manhwa recap pipeline orchestrator")
     ap.add_argument("--chapter", default="ch_001")
     ap.add_argument("--from", dest="from_stage", default=None, choices=STAGE_ORDER[1:])
+    ap.add_argument("--to", dest="to_stage", default=None, choices=STAGE_ORDER[1:],
+                    help="stop after this stage (e.g. --from audio --to audio to "
+                         "regenerate only narration, without re-rendering video)")
     ap.add_argument("--force", action="store_true", help="re-run all stages")
     ap.add_argument("--type", dest="doc_type", default=None, choices=["manga", "webtoon"],
                     help="document type for a NEW chapter (else prompted once)")
     args = ap.parse_args()
-    run(args.chapter, args.from_stage, args.force, args.doc_type)
+    run(args.chapter, args.from_stage, args.force, args.doc_type, args.to_stage)
 
 
 if __name__ == "__main__":

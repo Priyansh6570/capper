@@ -27,8 +27,14 @@ Chatterbox model, where the per-emotion exaggeration/cfg_weight actually apply.
 Turbo stays the fast default; the full model is slower but emotional. The run
 prints which model is active and whether emotion is being applied.
 
-Voice cloning: if `assets/voice_ref.wav` exists it is used as the reference clip;
-otherwise the model's default voice is used.
+Voice cloning: a PROJECT-specific reference clip (set in the framer's project
+settings, uploaded as `projects/<slug>/assets/voice.wav`) is used if set,
+resolved via the same `<chapter work>/media_settings.json` snapshot stage 7
+reads (see `_load_media_settings` below - written by
+`tools/framer/projects.py`). Otherwise `assets/voice_ref.wav` is used if it
+exists; if neither is set, the model's default voice is used. Either way the
+reference clip goes through the same float32/mono/24kHz preprocessing
+(`_preprocess_ref`) before Chatterbox ever sees it.
 
 Output: one wav per panel in `work/<chapter>/audio/<panel_id>.wav`, with
 `panel.audio` + `panel.duration_s` (the REAL clip length, which drives slide
@@ -40,6 +46,7 @@ Draft mode: set env `MANHWA_TTS_DRAFT=1` to use the fast edge-tts path instead
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from pathlib import Path
 
@@ -48,6 +55,21 @@ from manifest import Manifest
 
 # Reference clip for voice cloning. If absent, the default voice is used.
 VOICE_REF = ROOT / "assets" / "voice_ref.wav"
+
+
+def _load_media_settings(chapter_id: str) -> dict:
+    """Read the framer's project media settings snapshot (music/voice/
+    watermark/background, absolute paths), written by
+    tools/framer/projects.py. Mirrors s7_assemble._load_media_settings():
+    returns {} on any absence/failure, so run() falls back to the global
+    VOICE_REF default untouched."""
+    path = chapter_work_dir(chapter_id) / "media_settings.json"
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 - a bad settings file must not sink the run
+        return {}
 
 
 # --------------------------------------------------------------------------- #
@@ -399,9 +421,16 @@ def run(m: Manifest) -> Manifest:
         print("  [s6] fast default: Chatterbox-Turbo (flat affect; emotion knobs "
               "ignored). Set MANHWA_TTS_EMOTION=1 for the emotional full model")
 
-    ref = str(VOICE_REF) if VOICE_REF.exists() else None
-    if ref:
-        print(f"  voice cloning from {VOICE_REF}")
+    settings = _load_media_settings(m.chapter_id)
+    project_voice = settings.get("voice")
+    if project_voice and Path(project_voice).exists():
+        ref = project_voice
+        print(f"  voice cloning from project voice ref: {ref}")
+    elif VOICE_REF.exists():
+        ref = str(VOICE_REF)
+        print(f"  voice cloning from default voice ref: {ref}")
+    else:
+        ref = None
 
     engine = _Engine()
     # Pre-bake the reference to float32/mono/24k once; passing the raw clip lets

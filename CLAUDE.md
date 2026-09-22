@@ -150,6 +150,52 @@ Groq's free-tier rate limits by running locally:
 
 Both backends return the same parsed-dict contract, so the stages don't change.
 
+## The framer's project system (`tools/framer/`)
+
+`tools/framer/app.py` is a Flask tool (self-contained under `tools/framer/`,
+see its README) that wraps the pipeline in a **project system**: one project
+per manhwa, each with its own chapter list + status and its own folder,
+`projects/<slug>/chapters/<n>/{work,output}/`.
+
+This is a **path redirect implemented entirely in `config.py`**, not a change
+to the pipeline architecture: `chapter_work_dir()`/`chapter_output_dir()`
+resolve to a project's chapter folder whenever `config.chapter_scope(work,
+output)` is active (a context manager backed by a `ContextVar`) or the
+`MANHWA_WORK_ROOT`/`MANHWA_OUTPUT_ROOT` env vars are set (read once at
+import - this is how the orchestrator subprocess the framer spawns for
+"Generate" picks up the redirect). Every stage still just calls
+`chapter_work_dir(m.chapter_id)` exactly as before; **no stage file is
+touched** by this. With no active scope and no env vars, both functions
+behave exactly as they did before the project system existed, so CLI runs
+over the legacy global `work/<chapter>/` tree are unaffected.
+
+A project also carries **per-project media settings** (background music, a
+Chatterbox voice reference, a tiled watermark, a custom video background) in
+`project.json`, resolved with absolute paths into
+`<chapter work>/media_settings.json` by `tools/framer/projects.py`. Stage 6
+(`s6_tts.py`, the `voice` field) and stage 7 (`s7_assemble.py`, the rest) each
+read that file the same defensive way s7 already reads the framer's
+`framer/mapping.json` (`_load_mapping`) - both stages' own
+`_load_media_settings()` returns `{}` on any absence/failure, so a chapter
+with no settings file runs exactly as before this feature existed. Do not
+move these fields into the `Manifest` schema - they are project-level config,
+not stage output, and this file-based snapshot keeps s6/s7 independently
+runnable/testable per the architecture rule at the top of this document.
+
+`orchestrator.py` also takes an optional `--to <stage>` (stop after that
+stage) alongside `--from`, so `--from audio --to audio` regenerates ONLY the
+narration - this is what the framer's **Re-render voice** button uses
+(`/generate_stream?what=voice`) after a voice-sample or speed change, without
+re-running frame selection or touching an existing render.
+
+The framer's **merge** feature (concatenating several complete chapters'
+`recap.mp4` into one, `/api/projects/<slug>/merge_stream`) is entirely
+self-contained in `tools/framer/app.py` + `projects.py`: it reads already-
+rendered output with `ffprobe`/`ffmpeg` and writes to
+`projects/<slug>/merged/`. It required **no** change to the manifest,
+orchestrator, or any pipeline stage - keep it that way; it has nothing to do
+with a single chapter's render.
+
 ## Conventions
 
 - Make every stage write inspectable files; do not optimize them away into memory.
