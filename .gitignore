@@ -6,6 +6,14 @@
 .venv/
 venv/
 
+# --- setup.bat: downloaded ffmpeg + its own log ---
+vendor/
+setup_log.txt
+install_log.txt
+
+# --- installer.iss build output (the compiled Setup.exe) ---
+installer/output/
+
 # --- python junk ---
 __pycache__/
 *.pyc
@@ -22,6 +30,7 @@ downloads/
 output/
 series/
 inputs/
+projects/
 
 # --- model caches and weights ---
 .cache/
