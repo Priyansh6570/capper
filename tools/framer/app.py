@@ -109,6 +109,15 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def _sse(obj: dict) -> str:
+    """Format one Server-Sent Events 'message' frame. Shared by every SSE route
+    (/gemini_parts_stream, /api/projects/<slug>/merge_stream) - the old
+    /generate_stream route also used to use this before it moved to a polled
+    job queue (see the _JOBS note below), but the other two routes never
+    stopped needing it."""
+    return "data: " + json.dumps(obj, ensure_ascii=False) + "\n\n"
+
+
 # --------------------------------------------------------------------------- #
 # project scoping - every route that touches chapter files redirects
 # chapter_work_dir()/chapter_output_dir() (see config.py) to
@@ -582,30 +591,41 @@ def gemini_parts_stream():
     output_dir = projects.chapter_output_dir(slug, ch_no) if slug and ch_no else chapter_output_dir(chapter_id)
 
     def stream():
-        with config.chapter_scope(work_dir, output_dir):
-            if not raw or not pdf_path.is_file():
-                yield _sse({"type": "error", "message": f"PDF not found: {pdf_path}"})
-                return
-            try:
-                total = _pdf_page_count(pdf_path)
-            except Exception as e:  # noqa: BLE001 - report, don't crash the stream
-                yield _sse({"type": "error", "message": f"{type(e).__name__}: {e}"})
-                return
+        # Outer catch-all: ANY exception escaping here (even one from
+        # entering config.chapter_scope, or a bug in code below that isn't
+        # one of the two anticipated failure points) would otherwise abort
+        # the HTTP response with no SSE payload at all - the browser's
+        # EventSource can't read a body off a dropped/never-started
+        # connection, so it just reports a generic "disconnected" and the
+        # REAL error (visible only in the server's own console/log) never
+        # reaches the user. Converting every failure into a proper
+        # {type:"error"} frame is what actually lets the UI show it.
+        try:
+            with config.chapter_scope(work_dir, output_dir):
+                if not raw or not pdf_path.is_file():
+                    yield _sse({"type": "error", "message": f"PDF not found: {pdf_path}"})
+                    return
+                try:
+                    total = _pdf_page_count(pdf_path)
+                except Exception as e:  # noqa: BLE001 - report, don't crash the stream
+                    yield _sse({"type": "error", "message": f"{type(e).__name__}: {e}"})
+                    return
 
-            yield _sse({"type": "start", "total_pages": total,
-                        "message": f"Preparing Gemini parts for {pdf_path.name} "
-                                   f"({total} pages) — ≤{PART_PAGES}p/part, "
-                                   f"{PART_OVERLAP}p overlap, max {GEMINI_MAX_DIM}px, "
-                                   f"JPEG q{GEMINI_JPEG_QUALITY}…"})
-            try:
+                yield _sse({"type": "start", "total_pages": total,
+                            "message": f"Preparing Gemini parts for {pdf_path.name} "
+                                       f"({total} pages) — ≤{PART_PAGES}p/part, "
+                                       f"{PART_OVERLAP}p overlap, max {GEMINI_MAX_DIM}px, "
+                                       f"JPEG q{GEMINI_JPEG_QUALITY}…"})
                 for item in _build_gemini_parts_stream(pdf_path, chapter_id):
                     if item["type"] == "result":
                         yield _sse({"type": "done", "ok": True,
                                     "parts": item["parts"], "dir": item["dir"]})
                     else:
                         yield _sse(item)
-            except Exception as e:  # noqa: BLE001 - report, don't crash the stream
-                yield _sse({"type": "error", "message": f"{type(e).__name__}: {e}"})
+        except GeneratorExit:
+            raise
+        except Exception as e:  # noqa: BLE001 - last-resort: still report, don't crash the stream
+            yield _sse({"type": "error", "message": f"{type(e).__name__}: {e}"})
 
     return Response(stream(), mimetype="text/event-stream",
                     headers={"Cache-Control": "no-cache",
