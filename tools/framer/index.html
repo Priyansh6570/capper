@@ -356,6 +356,31 @@
   .tclose { padding:3px; background:transparent; border-color:transparent; color:var(--muted); }
   .tclose:hover { background:var(--btn); color:var(--txt); }
 
+  /* global render-job widget - bottom-LEFT (toasts own bottom-right, see
+     #toast above) so a persistent render status never collides with a
+     transient toast notification. Outside every .screen - see the markup
+     near </body> - so it survives navigating between screens untouched. */
+  .jobwidget { position:fixed; left:16px; bottom:16px; width:280px; max-width:calc(100vw - 32px);
+               background:var(--panel); border:1px solid var(--line); border-radius:var(--r);
+               box-shadow:var(--shadow); z-index:55; display:none; overflow:hidden; }
+  .jobwidget.on { display:block; }
+  .jwhead { display:flex; align-items:center; gap:8px; padding:8px 10px; border-bottom:1px solid var(--line); }
+  .jwhead .jwtitle { display:flex; align-items:center; gap:7px; font-size:11px; font-weight:800;
+                      text-transform:uppercase; letter-spacing:.08em; color:var(--muted); }
+  .jwhead .chev { margin-left:auto; }
+  .jwbody { padding:10px; display:flex; flex-direction:column; gap:10px; max-height:46vh; overflow-y:auto; }
+  .jwbody.collapsed { display:none; }
+  .jwjob { display:flex; flex-direction:column; gap:5px; }
+  .jwrow { display:flex; align-items:baseline; gap:8px; }
+  .jwname { font-size:12px; font-weight:700; flex:1; min-width:0; overflow:hidden;
+            text-overflow:ellipsis; white-space:nowrap; }
+  .jweta { font-size:11px; color:var(--muted); white-space:nowrap; }
+  .jwtrack { height:5px; background:var(--input2); border:1px solid var(--line); border-radius:999px;
+             overflow:hidden; }
+  .jwfill { height:100%; background:var(--accent); border-radius:999px; transition:width .3s ease; }
+  .jwqlabel { font-size:10px; font-weight:800; text-transform:uppercase; letter-spacing:.08em;
+              color:var(--muted); margin-top:2px; }
+
   /* ==========================================================================
      Projects landing + project (chapter list + settings) screens. The editor
      workspace (.app) is unchanged and lives inside #scr-editor; only ONE
@@ -387,7 +412,7 @@
   .newprog.on { display:flex; }
   .newprog .spinner { width:14px; height:14px; border-width:2px; }
   .fetchresult { font-size:12px; padding:8px 10px; border-radius:var(--r2); margin:6px 0 2px; display:none; }
-  .fetchresult.on { display:block; }
+  .fetchresult.on { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
   .fetchresult.ok { background:var(--frame-fill); color:var(--frame); border:1px solid var(--frame); }
   .fetchresult.warn { background:var(--blur-fill); color:var(--blur); border:1px solid var(--blur); }
 
@@ -521,6 +546,7 @@
 
     #toast { bottom:64px; left:16px; right:16px; }
     #toast .tst { max-width:none; }
+    .jobwidget { bottom:64px; left:16px; right:16px; width:auto; }   /* clear the mobile tab bar */
 
     .tabbar { display:flex; flex:none; border-top:1px solid var(--line); background:var(--panel); }
     .tabbar button { flex:1; flex-direction:column; gap:2px; border-radius:0; border:none;
@@ -867,6 +893,17 @@
 
 <div id="toast"></div>
 
+<!-- Global render-job widget: outside every .screen, so it's visible from
+     the projects list, a chapter list, or the editor for a DIFFERENT
+     chapter - see startJobsPolling()/renderJobWidget() in the script. -->
+<div class="jobwidget" id="jobWidget">
+  <div class="jwhead">
+    <span class="jwtitle" data-icon="film" data-ic-size="13">Rendering</span>
+    <button type="button" id="jwCollapseBtn" class="ghost icon small chev" data-icon="chevdown" data-ic-size="13" title="Collapse"></button>
+  </div>
+  <div class="jwbody" id="jwBody"></div>
+</div>
+
 <script>
 /* Lucide-style line icons (stroke, 24 grid) - no emoji anywhere in the UI. */
 const ICONS = {
@@ -986,6 +1023,7 @@ const S = {
   activeFrame: -1,         // active frame index WITHIN the active line
   mode: 'frame',           // 'frame' | 'blur'
   blurStyle: 'm',          // style for NEW blur regions: 'm' mosaic | 'g' gaussian
+  watchedJobId: null,      // render job this chapter session should announce completion for
 };
 
 const $ = id => document.getElementById(id);
@@ -1852,14 +1890,36 @@ async function doExport() {
 }
 
 // ---------------------------------------------------------------------------
-// generate audio + video - stream the pipeline (s6 TTS, s7 assemble) over SSE so
-// the long model-load + per-line synth shows live, then play/download the result.
+// generate audio + video - a server-authoritative job QUEUE (see /api/generate,
+// /api/jobs in app.py), NOT an SSE stream. The frontend polls GET /api/jobs on
+// an interval (startJobsPolling(), called once at boot) and treats that as the
+// single source of truth for what's queued/running/just-finished - so
+// navigating away and back to a chapter always shows its REAL state, never a
+// stale assumption from a closed connection. One poll loop drives both the
+// global corner widget (jobWidget - visible on every screen) and, when the
+// chapter editor is open, its detailed genbar panel.
 // ---------------------------------------------------------------------------
-let genES = null, genDone = false;
-const genLines = [];
-const gen = { total: 0, audio: 0, video: 0, what: 'both' };
+let JOBS = [];                 // most recent GET /api/jobs result: active + a recent-finished tail
+let jobsPollTimer = null;
 
 const GEN_LABELS = { both: 'Generating audio + video', voice: 'Re-rendering voice', video: 'Re-rendering video' };
+const gen = { total: 0, what: 'both' };   // just enough for setGenBusy()'s button targeting
+
+function startJobsPolling() {
+  if (jobsPollTimer) return;
+  pollJobs();
+  jobsPollTimer = setInterval(pollJobs, 1500);
+}
+async function pollJobs() {
+  try {
+    const res = await fetch('/api/jobs', { cache: 'no-store' });
+    if (!res.ok) return;
+    JOBS = (await res.json()).jobs || [];
+    renderJobWidget();
+    syncEditorJobUI();
+  } catch (_) { /* transient - the next tick retries; never throws into the caller */ }
+}
+function jobsForChapter(chapterId) { return JOBS.filter(j => j.chapter_id === chapterId); }
 
 function setGenBusy(b) {
   btnBusy($('genAVBtn'), b && gen.what === 'both');
@@ -1870,89 +1930,55 @@ function setGenBusy(b) {
   const gb = $('genbar'); if (gb) gb.classList.toggle('running', !!b);
   if (!b) clearGlobalProg();
 }
-function setGenBar(frac, indet) {
+function setGenBar(frac, indet, label) {
   const wrap = $('genProgress'), bar = $('genBar');
   wrap.style.display = 'block';
-  setGlobalProg(indet ? null : Math.max(0, Math.min(1, frac)), GEN_LABELS[gen.what] || GEN_LABELS.both);
+  setGlobalProg(indet ? null : Math.max(0, Math.min(1, frac)), label || GEN_LABELS[gen.what] || GEN_LABELS.both);
   wrap.classList.remove('err');
   wrap.classList.toggle('indet', !!indet);
   if (!indet) bar.style.width = Math.round(clamp(frac, 0, 1) * 100) + '%';
 }
-function appendGenLog(line) {
-  genLines.push(line);
-  if (genLines.length > 500) genLines.shift();
+function setGenLog(lines) {
   const el = $('genStatus');
-  el.textContent = genLines.join('\n');
+  el.textContent = (lines || []).join('\n');
   el.scrollTop = el.scrollHeight;
 }
 
-function startGenerate(what) {
-  if (genES) { setStatus('A generate job is already running.', true); return; }
+// Start a job. Returns immediately (job_id) - it does NOT stream; the poll
+// loop above picks up its progress on the next tick (kicked off right away
+// here too, so the UI doesn't wait up to 1.5s to look busy).
+async function startGenerate(what) {
   if (!S.chapter_id) { setStatus('Load/Export a chapter first.', true); return; }
-  gen.total = 0; gen.audio = 0; gen.video = 0; gen.what = what;
-  genLines.length = 0; genDone = false;
-  $('genStatus').textContent = ''; $('genResult').innerHTML = '';
-  setGenBusy(true); setGenBar(0, true);
-  const reqLabel = { both: 'audio + video', voice: 'voice re-render', video: 'video re-render' }[what] || 'audio + video';
-  appendGenLog(`Requesting ${reqLabel} for ${S.chapter_id}…`);
-
-  const url = `/generate_stream?chapter=${encodeURIComponent(S.chapter_id)}&what=${encodeURIComponent(what)}${scopeQS()}`;
-  genES = new EventSource(url);
-  genES.onmessage = e => { try { handleGenEvent(JSON.parse(e.data)); } catch (_) {} };
-  genES.onerror = () => {
-    if (genDone) return;                 // normal end-of-stream close - ignore
-    appendGenLog('[connection lost]');
-    setStatus('Generate stream disconnected.', true);
-    finishGen();
-  };
-}
-
-function handleGenEvent(ev) {
-  if (ev.type === 'start') {
-    gen.total = ev.total_beats || 0;
-    appendGenLog(ev.message || 'Starting…');
-    setGenBar(0.02, true);
-  } else if (ev.type === 'log') {
-    appendGenLog(ev.line || '');
-    updateGenProgress(ev.line || '');
-  } else if (ev.type === 'done') {
-    genDone = true;
-    if (ev.ok) {
-      setGenBar(1, false);
-      appendGenLog('OK  ' + (ev.message || 'Done.'));
-      showToast(ev.video ? 'Video ready.' : (ev.message || 'Done.'), null, null, 'ok');
-      if (ev.video) showGenResult(ev.video);
-      setStatus(ev.video ? 'Render complete - playing below.' : (ev.message || 'Done.'));
-    } else {
-      $('genProgress').classList.add('err');
-      appendGenLog('FAILED  ' + (ev.message || 'Failed.'));
-      setStatus(ev.message || 'Generation failed - see the log.', true);
-    }
-    finishGen();
-  } else if (ev.type === 'error') {
-    genDone = true;
-    $('genProgress').classList.add('err');
-    appendGenLog('FAILED  ' + (ev.message || 'Error'));
-    setStatus(ev.message || 'Generation error.', true);
-    finishGen();
+  if (jobsForChapter(S.chapter_id).some(j => j.status === 'queued' || j.status === 'running')) {
+    setStatus('A generate job is already queued or running for this chapter.', true);
+    return;
+  }
+  gen.what = what;
+  $('genResult').innerHTML = ''; $('genProgress').classList.remove('err');
+  setGenLog([]); setGenBusy(true); setGenBar(0, true);
+  try {
+    const res = await fetch('/api/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(scopeBody({ chapter: S.chapter_id, what })) });
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.error || 'failed to start');
+    S.watchedJobId = d.job_id;
+    showToast(d.job && d.job.status === 'running' ? 'Started.' : 'Queued.', null, null, 'ok');
+    pollJobs();
+  } catch (e) {
+    setGenBusy(false);
+    setStatus('Generate error: ' + e.message, true);
   }
 }
 
-// Advance the bar from the pipeline's own log lines: s6 prints one "[NNN] …" per
-// voiced line, s7 prints one "line N: …" per rendered line. Audio is the slow
-// part, so weight it heavier for the combined run; a video-only or voice-only
-// run is entirely s7 or entirely s6 respectively.
-function updateGenProgress(line) {
-  if (/^\s*\[\d{1,4}\]/.test(line)) gen.audio++;
-  else if (/^\s*line \d+:/.test(line)) gen.video++;
-  const counted = gen.audio > 0 || gen.video > 0;
-  if (gen.total <= 0 || !counted) { setGenBar(0, true); return; }   // pulse until first tick
-  const a = clamp(gen.audio / gen.total, 0, 1);
-  const v = clamp(gen.video / gen.total, 0, 1);
-  const frac = gen.what === 'video' ? (0.05 + 0.90 * v)
-             : gen.what === 'voice' ? (0.05 + 0.90 * a)
-             : (0.05 + 0.70 * a + 0.22 * v);
-  setGenBar(frac, false);
+async function cancelGenerate() {
+  const active = jobsForChapter(S.chapter_id).find(j => j.status === 'queued' || j.status === 'running');
+  const jobId = S.watchedJobId || (active && active.id);
+  if (!jobId) return;
+  try {
+    await fetch(`/api/jobs/${encodeURIComponent(jobId)}/cancel`, { method: 'POST' });
+  } catch (e) { setStatus('Stop error: ' + e.message, true); return; }
+  showToast('Job stopped.', null, null, 'warn');
+  pollJobs();
 }
 
 function showGenResult(videoUrl) {
@@ -1969,21 +1995,109 @@ function showGenResult(videoUrl) {
      </div>`;
 }
 
-function finishGen() {
-  if (genES) { genES.close(); genES = null; }
+// Reconciles the chapter editor's genbar with the ACTUAL job state for
+// S.chapter_id on every poll tick - this (not any assumption made when the
+// editor opened) is what fixes "shows rendering when it isn't". Three cases:
+// (1) a job is queued/running for this chapter right now - reflect it live;
+// (2) a job I was watching (started here, or found active when I opened this
+//     chapter) just finished - announce it (toast/result), once; (3) neither -
+//     make sure the UI is idle, and quietly show the last result if there is one.
+function syncEditorJobUI() {
+  if (SCREEN !== 'editor' || !S.chapter_id) return;
+  const mine = jobsForChapter(S.chapter_id);
+  const active = mine.find(j => j.status === 'queued' || j.status === 'running');
+
+  if (active) {
+    S.watchedJobId = active.id;
+    gen.what = active.what; gen.total = active.total_beats;
+    setGenBusy(true);
+    setGenLog(active.log);
+    const etaTxt = active.eta_s != null ? ' - ' + fmtEta(active.eta_s) : '';
+    if (active.status === 'queued') setGenBar(0, true, 'Queued' + etaTxt);
+    else setGenBar(active.progress || 0, false, (GEN_LABELS[active.what] || GEN_LABELS.both) + etaTxt);
+    return;
+  }
+
+  if (S.watchedJobId) {
+    const finished = mine.find(j => j.id === S.watchedJobId);
+    S.watchedJobId = null;
+    if (finished) { setGenBusy(false); announceJobResult(finished); return; }
+  }
+
   setGenBusy(false);
+  const recent = mine.filter(j => j.status !== 'queued' && j.status !== 'running')
+                      .sort((a, b) => (b.finished_at || '').localeCompare(a.finished_at || ''))[0];
+  if (recent) {
+    setGenLog(recent.log);
+    if (recent.status === 'done' && recent.ok && recent.video_url) showGenResult(recent.video_url);
+    else if (recent.status !== 'done') $('genProgress').classList.add('err');
+  }
 }
 
-function cancelGenerate() {
-  if (!genES) return;
-  genDone = true;                 // closing the stream makes the server kill the job
-  finishGen();
-  $('genProgress').style.display = 'none';
-  appendGenLog('[stopped by user]');
-  clearGlobalProg();
-  setStatus('Generation stopped.');
-  showToast('Job stopped.', null, null, 'warn');
+function announceJobResult(job) {
+  setGenLog(job.log);
+  if (job.status === 'done' && job.ok) {
+    setGenBar(1, false);
+    showToast(job.video_url ? 'Video ready.' : (job.message || 'Done.'), null, null, 'ok');
+    if (job.video_url) showGenResult(job.video_url);
+    setStatus(job.video_url ? 'Render complete - playing below.' : (job.message || 'Done.'));
+  } else {
+    $('genProgress').classList.add('err');
+    const label = job.status === 'cancelled' ? 'Generation stopped.'
+                : (job.message || 'Generation failed - see the log.');
+    setStatus(label, job.status !== 'cancelled');
+    if (job.status !== 'cancelled') showToast('Render failed.', null, null, 'err');
+  }
 }
+
+function fmtEta(s) {
+  if (s == null) return '';
+  s = Math.max(0, Math.round(s));
+  if (s < 5) return 'almost done';
+  if (s < 60) return `~${s}s left`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `~${m}m ${s % 60}s left`;
+  return `~${Math.floor(m / 60)}h ${m % 60}m left`;
+}
+function escHtml(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+
+// ---------------------------------------------------------------------------
+// global job widget - a corner card, OUTSIDE the screen containers (see the
+// #jobWidget markup near </body>), so it's visible on every screen: projects
+// list, chapter list, or the editor for a DIFFERENT chapter than the one
+// actually rendering. Shows the running job's progress/ETA and the rest of
+// the queue in order.
+// ---------------------------------------------------------------------------
+function jobLabel(j) {
+  const w = { both: 'Audio + video', voice: 'Voice', video: 'Video' }[j.what] || 'Render';
+  return `${w} - ${j.chapter_id}`;
+}
+function renderJobWidget() {
+  const widget = $('jobWidget');
+  const active = JOBS.filter(j => j.status === 'queued' || j.status === 'running');
+  if (!active.length) { widget.classList.remove('on'); return; }
+  widget.classList.add('on');
+  const running = active.filter(j => j.status === 'running');
+  const queued = active.filter(j => j.status === 'queued');
+  let html = running.map(j => `
+    <div class="jwjob running">
+      <div class="jwrow"><span class="jwname">${escHtml(jobLabel(j))}</span><span class="jweta">${fmtEta(j.eta_s)}</span></div>
+      <div class="jwtrack"><div class="jwfill" style="width:${Math.round((j.progress || 0) * 100)}%"></div></div>
+    </div>`).join('');
+  if (queued.length) {
+    html += `<div class="jwqlabel">Queued (${queued.length})</div>` + queued.map(j => `
+      <div class="jwjob queued">
+        <div class="jwrow"><span class="jwname">${escHtml(jobLabel(j))}</span><span class="jweta">${fmtEta(j.eta_s)}</span></div>
+      </div>`).join('');
+  }
+  $('jwBody').innerHTML = html;
+}
+$('jwCollapseBtn').onclick = () => {
+  $('jwBody').classList.toggle('collapsed');
+  const chev = $('jwCollapseBtn');
+  chev.dataset.icon = $('jwBody').classList.contains('collapsed') ? 'chevup' : 'chevdown';
+  chev.removeAttribute('data-ic'); chev.innerHTML = ''; paintIcons(chev.parentElement);
+};
 
 // ---------------------------------------------------------------------------
 // save / load project + periodic autosave (recovery)
@@ -2742,8 +2856,15 @@ async function uploadAsset(kind, file) {
 
 // --- opening a chapter in the editor ------------------------------------------
 function resetEditorState() {
-  if (genES) { try { genES.close(); } catch (_) {} genES = null; }
   if (gpES) { try { gpES.close(); } catch (_) {} gpES = null; }
+  // Render-job UI is reset SYNCHRONOUSLY here (not left stale from whatever
+  // chapter was open before) and then re-synced from the server a moment
+  // later in openChapterEditor() below (pollJobs()) - reset-then-verify, so
+  // "navigate away and back" never shows a leftover busy state that isn't
+  // real (see syncEditorJobUI()).
+  S.watchedJobId = null;
+  setGenBusy(false);
+  $('genProgress').classList.remove('err');
   S.chapter_id = null; S.source_pdf = null; S.strip_w = 0; S.strip_h = 0;
   S.preview_w = 0; S.preview_h = 0; S.tiles = [];
   S.lines = []; S.active = -1; S.activeFrame = -1;
@@ -2767,6 +2888,7 @@ async function openChapterEditor(slug, chNo, opts) {
   S.chapter_id = `${slug}_ch${chNo}`;
   $('chapId').value = S.chapter_id;
   showScreen('editor');
+  pollJobs();   // don't wait for the next 1.5s tick - this chapter may already have a job
 
   if (opts.autoDownload) {
     $('dlUrl').value = opts.url || '';
@@ -2799,18 +2921,69 @@ async function checkForUpdate() {
     const res = await fetch('/api/update', { method: 'POST' });
     const d = await res.json();
     const kind = (d.ok && !d.requirements_changed) ? 'ok' : 'warn';
-    box.textContent = d.message || (d.ok ? 'Updated.' : 'Update check failed.');
-    box.classList.add('on', kind);
+    // An update was actually pulled (not "already up to date", not a
+    // failure) - offer to apply it right now instead of leaving the user to
+    // close and reopen start.bat themselves.
+    setFetchResult(box, d.message || (d.ok ? 'Updated.' : 'Update check failed.'), kind,
+                   d.ok && !d.already_up_to_date ? restartApp : null);
     if (!d.ok) showToast('Update check failed.', null, null, 'err');
     else if (d.already_up_to_date) showToast('Already up to date.', null, null, 'ok');
     else showToast(d.message, null, null, d.requirements_changed ? 'warn' : 'ok');
   } catch (e) {
-    box.textContent = 'Update check failed: ' + e.message;
-    box.classList.add('on', 'warn');
+    setFetchResult(box, 'Update check failed: ' + e.message, 'warn');
     showToast('Update check failed.', null, null, 'err');
   } finally {
     btnBusy($('checkUpdateBtn'), false);
   }
+}
+
+// Fills a .fetchresult box with a message and, optionally, an action button -
+// built with DOM nodes (not innerHTML) since `message` can come straight from
+// git output. Shared by checkForUpdate() and restartApp() below.
+function setFetchResult(box, message, kind, onAction, actionLabel) {
+  box.textContent = '';
+  box.classList.remove('ok', 'warn');
+  const msg = document.createElement('span');
+  msg.textContent = message;
+  box.appendChild(msg);
+  if (onAction) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'small primary';
+    btn.innerHTML = ic('refresh', 13) + `<span>${actionLabel || 'Restart now'}</span>`;
+    btn.onclick = onAction;
+    box.appendChild(btn);
+  }
+  box.classList.add('on', kind);
+}
+
+// Applies a just-pulled update by restarting the Flask process (see
+// POST /api/restart in app.py, which spawns a fresh process then exits this
+// one) and reloading this page once the server answers again - so the user
+// never has to manually close/reopen start.bat to pick up new code.
+async function restartApp() {
+  const box = $('updateResult');
+  setFetchResult(box, 'Restarting…', 'warn');
+  try {
+    await fetch('/api/restart', { method: 'POST' });
+  } catch (_) {
+    // The process replaces itself mid-response - a dropped connection here
+    // is the EXPECTED outcome, not a failure; the poll below is what matters.
+  }
+  const deadlineMs = Date.now() + 30000;
+  const poll = async () => {
+    if (Date.now() > deadlineMs) {
+      setFetchResult(box, 'Restart is taking longer than expected - check the '
+        + 'console window, or reload this page manually in a moment.', 'warn');
+      return;
+    }
+    try {
+      const r = await fetch('/__app_ping__', { cache: 'no-store' });
+      if (r.ok) { location.reload(); return; }
+    } catch (_) { /* still restarting - keep polling */ }
+    setTimeout(poll, 700);
+  };
+  setTimeout(poll, 1000);   // give the old process a moment to actually exit first
 }
 
 // ---------------------------------------------------------------------------
@@ -2913,6 +3086,7 @@ loadSettings();
 paintIcons();
 setStatus('Ready. Stitch a PDF, load a script, then click a line and drag a box on the strip. Ctrl+Z undoes edits.');
 route();   // deep-link into ?project=&chapter=, else show the Projects landing screen
+startJobsPolling();   // global render-job poll - drives the corner widget on every screen
 </script>
 </body>
 </html>

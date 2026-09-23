@@ -32,11 +32,17 @@ import io
 import json
 import math
 import os
+import queue
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import threading
+import time
+import urllib.request
+import uuid
+import webbrowser
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -110,12 +116,14 @@ def _now_iso() -> str:
 # by reading `project` + `ch_no` (query args, JSON body, or form field - never
 # collides with the pre-existing `chapter`/`chapter_id` label param).
 #
-# NOTE on the two SSE routes (/generate_stream, /gemini_parts_stream): Flask
-# tears the request context down before a streamed generator's body actually
-# runs, so before_request's scope would be gone by the time chapter_work_dir()
-# is called inside those generators. Those two routes therefore compute their
-# own (work_dir, output_dir) up front and wrap their generator body in an
-# explicit `with config.chapter_scope(...)` - see their route functions below.
+# NOTE on /gemini_parts_stream (SSE) and the render job worker thread
+# (_run_job, near /api/generate): Flask tears the request context down
+# before a streamed generator's body actually runs, and the job worker isn't
+# in a request context AT ALL (it's a persistent background thread, so a job
+# outlives the request that enqueued it - see the note above _JOBS). Neither
+# can rely on before_request's scope, so both compute their own
+# (work_dir, output_dir) up front and wrap their body in an explicit
+# `with config.chapter_scope(...)`.
 # --------------------------------------------------------------------------- #
 def _scope_params() -> tuple[str | None, str | None]:
     data = request.get_json(silent=True) if request.is_json else None
@@ -467,6 +475,15 @@ def _preview_payload(chapter_id: str) -> dict | None:
 @app.get("/")
 def index():
     return send_from_directory(HERE, "index.html")
+
+
+@app.get("/__app_ping__")
+def app_ping():
+    """Lightweight identity marker - NOT app data. Used to tell "a previous
+    ReCapper instance is already on this port" apart from "some unrelated
+    program happens to be using it" (see _resolve_port at startup), and to
+    poll for the server coming back up after /api/restart."""
+    return jsonify(app="recapper", pid=os.getpid())
 
 
 @app.get("/assets/<path:name>")
@@ -1017,159 +1034,372 @@ def export():
 
 
 # --------------------------------------------------------------------------- #
-# generate audio + video — run the pipeline's s6/s7 as a background subprocess
-# and STREAM its stdout to the browser (Server-Sent Events) so the long TTS
-# model-load + per-line synth shows live, never a frozen request.
+# generate audio + video - a proper job QUEUE, not a request/SSE-stream-shaped
+# job. Rationale (this replaced an earlier design where the SSE connection
+# itself WAS the job - a request-scoped generator running the subprocess and
+# yielding its stdout): a job's real state has to survive the browser
+# navigating away and back, so it can't live only inside one HTTP connection.
+# A Job is a plain object in the _JOBS registry, run by ONE background worker
+# thread pulled off _QUEUE_ORDER in order (rendering is GPU-bound - see
+# s6_tts.py - so jobs run one at a time, never in parallel, on purpose).
+# Any route can ask _JOBS for a job's CURRENT status at any time; the
+# frontend polls GET /api/jobs (global, for the corner widget + queue) and
+# GET /api/jobs/<id> (per-chapter detail) instead of trusting a live stream -
+# so "navigate away and back" always reflects the real state, never a stale
+# assumption.
 # --------------------------------------------------------------------------- #
-# One job per chapter (value is the live Popen, or None while it's being spawned).
-_GEN_JOBS: dict[str, "subprocess.Popen | None"] = {}
-_GEN_LOCK = threading.Lock()
+_JOBS: dict[str, "Job"] = {}
+_QUEUE_ORDER: list[str] = []          # queued job ids, in run order
+_ACTIVE_CHAPTERS: set[str] = set()    # chapter_ids with a queued OR running job
+_JOBS_LOCK = threading.Lock()
+_JOBS_COND = threading.Condition(_JOBS_LOCK)
+
+# Rolling per-`what` history of (seconds per beat) from completed jobs, used
+# to estimate remaining time for running/queued jobs - see _rate_for(). Seed
+# values are a rough guess (TTS dominates "both"/"voice"; "video" is mostly
+# ffmpeg) used only until real history exists; capped so old outliers age out.
+_RENDER_HISTORY: dict[str, list[float]] = {"both": [9.0], "voice": [7.0], "video": [2.5]}
+_RENDER_HISTORY_CAP = 20
 
 
-def _sse(obj: dict) -> str:
-    """Format one Server-Sent Events 'message' frame."""
-    return "data: " + json.dumps(obj, ensure_ascii=False) + "\n\n"
+class Job:
+    """One audio/video generate run. Deliberately NOT tied to any request or
+    SSE connection - see module note above."""
+
+    def __init__(self, chapter_id: str, what: str, slug: str | None, ch_no: str | None,
+                 total_beats: int):
+        self.id = uuid.uuid4().hex[:12]
+        self.chapter_id = chapter_id
+        self.what = what                  # both|voice|video
+        self.slug = slug
+        self.ch_no = ch_no
+        self.status = "queued"            # queued|running|done|failed|cancelled
+        self.total_beats = total_beats
+        self.audio = 0
+        self.video = 0
+        self.message = ""
+        self.video_url: str | None = None
+        self.ok: bool | None = None
+        self.log: list[str] = []
+        self.created_at = _now_iso()
+        self.started_at: str | None = None
+        self.finished_at: str | None = None
+        self.proc: subprocess.Popen | None = None
+        self.cancel_requested = False
+
+    def append_log(self, line: str) -> None:
+        self.log.append(line)
+        if len(self.log) > 500:
+            self.log.pop(0)
+
+    def progress_fraction(self) -> float:
+        """Mirrors the old client-side estimate, now computed server-side so
+        ANY poller (corner widget, chapter detail, queue ETA) sees the same
+        number: s6 prints one "[NNN] …" per voiced line, s7 one "line N: …"
+        per rendered line. Audio is the slow part, weighted heavier for a
+        combined run."""
+        if self.total_beats <= 0 or (self.audio == 0 and self.video == 0):
+            return 0.0
+        a = min(1.0, self.audio / self.total_beats)
+        v = min(1.0, self.video / self.total_beats)
+        if self.what == "video":
+            return min(1.0, 0.05 + 0.90 * v)
+        if self.what == "voice":
+            return min(1.0, 0.05 + 0.90 * a)
+        return min(1.0, 0.05 + 0.70 * a + 0.22 * v)
+
+    def estimated_total_s(self) -> float:
+        return max(1.0, self.total_beats) * _rate_for(self.what)
+
+    def eta_s(self, queued_ahead_s: float = 0.0) -> float | None:
+        """Seconds until THIS job finishes: remaining run time, plus (for a
+        queued job) however long everything ahead of it in line is estimated
+        to still take - see _jobs_with_eta()."""
+        if self.status == "running":
+            return max(0.0, self.estimated_total_s() * (1.0 - self.progress_fraction()))
+        if self.status == "queued":
+            return queued_ahead_s + self.estimated_total_s()
+        return None
+
+    def public(self) -> dict:
+        return {
+            "id": self.id, "chapter_id": self.chapter_id, "what": self.what,
+            "project": self.slug, "ch_no": self.ch_no, "status": self.status,
+            "total_beats": self.total_beats, "audio": self.audio, "video": self.video,
+            "progress": round(self.progress_fraction(), 4) if self.status == "running" else
+                        (1.0 if self.status == "done" else 0.0),
+            "message": self.message, "video_url": self.video_url, "ok": self.ok,
+            "log": list(self.log), "created_at": self.created_at,
+            "started_at": self.started_at, "finished_at": self.finished_at,
+        }
+
+
+def _rate_for(what: str) -> float:
+    hist = _RENDER_HISTORY.get(what) or _RENDER_HISTORY["both"]
+    return sum(hist) / len(hist)
+
+
+def _record_history(job: "Job") -> None:
+    if not (job.started_at and job.finished_at) or job.total_beats <= 0:
+        return
+    try:
+        started = datetime.fromisoformat(job.started_at)
+        finished = datetime.fromisoformat(job.finished_at)
+        secs_per_beat = max(0.1, (finished - started).total_seconds() / job.total_beats)
+    except Exception:  # noqa: BLE001 - a bad timestamp must not crash the worker
+        return
+    hist = _RENDER_HISTORY.setdefault(job.what, [])
+    hist.append(secs_per_beat)
+    del hist[:-_RENDER_HISTORY_CAP]
+
+
+def _jobs_with_eta() -> list[dict]:
+    """All queued + running jobs, each with `eta_s` filled in, in the order
+    they'll actually run (running job first, if any, then queue order) - the
+    queue-position math (each job's wait = everything ahead of it) only makes
+    sense computed together like this, not per-job in isolation."""
+    with _JOBS_LOCK:
+        running = [j for j in _JOBS.values() if j.status == "running"]
+        queued = [_JOBS[jid] for jid in _QUEUE_ORDER if jid in _JOBS]
+    ordered = running + queued
+    out = []
+    ahead_s = 0.0
+    for j in ordered:
+        d = j.public()
+        d["eta_s"] = j.eta_s(ahead_s)
+        out.append(d)
+        ahead_s = (d["eta_s"] if j.status == "running" else
+                   (ahead_s + j.estimated_total_s()))
+    return out
+
+
+def _job_worker() -> None:
+    while True:
+        with _JOBS_COND:
+            while not _QUEUE_ORDER:
+                _JOBS_COND.wait()
+            job_id = _QUEUE_ORDER.pop(0)
+            job = _JOBS.get(job_id)
+        if job is None:
+            continue
+        if job.status == "cancelled":            # cancelled while still queued
+            with _JOBS_LOCK:
+                _ACTIVE_CHAPTERS.discard(job.chapter_id)
+            continue
+        _run_job(job)
+
+
+threading.Thread(target=_job_worker, daemon=True).start()
+
+
+def _run_job(job: "Job") -> None:
+    job.status = "running"
+    job.started_at = _now_iso()
+
+    slug, ch_no, chapter_id = job.slug, job.ch_no, job.chapter_id
+    work_dir = projects.chapter_work_dir(slug, ch_no) if slug and ch_no else chapter_work_dir(chapter_id)
+    output_dir = projects.chapter_output_dir(slug, ch_no) if slug and ch_no else chapter_output_dir(chapter_id)
+
+    with config.chapter_scope(work_dir, output_dir):
+        if slug and ch_no:
+            projects.write_media_snapshot(slug, ch_no)   # a settings change must still land
+
+        if job.what == "video":
+            from_stage, to_stage = "video", None
+        elif job.what == "voice":
+            from_stage, to_stage = "audio", "audio"
+        else:
+            from_stage, to_stage = "audio", None
+
+        # -u + PYTHONUNBUFFERED so each print streams immediately; utf-8 so
+        # the child never dies on a unicode arrow. MANHWA_WORK_ROOT/OUTPUT_ROOT
+        # hand the same scope to the orchestrator subprocess (config.py's
+        # env-var fallback) - this worker thread has no Flask request context
+        # for it to inherit.
+        env = dict(os.environ, PYTHONUNBUFFERED="1", PYTHONIOENCODING="utf-8")
+        if slug and ch_no:
+            env["MANHWA_WORK_ROOT"] = str(work_dir)
+            env["MANHWA_OUTPUT_ROOT"] = str(output_dir)
+        cmd = [sys.executable, "-u", str(ROOT / "orchestrator.py"),
+               "--chapter", chapter_id, "--from", from_stage]
+        if to_stage:
+            cmd += ["--to", to_stage]
+        job.append_log("$ " + " ".join(cmd))
+
+        proc = None
+        try:
+            proc = subprocess.Popen(
+                cmd, cwd=str(ROOT), env=env,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL, text=True, bufsize=1,
+                encoding="utf-8", errors="replace")
+            job.proc = proc
+
+            for line in proc.stdout:                       # streams as it arrives
+                line = line.rstrip("\n")
+                job.append_log(line)
+                if re.match(r"^\s*\[\d{1,4}\]", line):
+                    job.audio += 1
+                elif re.match(r"^\s*line \d+:", line):
+                    job.video += 1
+            proc.wait()
+
+            if job.cancel_requested:
+                job.status, job.ok = "cancelled", False
+                job.message = "Stopped by user."
+            elif proc.returncode == 0:
+                if job.what == "voice":
+                    # audio-only: no video ran, so recap.mp4/status are
+                    # untouched - a stale render stays valid until "Re-render
+                    # video" is run over the new audio.
+                    job.ok = True
+                    job.message = "Audio regenerated. Re-render video to hear it in the recap."
+                else:
+                    mp4 = output_dir / "recap.mp4"
+                    if mp4.exists() and slug and ch_no:
+                        projects.set_status(slug, ch_no, "rendered")
+                    job.ok = mp4.exists()
+                    job.video_url = (
+                        (f"/output/{chapter_id}/recap.mp4?project={slug}&ch_no={ch_no}"
+                         if slug and ch_no else f"/output/{chapter_id}/recap.mp4")
+                        if mp4.exists() else None)
+                    job.message = "Done." if mp4.exists() else "Finished, but recap.mp4 was not found."
+                job.status = "done" if job.ok else "failed"
+            else:
+                job.status, job.ok = "failed", False
+                job.message = f"Pipeline exited with code {proc.returncode}."
+        except Exception as e:  # noqa: BLE001 - report, don't crash the worker
+            job.status, job.ok = "failed", False
+            job.message = f"{type(e).__name__}: {e}"
+            job.append_log(f"ERROR: {job.message}")
+        finally:
+            if proc and proc.poll() is None:
+                try:
+                    proc.terminate()
+                except Exception:  # noqa: BLE001
+                    pass
+            job.finished_at = _now_iso()
+            _record_history(job)
+            with _JOBS_LOCK:
+                _ACTIVE_CHAPTERS.discard(job.chapter_id)
+
+
+@app.post("/api/generate")
+def api_generate():
+    """Enqueue an audio+video / voice-only / video-only render for a chapter.
+    Body: JSON {chapter, what:both|voice|video, project?, ch_no?}. Returns
+    immediately with {job_id} - it does NOT run inline or stream; poll
+    GET /api/jobs/<job_id> (or GET /api/jobs for the global queue/corner
+    widget) for progress. Only one active (queued or running) job per
+    chapter at a time; a second request for the SAME chapter is rejected,
+    but a DIFFERENT chapter queues behind whatever's already running."""
+    data = request.get_json(silent=True) or {}
+    chapter_id = _sanitize_chapter(data.get("chapter") or "")
+    what = (data.get("what") or "both").strip().lower()
+    if what not in ("both", "voice", "video"):
+        what = "both"
+    slug, ch_no = _scope_params()
+
+    work_dir = projects.chapter_work_dir(slug, ch_no) if slug and ch_no else chapter_work_dir(chapter_id)
+    if not (work_dir / "manifest.json").exists():
+        return jsonify(error=f"No manifest for {chapter_id}. Export from the Framer first."), 400
+
+    with _JOBS_LOCK:
+        if chapter_id in _ACTIVE_CHAPTERS:
+            return jsonify(error=f"A generate job is already queued or running for "
+                                  f"{chapter_id}."), 409
+
+    with config.chapter_scope(work_dir, projects.chapter_output_dir(slug, ch_no)
+                               if slug and ch_no else chapter_output_dir(chapter_id)):
+        total = _beat_count(chapter_id)
+
+    job = Job(chapter_id, what, slug, ch_no, total)
+    label = {"both": "audio + video", "voice": "audio (voice only)", "video": "video"}[what]
+    job.append_log(f"Queued {label} for {chapter_id} ({total or '?'} line(s))…")
+    with _JOBS_COND:
+        _JOBS[job.id] = job
+        _QUEUE_ORDER.append(job.id)
+        _ACTIVE_CHAPTERS.add(chapter_id)
+        _JOBS_COND.notify()
+
+    return jsonify(ok=True, job_id=job.id, job=job.public())
 
 
 def _beat_count(chapter_id: str) -> int:
-    """How many narration lines (beats) this chapter has, for the progress bar."""
+    """How many narration lines (beats) this chapter has, for the progress bar
+    and time estimate. Must be called inside the right chapter_scope."""
     try:
         return len(Manifest.load(chapter_work_dir(chapter_id)).beats)
     except Exception:  # noqa: BLE001 - missing/old manifest -> unknown total
         return 0
 
 
-@app.get("/generate_stream")
-def generate_stream():
-    """Run the pipeline's audio+video, video-only, or audio-only for a chapter
-    and stream progress as SSE. EventSource (GET) only, params in the query
-    string:
-        ?chapter=<id>&what=both|voice|video&project=<slug>&ch_no=<n>
-    `project`+`ch_no` scope the run to projects/<slug>/chapters/<n>/{work,output}
-    (see config.chapter_scope) - required for a project chapter; the generator
-    re-enters the scope explicitly (see note above _scope_params) because the
-    request context is gone by the time this generator body actually runs.
-    `what=both` runs s6 (TTS) then s7 (assemble) via `--from audio`; `what=voice`
-    re-runs ONLY s6 via `--from audio --to audio` (e.g. after changing the
-    project's voice sample or speed, without re-selecting frames) - it never
-    touches recap.mp4 or the chapter's status, so a stale render stays valid
-    until you also re-render video; `what=video` re-renders with s7 only via
-    `--from video`. Emits {type:start|log|done|error} frames; `done` carries
-    the /output/<ch>/recap.mp4 URL when a video stage actually ran and produced
-    one."""
-    chapter_id = _sanitize_chapter(request.args.get("chapter", ""))
-    what = (request.args.get("what") or "both").strip().lower()
-    if what == "video":
-        from_stage, to_stage = "video", None
-    elif what == "voice":
-        from_stage, to_stage = "audio", "audio"
-    else:
-        what = "both"
-        from_stage, to_stage = "audio", None
-    slug, ch_no = _scope_params()
-    job_key = f"{slug}/{ch_no}" if slug and ch_no else chapter_id
-    video_url = (f"/output/{chapter_id}/recap.mp4?project={slug}&ch_no={ch_no}"
-                 if slug and ch_no else f"/output/{chapter_id}/recap.mp4")
+@app.get("/api/jobs")
+def api_jobs():
+    """The full job picture: queued + running (with eta_s, in run order) plus
+    a short tail of recently finished jobs. Polled by the global corner
+    widget (any screen) and by a chapter editor on open, to reflect the REAL
+    state instead of assuming nothing changed while the user was elsewhere."""
+    active = _jobs_with_eta()
+    with _JOBS_LOCK:
+        finished = sorted(
+            (j for j in _JOBS.values() if j.status in ("done", "failed", "cancelled")),
+            key=lambda j: j.finished_at or "", reverse=True)[:10]
+        finished = [j.public() for j in finished]
+    return jsonify(jobs=active + finished)
 
-    work_dir = projects.chapter_work_dir(slug, ch_no) if slug and ch_no else chapter_work_dir(chapter_id)
-    output_dir = projects.chapter_output_dir(slug, ch_no) if slug and ch_no else chapter_output_dir(chapter_id)
-    manifest = work_dir / "manifest.json"
 
-    def stream():
-        with config.chapter_scope(work_dir, output_dir):
-            if not manifest.exists():
-                yield _sse({"type": "error",
-                            "message": f"No manifest for {chapter_id}. Export from the "
-                                       f"Framer first."})
-                return
+@app.get("/api/jobs/<job_id>")
+def api_job_detail(job_id):
+    with _JOBS_LOCK:
+        job = _JOBS.get(job_id)
+        if not job:
+            return jsonify(error="job not found"), 404
+        d = job.public()
+        if job.status in ("running", "queued"):
+            ahead_s = 0.0
+            if job.status == "queued":
+                for jid in _QUEUE_ORDER:
+                    if jid == job_id:
+                        break
+                    j2 = _JOBS.get(jid)
+                    if j2:
+                        ahead_s += j2.estimated_total_s()
+                running = next((j for j in _JOBS.values() if j.status == "running"), None)
+                if running:
+                    ahead_s += running.eta_s() or 0.0
+            d["eta_s"] = job.eta_s(ahead_s)
+    return jsonify(job=d)
 
-            # reserve the per-chapter slot WITHOUT yielding under the lock
-            with _GEN_LOCK:
-                busy = job_key in _GEN_JOBS
-                if not busy:
-                    _GEN_JOBS[job_key] = None
-            if busy:
-                yield _sse({"type": "error",
-                            "message": f"A generate job is already running for "
-                                       f"{chapter_id}."})
-                return
 
-            total = _beat_count(chapter_id)
-            label = {"both": "audio + video", "voice": "audio (voice only)",
-                     "video": "video"}[what]
-            yield _sse({"type": "start", "what": what, "total_beats": total,
-                        "message": f"Starting {label} for {chapter_id} "
-                                   f"({total or '?'} line(s))…"})
-
-            if slug and ch_no:
-                # a settings change since the last generate must still land
-                projects.write_media_snapshot(slug, ch_no)
-
-            # -u + PYTHONUNBUFFERED so each print streams immediately; utf-8 so
-            # the child never dies on a unicode arrow and we decode the pipe
-            # cleanly. MANHWA_WORK_ROOT/OUTPUT_ROOT hand the same scope to the
-            # orchestrator subprocess (see config.py's env-var fallback).
-            env = dict(os.environ, PYTHONUNBUFFERED="1", PYTHONIOENCODING="utf-8")
-            if slug and ch_no:
-                env["MANHWA_WORK_ROOT"] = str(work_dir)
-                env["MANHWA_OUTPUT_ROOT"] = str(output_dir)
-            cmd = [sys.executable, "-u", str(ROOT / "orchestrator.py"),
-                   "--chapter", chapter_id, "--from", from_stage]
-            if to_stage:
-                cmd += ["--to", to_stage]
-            proc = None
+@app.post("/api/jobs/<job_id>/cancel")
+def api_job_cancel(job_id):
+    """Cancel a queued job (removed before it ever runs) or a running one
+    (its subprocess is terminated directly - immediate, not waiting for the
+    next log line like the old SSE-disconnect-triggered cancel did)."""
+    with _JOBS_LOCK:
+        job = _JOBS.get(job_id)
+        if not job:
+            return jsonify(error="job not found"), 404
+        if job.status == "queued":
+            job.status, job.ok = "cancelled", False
+            job.message = "Cancelled before it started."
+            job.finished_at = _now_iso()
             try:
-                proc = subprocess.Popen(
-                    cmd, cwd=str(ROOT), env=env,
-                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                    stdin=subprocess.DEVNULL, text=True, bufsize=1,
-                    encoding="utf-8", errors="replace")
-                with _GEN_LOCK:
-                    _GEN_JOBS[job_key] = proc
-
-                yield _sse({"type": "log", "line": "$ " + " ".join(cmd)})
-                for line in proc.stdout:                       # streams as it arrives
-                    yield _sse({"type": "log", "line": line.rstrip("\n")})
-                proc.wait()
-
-                if proc.returncode == 0:
-                    if what == "voice":
-                        # audio-only: no video ran, so recap.mp4/status are
-                        # untouched - a stale render stays valid until
-                        # "Re-render video" is run over the new audio.
-                        yield _sse({"type": "done", "ok": True, "video": None,
-                                    "message": "Audio regenerated. Re-render video "
-                                               "to hear it in the recap."})
-                    else:
-                        mp4 = output_dir / "recap.mp4"
-                        if mp4.exists() and slug and ch_no:
-                            projects.set_status(slug, ch_no, "rendered")
-                        yield _sse({"type": "done", "ok": True,
-                                    "video": (video_url if mp4.exists() else None),
-                                    "message": ("Done." if mp4.exists()
-                                                else "Finished, but recap.mp4 was not found.")})
-                else:
-                    yield _sse({"type": "done", "ok": False,
-                                "message": f"Pipeline exited with code {proc.returncode}."})
-            except GeneratorExit:                              # client disconnected / Stop
-                if proc and proc.poll() is None:
-                    proc.terminate()
-                raise
-            except Exception as e:  # noqa: BLE001 - report, don't crash the stream
-                yield _sse({"type": "error", "message": f"{type(e).__name__}: {e}"})
-            finally:
-                if proc and proc.poll() is None:
-                    try:
-                        proc.terminate()
-                    except Exception:  # noqa: BLE001
-                        pass
-                with _GEN_LOCK:
-                    _GEN_JOBS.pop(job_key, None)
-
-    return Response(stream(), mimetype="text/event-stream",
-                    headers={"Cache-Control": "no-cache",
-                             "X-Accel-Buffering": "no",      # don't let proxies buffer
-                             "Connection": "keep-alive"})
+                _QUEUE_ORDER.remove(job_id)
+            except ValueError:
+                pass
+            _ACTIVE_CHAPTERS.discard(job.chapter_id)
+            return jsonify(ok=True, job=job.public())
+        if job.status == "running":
+            job.cancel_requested = True
+            if job.proc and job.proc.poll() is None:
+                try:
+                    job.proc.terminate()
+                except Exception:  # noqa: BLE001
+                    pass
+            return jsonify(ok=True, job=job.public())
+    return jsonify(error=f"Job already {job.status}."), 409
 
 
 @app.get("/output/<chapter_id>/<path:name>")
@@ -1371,6 +1601,34 @@ def api_update():
         return jsonify(ok=False, message="git is not installed or not on PATH.")
     except Exception as e:  # noqa: BLE001 - report, don't crash the app
         return jsonify(ok=False, message=f"{type(e).__name__}: {e}")
+
+
+@app.post("/api/restart")
+def api_restart():
+    """Cleanly restart this server process - what the "Restart now" button
+    (shown after a successful "Check for updates") uses instead of asking
+    the user to close and reopen start.bat themselves.
+
+    NOT os.execv(): tried it first, but on Windows it's emulated (there's no
+    real exec()) via spawn-then-exit, and called from a background thread
+    while the main thread sits in Werkzeug's blocking accept() loop, it left
+    the OLD process alive-but-unresponsive (still holding the port, no
+    longer answering requests) instead of actually being replaced -
+    confirmed empirically, not theoretical. Spawning a genuinely separate
+    process and then hard-exiting this one is the reliable version of the
+    same idea: no special creationflags, so the new process inherits this
+    console (same window, Ctrl+C/close still works) and keeps running once
+    this one exits. The new process's own startup (_resolve_port) waits out
+    the brief gap until this one actually releases the port. The frontend
+    polls /__app_ping__ until the new process answers, then reloads.
+    """
+    def _do_restart():
+        time.sleep(0.3)  # let this response flush before we spawn + exit
+        env = dict(os.environ, RECAPPER_SKIP_BROWSER_OPEN="1")
+        subprocess.Popen([sys.executable] + sys.argv, cwd=str(ROOT), env=env)
+        os._exit(0)  # hard exit: no WSGI response to finish, no cleanup needed
+    threading.Thread(target=_do_restart, daemon=True).start()
+    return jsonify(ok=True)
 
 
 # --------------------------------------------------------------------------- #
@@ -1866,13 +2124,125 @@ def merged_file(slug, name):
     return send_from_directory(str(d), name)
 
 
+def _port_open(host: str, port: int, timeout: float = 0.3) -> bool:
+    """True if something is already accepting connections on host:port."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(timeout)
+        return s.connect_ex((host, port)) == 0
+
+
+def _ping_existing(host: str, port: int, timeout: float = 1.0) -> dict | None:
+    """If host:port is already serving THIS app (its /__app_ping__ marker),
+    return that JSON body (app name + pid) - None if it's unreachable OR
+    reachable but NOT ReCapper (some unrelated program happens to be on this
+    port), so callers never assume they know what they'd be closing."""
+    try:
+        with urllib.request.urlopen(f"http://{host}:{port}/__app_ping__", timeout=timeout) as r:
+            data = json.loads(r.read().decode("utf-8"))
+            return data if data.get("app") == "recapper" else None
+    except Exception:  # noqa: BLE001 - "can't confirm it's us" -> treat as unknown
+        return None
+
+
+def _find_free_port(host: str, start_port: int, tries: int = 50) -> int:
+    for p in range(start_port, start_port + tries):
+        if not _port_open(host, p, timeout=0.1):
+            return p
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:  # last resort
+        s.bind((host, 0))
+        return s.getsockname()[1]
+
+
+def _resolve_port(host: str, port: int) -> int | None:
+    """Never let a busy port 5005 fail silently with Werkzeug's raw "Address
+    already in use" traceback (which looks like a crash to someone who just
+    double-clicked start.bat) - AND never silently start a second, fully
+    independent ReCapper server + open a second browser tab just because
+    start.bat got launched again while one is already running (the actual
+    cause of a real "it keeps opening new tabs on its own" bug report: every
+    relaunch is a brand new process, so webbrowser.open() in main() - the
+    ONLY place in this app or any of its dependencies that opens a browser,
+    confirmed by grepping the whole venv - legitimately fires again each
+    time, once per process, exactly as designed; the fix has to be "don't
+    start a redundant process" rather than anything about the open() call
+    itself). So: if the port is busy and it's confirmed to be OUR OWN
+    instance (via /__app_ping__, not just an assumption), the default is to
+    do NOTHING - no new server, no new tab, just point at the one already
+    running - a relaunch can only ever open a SECOND tab if the person
+    explicitly chooses to close the old instance first. Only when the port
+    is occupied by some unrelated program does this fall back to the next
+    free port (main() still opens exactly one browser tab in that case).
+    """
+    # A just-restarted instance (see /api/restart) may still be releasing the
+    # port - give it a moment before treating it as genuinely occupied.
+    for _ in range(20):
+        if not _port_open(host, port):
+            return port
+        time.sleep(0.15)
+
+    print()
+    print("=" * 60)
+    existing = _ping_existing(host, port)
+    if existing:
+        pid = existing.get("pid")
+        print(f"  ReCapper is already running at http://{host}:{port}/"
+              + (f" (PID {pid})" if pid else "") + ".")
+        print("  [C] Close it and start fresh here")
+        print("  [Enter] Do nothing - switch to that browser tab instead (default)")
+        choice = ""
+        try:
+            choice = input("  Choice [C/Enter]: ").strip().lower()
+        except (EOFError, OSError):
+            pass  # not an interactive console (e.g. launched by a script) - use the default
+        if choice == "c" and pid:
+            try:
+                subprocess.run(["taskkill", "/F", "/PID", str(pid)],
+                                capture_output=True, timeout=10)
+                print(f"  Closed the previous instance (PID {pid}).")
+                for _ in range(20):
+                    if not _port_open(host, port):
+                        print("=" * 60)
+                        return port
+                    time.sleep(0.15)
+                print(f"  Port {port} is still busy - giving up on closing it.")
+            except Exception as e:  # noqa: BLE001
+                print(f"  Could not close it ({e}).")
+        print(f"  Not starting a second copy. ReCapper is already open at "
+              f"http://{host}:{port}/ - this window can be closed.")
+        print("=" * 60)
+        return None
+
+    print(f"  Port {port} is already in use by another program (not ReCapper).")
+    print("  Starting on the next free port instead.")
+    new_port = _find_free_port(host, port + 1)
+    print(f"  Using http://{host}:{new_port}/ instead.")
+    print("=" * 60)
+    return new_port
+
+
 def main() -> None:
     host, port = "127.0.0.1", 5005
+    port = _resolve_port(host, port)
+    if port is None:
+        return   # a duplicate launch of an already-running instance - see _resolve_port()
     url = f"http://{host}:{port}/"
     print("=" * 60)
-    print("  Framer - manual frame selection")
+    print("  ReCapper")
     print(f"  Open: {url}")
     print("=" * 60)
+    # Python opens the browser (not start.bat) so it always points at the
+    # PORT ACTUALLY USED, which _resolve_port() may have changed. Delayed in
+    # a background thread so it doesn't block app.run() below. Skipped after
+    # a self-restart (see /api/restart, which sets this env var on the new
+    # process) - the tab that triggered the restart already reloads itself
+    # once this new instance answers, so opening another one would just be a
+    # confusing duplicate. This is the ONLY webbrowser.open() call in the
+    # entire app (or any dependency - checked), and it runs at most once per
+    # process, so "opens a new tab on its own" can only mean a second
+    # process started - which _resolve_port() above now refuses to do.
+    if not os.environ.pop("RECAPPER_SKIP_BROWSER_OPEN", None):
+        threading.Thread(target=lambda: (time.sleep(1.0), webbrowser.open(url)),
+                          daemon=True).start()
     # threaded: a generate job holds an SSE connection open for minutes; other
     # requests (thumbnails, the result video, a second tab) must still be served.
     app.run(host=host, port=port, debug=False, threaded=True)
