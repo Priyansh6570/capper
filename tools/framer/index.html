@@ -703,6 +703,29 @@
             <input id="bgDim" type="range" min="10" max="100" value="85" /></div>
           <div class="previewbox" id="bgPreviewBox"><span class="phmsg">Preview</span></div>
         </div>
+
+        <div class="setcol">
+          <h3 data-icon="film" data-ic-size="13">Frame Animation</h3>
+          <div class="hint" style="margin-bottom:2px">How every frame enters/exits in the rendered video.</div>
+          <div class="radiorow">
+            <label><input type="radio" name="animStyle" value="cut" /> Cut</label>
+            <label><input type="radio" name="animStyle" value="fade" /> Fade</label>
+            <label><input type="radio" name="animStyle" value="slide" /> Slide</label>
+            <label><input type="radio" name="animStyle" value="zoom" /> Zoom</label>
+          </div>
+          <div class="sidefield">
+            <label class="lbl">Slide direction</label>
+            <select id="animDirection">
+              <option value="left">Left</option>
+              <option value="right">Right</option>
+              <option value="up">Up</option>
+              <option value="down">Down</option>
+            </select>
+          </div>
+          <div class="slider"><div class="slbl"><span>Duration</span><span id="animDurationLbl"></span></div>
+            <input id="animDuration" type="range" min="5" max="100" value="35" /></div>
+          <div class="hint">Applies to every frame transition in this project's renders. "Cut" is an instant switch, no animation.</div>
+        </div>
       </div>
     </div>
 
@@ -2714,6 +2737,10 @@ function fillSettingsForm() {
   $('bgFileName').textContent = s.background.file ? s.background.file.split('/').pop() : '';
   $('bgDim').value = Math.round(s.background.dim * 100);
 
+  document.querySelector(`input[name=animStyle][value="${s.animation.style}"]`).checked = true;
+  $('animDirection').value = s.animation.direction || 'left';
+  $('animDuration').value = Math.round(s.animation.duration * 100);
+
   updateSliderLabels();
   refreshWatermarkPreview();
   refreshBackgroundPreview();
@@ -2738,6 +2765,7 @@ function updateSliderLabels() {
   $('wmSpacingLbl').textContent = $('wmSpacing').value + '%';
   $('wmAngleLbl').textContent = $('wmAngle').value + '°';
   $('bgDimLbl').textContent = $('bgDim').value + '%';
+  $('animDurationLbl').textContent = (+$('animDuration').value / 100).toFixed(2) + 's';
 }
 
 function refreshVoiceActive() {
@@ -2776,6 +2804,11 @@ function currentSettingsFromForm() {
     background: {
       mode: document.querySelector('input[name=bgMode]:checked').value,
       dim: (+$('bgDim').value) / 100,
+    },
+    animation: {
+      style: document.querySelector('input[name=animStyle]:checked').value,
+      direction: $('animDirection').value,
+      duration: (+$('animDuration').value) / 100,
     },
   };
 }
@@ -2900,6 +2933,18 @@ async function openChapterEditor(slug, chNo, opts) {
     const res = await fetch(`/editor_state/status?chapter=${encodeURIComponent(S.chapter_id)}${scopeQS()}`);
     const d = await res.json();
     if (d.project && d.project.exists) { await loadEditorState(false); return; }
+    // No EXPLICIT save (editor_state.json), but the periodic autosave
+    // (recovery.json) has one - that's real prior script/box work, not
+    // "nothing here yet". Restore it automatically instead of silently
+    // falling through to "start from scratch", which is exactly what would
+    // make already-done work look gone on reopen if the explicit-save slot
+    // was ever empty for any reason.
+    if (d.recovery && d.recovery.exists) {
+      await loadEditorState(true);
+      showToast('Restored your last autosave (no explicit Save was found) - '
+        + 'click Save to make it permanent.', null, null, 'warn');
+      return;
+    }
   } catch (_) { /* fall through - nothing saved yet for this chapter */ }
   setStatus(`Opened ${S.chapter_id}. Download or stitch a PDF to begin.`);
 }
@@ -2999,12 +3044,13 @@ $('pjRefetchBtn').onclick = refetchChapters;
 $('mergeBtn').onclick = startMerge;
 $('mergeCancelBtn').onclick = cancelMerge;
 $('pjSettingsBtn').onclick = () => $('pjSettings').classList.toggle('on');
-['musicMode', 'voiceMode', 'wmType', 'bgMode'].forEach(name => {
+['musicMode', 'voiceMode', 'wmType', 'bgMode', 'animStyle'].forEach(name => {
   document.querySelectorAll(`input[name=${name}]`).forEach(el => el.onchange = saveSettingsDebounced);
 });
 $('wmEnabled').onchange = saveSettingsDebounced;
 $('wmText').oninput = saveSettingsDebounced;
-['wmOpacity', 'wmSize', 'wmSpacing', 'wmAngle', 'bgDim'].forEach(id => { $(id).oninput = saveSettingsDebounced; });
+$('animDirection').onchange = saveSettingsDebounced;
+['wmOpacity', 'wmSize', 'wmSpacing', 'wmAngle', 'bgDim', 'animDuration'].forEach(id => { $(id).oninput = saveSettingsDebounced; });
 $('musicFile').onchange = e => uploadAsset('music', e.target.files[0]);
 $('voiceFile').onchange = e => uploadAsset('voice', e.target.files[0]);
 $('wmFile').onchange = e => uploadAsset('watermark', e.target.files[0]);

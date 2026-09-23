@@ -114,6 +114,13 @@ def _default_settings() -> dict:
         "watermark": {"enabled": False, "type": "text", "text": "", "file": None,
                       "opacity": 0.12, "size": 0.12, "spacing": 1.0, "angle": -30},
         "background": {"mode": "blur", "file": None, "dim": 0.85},
+        # Frame entry/exit animation for stage 7's render. "fade"/0.35s matches
+        # the crossfade s7_assemble.py has always hardcoded - this is the
+        # default specifically so existing projects (loaded via load()'s
+        # deep-merge, which backfills any settings key missing from an older
+        # project.json) keep rendering EXACTLY as before until someone
+        # actually changes it in Project Settings.
+        "animation": {"style": "fade", "direction": "left", "duration": 0.35},
     }
 
 
@@ -310,6 +317,12 @@ def update_settings(slug: str, settings: dict) -> dict:
         wm["angle"] = max(-90, min(90, float(wm.get("angle", -30))))
         bg = project["settings"]["background"]
         bg["dim"] = max(0.1, min(1.0, float(bg.get("dim", 0.85))))
+        anim = project["settings"]["animation"]
+        if anim.get("style") not in ("cut", "fade", "slide", "zoom"):
+            anim["style"] = "fade"
+        if anim.get("direction") not in ("left", "right", "up", "down"):
+            anim["direction"] = "left"
+        anim["duration"] = max(0.05, min(1.0, float(anim.get("duration", 0.35))))
         save(project)
     write_all_media_snapshots(slug)
     return project
@@ -379,6 +392,11 @@ def media_settings_snapshot(slug: str) -> dict:
             "file": _resolved_str(slug, background.get("file")),
             "dim": background.get("dim", 0.85),
         } if background.get("mode") == "image" else None,
+        # No paths to resolve here (style/direction/duration are plain
+        # scalars) - passed straight through; load()'s deep-merge guarantees
+        # this key exists even for a project.json saved before this setting
+        # existed, so stage 7 always gets a value, never a missing key.
+        "animation": s["animation"],
     }
     return out
 
