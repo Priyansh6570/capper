@@ -1,166 +1,120 @@
 # Work log
 
-## Task: Security audit (report only) + in-app git-based update mechanism
+## Task: fix 5 framer editor UI/bug reports
 
-## Part 1 - Security audit of git history (report only, nothing changed)
+All changes in `tools/framer/index.html` unless noted.
 
-Requested before making the GitHub repo public. Findings:
+### 1. "Re-render video" button overflowing its container
 
-1. **Commit count**: the entire history is **one commit** ("Initial commit:
-   manhwa recap pipeline + framer tool"), 30 files total, single branch
-   (`main`). This made a full-history audit fast and exhaustive rather than
-   a sample.
-2. **`.env` / credential files**: never committed. Checked via
-   `git log --all --pretty=format: --name-only --diff-filter=A | sort -u`
-   (every filename ever added, across all history) - no `.env`, and no
-   filename matching `secret|credential|\.key$|\.pem$|password|token`.
-3. **Hardcoded secrets in file content**: none found. Searched all commit
-   content (`git log --all -p`) for: Groq key format (`gsk_...`), AWS key
-   format (`AKIA...`), private-key PEM headers, generic
-   `api_key=`/`password=` assignments, and a broad scan for any 40+
-   character token-like string (only match: markdown/comment separator
-   dashes, e.g. `------`, nothing secret).
-4. **`.gitignore` - real gap found**: the **working tree** version (already
-   edited earlier this session, uncommitted) correctly covers `.env`,
-   `work/`, `output/`, `projects/`, `downloads/`, `series/`, `inputs/`,
-   models (`*.pt`, `*.pth`, `*.safetensors`, `*.onnx`, `*.ckpt`, `*.bin`,
-   `.cache/`, `huggingface/`), and generated media. But the **currently
-   committed** `.gitignore` (`git show HEAD:.gitignore`) is missing
-   `projects/` entirely (it has `work/downloads/output/series/inputs/` but
-   not `projects/`). Nothing was actually leaked - `projects/` was simply
-   never `git add`ed in that one commit - but **commit the updated
-   `.gitignore` before pushing anything else**, or a future `git add -A`
-   could commit the real `projects/the-stellar-swordmaster/` (697MB of
-   actual chapter data) by accident.
+`#genVoiceBtn`/`#genVidBtn` were two `class="small"` buttons side by side in a
+`.row2` flex row inside the 300px sidebar. `.sidecard .row2 > input` had
+`flex:1`, but the matching rule for `> button` never existed, so both buttons
+sized to their own text+icon content and the row's total width exceeded the
+sidebar, overflowing it (their `white-space:nowrap` meant the text couldn't
+wrap to absorb the overflow either).
 
-**Bottom line: no secrets were ever committed, safe to make public once the
-.gitignore fix above is committed.** No key rotation needed.
+Fix: dropped the `.row2` wrapper for just these two buttons and gave each
+`class="small wide"` (the same full-width pattern already used by
+`#genAVBtn`/`#genCancelBtn` right next to them) so they stack vertically at
+100% width - can't overflow at any sidebar width.
 
-## Part 2 - In-app git-based update mechanism
+### 2. Zoom sticks to the left instead of staying centered
 
-**Approach chosen for non-git installs (you confirmed): make the installer
-itself `git clone` the app** (over HTTPS, repo now public), rather than a
-zip-download fallback. Reasoning: gives correct `git pull` semantics for
-free afterward, "N files changed" reporting comes from git itself instead of
-custom diffing, and it's one mechanism instead of two to maintain.
+`#world` (the strip element) was a plain block div inside `#stage`
+(`overflow:auto`) with no centering rule. When zoomed below "fit width" (the
+strip narrower than the viewport), a block child with no auto margins sits
+flush against the container's left edge - that's what "sticks to the left"
+was. The JS zoom math (`setZoom()`) already correctly keeps the viewport-
+center point fixed while zooming; the bug was purely CSS layout.
 
-### `tools/framer/app.py` - `POST /api/update`
-Runs `git rev-parse HEAD` (before) → `git pull --ff-only` → `git rev-parse
-HEAD` (after) → if different, `git diff --name-only <old> <new>` for the
-changed-file list and whether `requirements.txt` is in it, all in `ROOT`
-with `GIT_TERMINAL_PROMPT=0` (so a missing/expired credential fails fast
-with a clear error instead of hanging the request on an invisible prompt).
-`--ff-only` deliberately never merges/rebases - if history has diverged it
-fails cleanly with git's own message rather than risking a merge conflict
-in a non-technical user's install. Returns `{ok, already_up_to_date,
-files_changed, requirements_changed, message}`; a repo with no `.git` (an
-old pre-this-feature install) gets a clear `not_git` response instead of a
-crash.
+Fix: added `margin:0 auto` to `#world`. This centers it whenever it's
+narrower than `#stage` and has zero effect (auto margins resolve to 0) once
+it's wider, so normal edge-to-edge scrolling at high zoom is unchanged.
+Verified `screenToTrue()` (used for all box-drawing coordinate math) still
+maps correctly since it reads `world.getBoundingClientRect()` directly, which
+already reflects the margin offset - no JS changes needed.
 
-### `tools/framer/index.html` - "Check for updates" button
-Added to the Projects screen header (next to the theme toggle - an app-level
-action, not a per-chapter one). Reuses the existing `.fetchresult`/`btnBusy`/
-`showToast` patterns already in the codebase (same as "New project"'s fetch
-feedback) rather than inventing a new UI pattern. Green (`.ok`) for already
-up to date or a clean code-only update; red (`.warn`) when
-`requirements_changed` or on any error, so the "go re-run setup.bat" message
-doesn't just flash by in a toast.
+### 3. Unstyled "Browse" buttons + messy settings panel layout
 
-### `installer/installer.iss` - restructured to `git clone`, not a file copy
-This is a real architecture change from the previous version of this file
-(which bundled app code via `[Files]`), needed so `git pull` has something
-to pull *into*. Verified the core mechanism **in isolation before encoding
-it in Pascal** (clone into a temp dir, `robocopy /E` merge into a
-pre-populated target with unrelated files already in it - proved this
-preserves everything and produces a fully working git tree, without going
-through the installer or risking another MsgBox incident):
-- `[Files]` now only bundles ffmpeg (straight into `{app}\vendor\ffmpeg\bin`
-  as before - unaffected by the clone, since it isn't part of the git repo).
-- New `CloneRepo()`: ensures git is present (`winget install Git.Git` if
-  missing, same PATH-probe-with-fallback-paths pattern as `setup.bat`'s own
-  Python detection), then `git clone --depth 1` into `{tmp}\repo_clone`
-  (needs an empty target - `{app}` already has Inno's own `unins000.*` in it
-  by this point, so can't clone directly into it), then `robocopy /E` merges
-  the clone into `{app}` (no empty-target requirement, leaves the
-  already-extracted ffmpeg and `unins000.*` alone).
-- `CurStepChanged(ssPostInstall)` now calls `CloneRepo()` before
-  `RunEnvSetup()`; `RunEnvSetup` exits immediately if the clone failed
-  (no `setup.bat` to run yet).
-- Finished-page text now distinguishes "couldn't download the app" from
-  "downloaded fine but the Python/AI environment failed" - different causes,
-  different fixes, shouldn't share one vague message.
-- **Uninstaller rewritten**: app code is no longer Inno-tracked, so
-  `[Code]`'s uninstall handler is now responsible for the whole install
-  folder, not just the venv/ffmpeg extras it originally covered. Added
-  `RemoveAppCodeKeepingData()`, which enumerates `{app}`'s actual top-level
-  contents (`FindFirst`/`FindNext`) and removes everything **except** the
-  six data folders - dynamic, not a hardcoded file list, so it doesn't need
-  editing every time a file is added to the repo. "Yes, remove data" now
-  also removes the app code afterward (nothing left to keep); "No" removes
-  everything *except* the data folders.
+The 4 asset pickers (music/voice/watermark logo/background image) were raw
+`<input type=file>` elements rendering the browser's native "Choose File"
+button, unlike the one other file picker in the app (`pdfPath`/`pdfBrowseBtn`)
+which already used the hidden-input + styled-button pattern.
 
-### Verification performed
-- `installer.iss` compiles cleanly (ISCC, no warnings) after every change.
-- The clone+robocopy-merge mechanism was proven correct in an isolated Bash/
-  PowerShell test *before* being written into Pascal Script: cloned a real
-  repo into an empty temp dir, robocopy-merged it into a directory that
-  already had stand-in `unins000.exe/.dat` + `vendor\ffmpeg\bin\ffmpeg.exe`
-  in it, confirmed the result was a fully functional git working tree
-  (`git status`/`git remote -v` both work) *and* that the pre-existing files
-  were untouched.
-- Given the previous task's incident (see below), **did not** run the
-  restructured installer live/silently again - relied on compile success +
-  code review for the Pascal Script changes, consistent with the standing
-  decision to stop automating the interactive-dialog paths.
-- `POST /api/update` tested for real against the actual project repo:
-  returns `{"ok":true,"already_up_to_date":true,...}` correctly (nothing new
-  upstream, as expected). The diff/`requirements_changed` logic was verified
-  separately in an isolated throwaway git repo (bare repo + two clones,
-  pushed a commit that touched `requirements.txt` and `app.py`, pulled it in
-  the first clone): `git diff --name-only <old> <new>` correctly listed both
-  changed files, confirming the requirements-changed detection is accurate.
-- The frontend button was verified for real in a live browser against the
-  running app (not just read): clicking it (called directly via
-  `checkForUpdate()` in the page console to avoid flaky screenshot-based
-  clicking) correctly showed "Already up to date." in green, matching the
-  backend response, with the button correctly re-enabled afterward.
-- `python -m py_compile` on `app.py` and `node --check` on the extracted
-  inline JS both pass.
-- All test artifacts (temp bare/clone repos, test Flask server) cleaned up;
-  none of this touched the real project's git history or data.
+Fix:
+- Hid all 5 file inputs (the 4 above + `pdfFile`, unified for consistency)
+  behind a new reusable `.filehidden` class, each paired with a themed
+  `class="small ghost"` "Browse…" button that triggers `.click()` on the
+  hidden input - wired in the same block as the existing `pdfBrowseBtn`.
+- Empty filename `.swatch` spans now show a dim "No file chosen" via
+  `:empty::before` instead of looking blank/broken.
+- Redesigned `.setgrid` from a `flex-wrap` row (uneven column heights, no
+  visual separation) to a CSS grid
+  (`repeat(auto-fit, minmax(260px,1fr))`), and gave each `.setcol` a
+  `.sidecard`-style sub-panel treatment (background/border/radius/padding)
+  with an icon+label `<h3>` heading (music/audio/droplet/image icons) -
+  each settings group (Music/Voice/Watermark/Background) now reads as a
+  distinct, bounded card instead of floating text in a loose row.
+
+### 4. Unclear save behavior in settings
+
+Settings WERE already autosaving (400ms debounce, see `saveSettingsDebounced`)
+- there was just no clear, persistent indicator, only a plain text line at
+the bottom of the panel that stayed blank until you touched something.
+
+Fix: moved the indicator into the "Project settings" header as a colored pill
+badge (`.savebadge`, green/amber/red dot for saved/saving/failed, matching
+the `.stpill` status-pill pattern used elsewhere in the app), and gave it an
+idle state ("Autosaved") set as soon as the panel's data loads
+(`fillSettingsForm()`), not just after the first edit - so it's obvious from
+the moment you open Settings that changes save automatically, with no
+separate "Save" button needed.
+
+### 5. BUG: stitching a chapter with no script doesn't restore on reopen
+
+Root cause: `editor_state.json` (the file `openChapterEditor()` checks for
+and auto-restores from) was ONLY ever written by an explicit "Save" click or
+by adding/editing script lines (`markDirty()` → debounced autosave). Neither
+`doDownload()` nor `loadPdf()` (the "Stitch PDF" action) ever called it, so
+downloading/stitching a chapter and leaving before touching the script left
+NOTHING on disk for that chapter - reopening it correctly found no saved
+state and reported exactly that ("No saved editor state for ...").
+
+Fix (`tools/framer/index.html`):
+- `saveEditorState(recovery, opts)` now takes an optional `{silent:true}` -
+  writes the real `editor_state.json` (so `openChapterEditor()`'s existing
+  restore check finds it) without the "Saved." toast/status line a
+  deliberate user Save gets, so it can be called automatically.
+- `doDownload()` now sets `S.chapter_id`/`S.source_pdf` from the response and
+  fires a silent checkpoint save right after a successful download.
+- `loadPdf()` fires a silent checkpoint save right after a successful stitch.
+
+Verified end-to-end: stitched a real chapter with 0 script lines, confirmed
+`editor_state.json` was written (`lines: 0`, full strip metadata present),
+then closed and reopened the chapter - it restored the strip/tiles with no
+error (`"Loaded saved state ... - 0 line(s)."`) instead of the old error.
+
+### Verified in-browser (Chrome, local `tools/framer/app.py`)
+
+- Settings panel: cards, icons, styled Browse buttons, autosave badge (idle
+  "Autosaved" → "Saving…" → "Autosaved HH:MM:SS") all confirmed visually.
+- Chapter editor sidebar: "Re-render voice"/"Re-render video" now full-width,
+  no overflow.
+- Zoomed a real stitched strip (1667×643945px) down to 10%: strip centered
+  with equal left/right gaps (was flush-left before the fix). Confirmed
+  `screenToTrue()` math still correct at non-1.0 zoom.
+- Reproduced bug 5 exactly (stitch, 0 lines, leave, reopen) against a real
+  project chapter, confirmed the fix, then deleted the ~440MB of test
+  tiles/state this created under `projects/the-stellar-swordmaster/chapters/2/`
+  so the user's actual project data is unaffected (chapter 2 is back to
+  untouched `not_started`, no `work/` folder).
+- No console errors at any point.
 
 ### Files changed
-- `tools/framer/app.py` - new `POST /api/update` route.
-- `tools/framer/index.html` - "Check for updates" button + result display +
-  `checkForUpdate()`.
-- `installer/installer.iss` - restructured to git-clone based install (see
-  above); `installer/INSTALLER_BUILD.md` updated to match, plus a new
-  "In-app updates: your release workflow" section (what you personally do to
-  ship an update: `git add && git commit && git push origin main` - that's
-  the whole workflow, with notes on why `requirements.txt` changes need
-  calling out separately and why `main` should never be rebased/force-pushed
-  once users have pulled from it).
-- `SETUP_GUIDE.md` - short "Getting updates" section for end users.
 
-### Your release workflow (short version - full version in `installer/INSTALLER_BUILD.md`)
-```powershell
-git add -A
-git commit -m "describe what changed"
-git push origin main
-```
-Users click "Check for updates" whenever they want it (no auto-check on
-launch) → restart the app, or re-run `setup.bat` first if you touched
-`requirements.txt`. Never rebase or force-push `main` after users have
-pulled from it - `git pull --ff-only` will fail cleanly (not corrupt
-anything) but every user's next update breaks until they're told to fix it
-manually.
+- `tools/framer/index.html` (all 5 fixes)
 
-### Next steps for you
-1. Commit the updated `.gitignore` (adds `projects/` and a few build-output
-   entries) **before** pushing anything else or making the repo public.
-2. Make the GitHub repo public (this wasn't done for you - a repo-settings
-   change on GitHub, not something in this codebase).
-3. Do one real, interactive install + uninstall test of the restructured
-   installer once the repo is public (this task relied on compile-testing +
-   an isolated clone/merge proof, not another live run of the installer
-   itself - see the incident note in `installer/INSTALLER_BUILD.md`).
+### Next steps for the user
+
+- No backend/pipeline changes, no new dependencies - just refresh the
+  browser tab (or restart `start.bat`) to pick this up.

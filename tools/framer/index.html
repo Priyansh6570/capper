@@ -3,49 +3,53 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Framer - manual frame selection</title>
+<title>ReCapper</title>
+<link rel="icon" type="image/png" href="/assets/ReCapper.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
   /* ==========================================================================
-     Framer skin: IBM Plex Sans, cool neutrals, a single blue accent for primary
-     actions, green frames / red blur, soft radii. LIGHT is the default
-     (body.light); DARK is the class-less fallback, so the existing theme toggle
-     and the server-side /settings persistence keep working unchanged.
+     ReCapper skin: IBM Plex Sans, near-black neutrals, a single brand-red
+     accent (from the logo) for primary actions, green frames / amber-orange
+     blur-danger (kept a distinct hue from the red accent on purpose - red is
+     now the BRAND color, so error/blur states use orange instead of red to
+     avoid reading as "another primary button"), soft radii. LIGHT is the
+     default (body.light); DARK is the class-less fallback, so the existing
+     theme toggle and server-side /settings persistence keep working unchanged.
      ========================================================================== */
   :root {
-    --bg:#0b0d10; --panel:#11141a; --surface:#171b22;
-    --line:#242a33; --rule:#242a33;
-    --txt:#e7eaf0; --muted:#98a2ae;
-    --accent:#4d84ff; --accent-ink:#ffffff; --accent-hover:#6a99ff; --accent-press:#3a6fe0;
-    --accent-tint:#152340;
-    --frame:#3ecf8e; --blur:#f4696b; --blur-ink:#1a0d0e;
+    --bg:#0a0708; --panel:#130c0d; --surface:#1a1113;
+    --line:#2e1c1f; --rule:#2e1c1f;
+    --txt:#f0e8e9; --muted:#a68e91;
+    --accent:#e8283c; --accent-ink:#ffffff; --accent-hover:#ff4a5c; --accent-press:#b91c2c;
+    --accent-tint:#2a0f13;
+    --frame:#3ecf8e; --blur:#ff9f43; --blur-ink:#1a0d0e;
     --ok:#3ecf8e; --warn:#e9b949;
-    --input:#0e1116; --input2:#0a0c10;
-    --btn:#1e232b; --btn-hover:#272e38;
-    --stage:#07080b; --pill:#1e232b; --chip:#11141a; --toast:#151a21;
+    --input:#150e0f; --input2:#110a0b;
+    --btn:#241618; --btn-hover:#301c1f;
+    --stage:#070404; --pill:#241618; --chip:#130c0d; --toast:#1c1214;
     --frame-fill:rgba(62,207,142,.10); --frame-fill2:rgba(62,207,142,.20);
-    --blur-fill:rgba(244,105,107,.18); --blur-fill2:rgba(244,105,107,.12);
-    --overlay:rgba(8,10,14,.78);
-    --shadow:0 12px 32px rgba(0,0,0,.5);
+    --blur-fill:rgba(255,159,67,.18); --blur-fill2:rgba(255,159,67,.12);
+    --overlay:rgba(10,7,8,.80);
+    --shadow:0 12px 32px rgba(0,0,0,.55);
     --r:9px; --r2:7px; --r3:5px;
   }
   body.light {
-    --bg:#eef0f4; --panel:#ffffff; --surface:#f6f7f9;
-    --line:#dfe3e9; --rule:#dfe3e9;
-    --txt:#141821; --muted:#59616e;
-    --accent:#2f68e8; --accent-ink:#ffffff; --accent-hover:#1e52c4; --accent-press:#17429e;
-    --accent-tint:#e7eefd;
-    --frame:#0f8a4a; --blur:#c0332f; --blur-ink:#ffffff;
+    --bg:#f4eeee; --panel:#ffffff; --surface:#f8f3f3;
+    --line:#e6dadb; --rule:#e6dadb;
+    --txt:#1c1214; --muted:#6b585a;
+    --accent:#d21f2f; --accent-ink:#ffffff; --accent-hover:#e8283c; --accent-press:#a4141f;
+    --accent-tint:#fbe4e6;
+    --frame:#0f8a4a; --blur:#c2610b; --blur-ink:#ffffff;
     --ok:#0f8a4a; --warn:#8a6100;
-    --input:#ffffff; --input2:#eaedf2;
-    --btn:#eef1f5; --btn-hover:#e2e6ed;
-    --stage:#dce0e7; --pill:#eef1f5; --chip:#ffffff; --toast:#ffffff;
+    --input:#ffffff; --input2:#f3ecec;
+    --btn:#f3eced; --btn-hover:#e9dddf;
+    --stage:#e3d7d8; --pill:#f3eced; --chip:#ffffff; --toast:#ffffff;
     --frame-fill:rgba(15,138,74,.10); --frame-fill2:rgba(15,138,74,.20);
-    --blur-fill:rgba(192,51,47,.16); --blur-fill2:rgba(192,51,47,.11);
-    --overlay:rgba(238,240,244,.8);
-    --shadow:0 10px 28px rgba(20,30,60,.12);
+    --blur-fill:rgba(194,97,11,.16); --blur-fill2:rgba(194,97,11,.11);
+    --overlay:rgba(244,238,238,.8);
+    --shadow:0 10px 28px rgba(40,10,15,.12);
   }
   * { box-sizing:border-box; scrollbar-width:thin; scrollbar-color:var(--line) transparent; }
   body { margin:0; height:100vh; overflow:hidden; background:var(--bg); color:var(--txt);
@@ -129,9 +133,7 @@
   .apphead-chip { display:none; }
   @media (min-width:640px) { .apphead-chip { display:inline; } }
   .sidebar-toggle { display:none; }
-  .brandmark { width:24px; height:24px; background:var(--accent); color:var(--accent-ink);
-               border-radius:var(--r3);
-               display:flex; align-items:center; justify-content:center; flex:none; }
+  .brandmark { width:24px; height:24px; object-fit:contain; border-radius:var(--r3); flex:none; }
   .brand { font-weight:800; font-size:14px; letter-spacing:.08em; text-transform:uppercase; }
   .apphead .sep { width:1px; height:22px; background:var(--line); }
   #chapId { width:132px; flex:0 1 132px; }
@@ -191,7 +193,11 @@
           font-family:ui-monospace,Consolas,monospace; }
 
   .stage { flex:1; overflow:auto; background:var(--stage); position:relative; }
-  #world { position:relative; transform-origin:0 0; cursor:crosshair; }
+  /* margin:auto (not flex-centering on .stage) centers #world horizontally
+     when it's narrower than the viewport (zoomed out below fit-width) while
+     leaving normal scrolling to both edges once it's wider - flex centering
+     an overflowing child clips scroll to its start in most browsers. */
+  #world { position:relative; transform-origin:0 0; cursor:crosshair; margin:0 auto; }
   img.tile { position:absolute; left:0; display:block; pointer-events:none; user-select:none; }
   #boxes, #rubber { position:absolute; left:0; top:0; pointer-events:none; }
   .box { position:absolute; pointer-events:none; box-sizing:border-box; }
@@ -416,11 +422,19 @@
 
   .settingswrap { display:none; flex-direction:column; gap:0; }
   .settingswrap.on { display:flex; }
-  .setgrid { display:flex; gap:16px; flex-wrap:wrap; align-items:flex-start; }
-  .setcol { flex:1; min-width:240px; }
+  .sethead { display:flex; align-items:center; gap:10px; margin-bottom:14px; flex-wrap:wrap; }
+  .sethead h2 { margin:0; }
+  .sethead .savebadge { margin-left:auto; }
+  .setgrid { display:grid; grid-template-columns:repeat(auto-fit, minmax(260px, 1fr)); gap:14px; }
+  .setcol { background:var(--surface); border:1px solid var(--line); border-radius:var(--r2);
+            padding:13px; display:flex; flex-direction:column; min-width:0; }
+  .setcol h3 { margin:0 0 11px; display:flex; align-items:center; gap:8px; font-size:11px;
+               font-weight:800; text-transform:uppercase; letter-spacing:.09em; color:var(--muted); }
   .setrow { display:flex; align-items:center; gap:9px; margin-bottom:9px; flex-wrap:wrap; }
   .setrow .swatch { font-size:12px; color:var(--muted); flex:1; min-width:0; overflow:hidden;
                      text-overflow:ellipsis; white-space:nowrap; }
+  .setrow .swatch:empty::before { content:'No file chosen'; opacity:.6; font-style:italic; }
+  .filehidden { position:absolute; width:1px; height:1px; opacity:0; pointer-events:none; }
   .slider { display:flex; flex-direction:column; gap:3px; margin-bottom:10px; }
   .slider .slbl { display:flex; justify-content:space-between; font-size:11px; color:var(--muted); }
   .slider input[type=range] { width:100%; }
@@ -432,6 +446,17 @@
   .radiorow { display:flex; gap:14px; margin-bottom:9px; flex-wrap:wrap; }
   .radiorow label { display:flex; align-items:center; gap:6px; font-size:12px; cursor:pointer; }
   #voicePreview { width:100%; height:32px; }
+  /* autosave status badge next to "Project settings" - colored pill so the
+     save state (idle/saving/saved/failed) is visible at a glance, not just
+     a line of text easy to miss below the form. */
+  .savebadge { display:inline-flex; align-items:center; gap:6px; font-size:11px; font-weight:700;
+               text-transform:uppercase; letter-spacing:.05em; padding:4px 10px; border-radius:999px;
+               border:1px solid var(--line); color:var(--muted); white-space:nowrap; }
+  .savebadge::before { content:''; width:6px; height:6px; border-radius:50%; background:currentColor;
+                        flex:none; }
+  .savebadge.saving { color:var(--warn); border-color:var(--warn); }
+  .savebadge.ok { color:var(--ok); border-color:var(--ok); }
+  .savebadge.err { color:var(--blur); border-color:var(--blur); }
 
   /* ==========================================================================
      Fullscreen strip view - "read like a webtoon": hide everything except the
@@ -516,8 +541,8 @@
 <section id="scr-projects" class="screen">
   <div class="shell">
     <div class="shellhead">
-      <div class="brandmark" data-icon="film" data-ic-size="15"></div>
-      <h1>Framer projects</h1>
+      <img class="brandmark" src="/assets/ReCapper.png" alt="ReCapper" />
+      <h1>ReCapper Projects</h1>
       <div class="spacer"></div>
       <button id="checkUpdateBtn" class="small ghost" data-icon="refresh" data-ic-size="14" title="Pull the latest app code from git"><span>Check for updates</span></button>
       <button id="themeBtnP" class="small ghost" data-icon="moon" data-ic-size="14"><span>Dark</span></button>
@@ -573,29 +598,34 @@
     </div>
 
     <div class="card settingswrap" id="pjSettings">
-      <h2>Project settings</h2>
+      <div class="sethead">
+        <h2>Project settings</h2>
+        <span class="savebadge" id="pjSettingsSaved">Autosaved</span>
+      </div>
       <div class="setgrid">
         <div class="setcol">
-          <div class="field"><label>Background music</label></div>
+          <h3 data-icon="music" data-ic-size="13">Background music</h3>
           <div class="radiorow">
             <label><input type="radio" name="musicMode" value="default" /> Default track (assets/music)</label>
             <label><input type="radio" name="musicMode" value="file" /> Custom file</label>
           </div>
           <div class="setrow">
-            <input id="musicFile" type="file" accept="audio/*" />
+            <button type="button" id="musicBrowseBtn" class="small ghost" data-icon="folder" data-ic-size="14"><span>Browse…</span></button>
             <span class="swatch" id="musicName"></span>
+            <input id="musicFile" type="file" accept="audio/*" class="filehidden" tabindex="-1" />
           </div>
         </div>
 
         <div class="setcol">
-          <div class="field"><label>Narration voice</label></div>
+          <h3 data-icon="audio" data-ic-size="13">Narration voice</h3>
           <div class="radiorow">
             <label><input type="radio" name="voiceMode" value="default" /> Default voice (assets/voice_ref.wav)</label>
             <label><input type="radio" name="voiceMode" value="file" /> Custom voice sample</label>
           </div>
           <div class="setrow">
-            <input id="voiceFile" type="file" accept=".wav,audio/wav" />
+            <button type="button" id="voiceBrowseBtn" class="small ghost" data-icon="folder" data-ic-size="14"><span>Browse…</span></button>
             <span class="swatch" id="voiceName"></span>
+            <input id="voiceFile" type="file" accept=".wav,audio/wav" class="filehidden" tabindex="-1" />
           </div>
           <div class="setrow">
             <audio id="voicePreview" controls hidden></audio>
@@ -605,7 +635,7 @@
         </div>
 
         <div class="setcol">
-          <div class="field"><label>Watermark</label></div>
+          <h3 data-icon="droplet" data-ic-size="13">Watermark</h3>
           <div class="radiorow">
             <label><input type="checkbox" id="wmEnabled" /> Enabled (tiled across the whole video)</label>
           </div>
@@ -617,8 +647,9 @@
             <input id="wmText" type="text" placeholder="watermark text" style="flex:1" />
           </div>
           <div class="setrow">
-            <input id="wmFile" type="file" accept="image/*" />
+            <button type="button" id="wmBrowseBtn" class="small ghost" data-icon="folder" data-ic-size="14"><span>Browse…</span></button>
             <span class="swatch" id="wmFileName"></span>
+            <input id="wmFile" type="file" accept="image/*" class="filehidden" tabindex="-1" />
           </div>
           <div class="slider"><div class="slbl"><span>Opacity</span><span id="wmOpacityLbl"></span></div>
             <input id="wmOpacity" type="range" min="2" max="50" value="12" /></div>
@@ -632,21 +663,21 @@
         </div>
 
         <div class="setcol">
-          <div class="field"><label>Video background</label></div>
+          <h3 data-icon="image" data-ic-size="13">Video background</h3>
           <div class="radiorow">
             <label><input type="radio" name="bgMode" value="blur" /> Blurred crop (default)</label>
             <label><input type="radio" name="bgMode" value="image" /> Custom image</label>
           </div>
           <div class="setrow">
-            <input id="bgFile" type="file" accept="image/*" />
+            <button type="button" id="bgBrowseBtn" class="small ghost" data-icon="folder" data-ic-size="14"><span>Browse…</span></button>
             <span class="swatch" id="bgFileName"></span>
+            <input id="bgFile" type="file" accept="image/*" class="filehidden" tabindex="-1" />
           </div>
           <div class="slider"><div class="slbl"><span>Dim</span><span id="bgDimLbl"></span></div>
             <input id="bgDim" type="range" min="10" max="100" value="85" /></div>
           <div class="previewbox" id="bgPreviewBox"><span class="phmsg">Preview</span></div>
         </div>
       </div>
-      <div style="margin-top:6px"><span class="hint" id="pjSettingsSaved"></span></div>
     </div>
 
     <div class="card">
@@ -677,8 +708,8 @@
   <div class="apphead">
     <button id="sidebarToggleBtn" class="small ghost icon sidebar-toggle" data-icon="layout" data-ic-size="16" title="Chapter source, stitch, draw tool, export"></button>
     <button id="backToProjectBtn" class="small ghost" data-icon="chevleft" data-ic-size="14" title="Back to the chapter list"></button>
-    <div class="brandmark" data-icon="film" data-ic-size="15"></div>
-    <span class="brand">Framer</span>
+    <img class="brandmark" src="/assets/ReCapper.png" alt="ReCapper" />
+    <span class="brand">ReCapper</span>
     <span class="apphead-chip pill">webtoon recap studio</span>
     <span class="sep"></span>
     <span class="lbl">Chapter</span>
@@ -725,7 +756,7 @@
               <input id="pdfPath" type="text" placeholder="PDF path (e.g. D:\...\ch_001.pdf)" />
               <button id="pdfBrowseBtn" class="icon" data-icon="folder" data-ic-size="15" title="Choose a PDF file"></button>
             </div>
-            <input id="pdfFile" type="file" accept="application/pdf" style="position:absolute; width:1px; height:1px; opacity:0; pointer-events:none" tabindex="-1" />
+            <input id="pdfFile" type="file" accept="application/pdf" class="filehidden" tabindex="-1" />
           </div>
           <button id="loadPdfBtn" class="wide" data-icon="layers" data-ic-size="15"><span>Stitch PDF</span></button>
         </div>
@@ -753,10 +784,8 @@
         <span id="exportHint" class="hint"></span>
         <div class="genbar" id="genbar">
           <button id="genAVBtn" class="primary wide" data-icon="audio" data-ic-size="15" title="Run the pipeline: TTS voiceover then video"><span>Generate audio + video</span></button>
-          <div class="row2">
-            <button id="genVoiceBtn" class="small" data-icon="audio" data-ic-size="14" title="Regenerate ONLY the narration (e.g. after changing the voice sample or speed) - frames/selection are untouched, and the existing video is left as-is"><span>Re-render voice</span></button>
-            <button id="genVidBtn" class="small" data-icon="film" data-ic-size="14" title="Re-render the video from the existing audio (fast)"><span>Re-render video</span></button>
-          </div>
+          <button id="genVoiceBtn" class="small wide" data-icon="audio" data-ic-size="14" title="Regenerate ONLY the narration (e.g. after changing the voice sample or speed) - frames/selection are untouched, and the existing video is left as-is"><span>Re-render voice</span></button>
+          <button id="genVidBtn" class="small wide" data-icon="film" data-ic-size="14" title="Re-render the video from the existing audio (fast)"><span>Re-render video</span></button>
           <button id="genCancelBtn" class="small danger wide" data-icon="stop" data-ic-size="14" disabled title="Stop the running job"><span>Stop</span></button>
           <div class="progress" id="genProgress"><div class="bar" id="genBar"></div></div>
           <div class="genlog" id="genStatus"></div>
@@ -1122,6 +1151,12 @@ async function doDownload() {
     // feed the Stitch PDF flow with the FULL chapter PDF
     $('chapId').value = d.chapter_id;
     $('pdfPath').value = d.pdf;
+    // Checkpoint the download NOW (chapter_id + source pdf, no strip yet) so
+    // leaving before stitching still lets this chapter reopen later instead
+    // of erroring "No saved editor state" - see openChapterEditor().
+    S.chapter_id = d.chapter_id;
+    S.source_pdf = d.pdf || null;
+    saveEditorState(false, { silent: true });
 
     setStatus((d.steps || []).join('\n'));
     showToast('Downloaded ' + d.page_count + ' pages. Preparing Gemini parts…', null, null, 'ok');
@@ -1294,6 +1329,10 @@ async function loadPdf() {
     setStatus(`Loaded ${d.chapter_id}. Full-res ${d.strip_w}×${d.strip_h}. Zoom out to navigate, in to see the art.`);
     showToast('Stitched ' + d.tiles.length + ' tiles - strip ' + d.strip_w + 'x' + d.strip_h + 'px.', null, null, 'ok');
     maybeOfferRecovery(d.chapter_id);
+    // Checkpoint the stitch NOW, even with no script/lines yet - otherwise
+    // leaving before adding a script or clicking Save leaves NOTHING on disk
+    // for this chapter, and reopening it errors "No saved editor state".
+    saveEditorState(false, { silent: true });
   } catch (e) { setStatus('PDF load error: ' + e.message, true); }
   finally { btnBusy($('loadPdfBtn'), false); clearGlobalProg(); hideOverlay(); }
 }
@@ -1969,8 +2008,9 @@ function projectObject() {
 }
 function setSaveState(msg) { const el = $('saveState'); if (el) el.textContent = msg; }
 
-async function saveEditorState(recovery) {
-  if (!S.chapter_id) { if (!recovery) setStatus('Load a PDF (or a project) first.', true); return; }
+async function saveEditorState(recovery, opts) {
+  const silent = !!(opts && opts.silent);
+  if (!S.chapter_id) { if (!recovery && !silent) setStatus('Load a PDF (or a project) first.', true); return; }
   try {
     const res = await fetch('/editor_state/save', { method:'POST',
       headers:{'Content-Type':'application/json'},
@@ -1979,10 +2019,17 @@ async function saveEditorState(recovery) {
     if (!res.ok) throw new Error(d.error || 'save failed');
     const t = new Date().toLocaleTimeString();
     if (recovery) setSaveState(`auto-saved ${t}`);
-    else { setSaveState(`saved ${t}`); setStatus('Editor state saved to ' + d.path); showToast('Saved.', null, null, 'ok'); }
+    else {
+      setSaveState(`saved ${t}`);
+      // silent = an automatic checkpoint (e.g. right after a download/stitch),
+      // not a user-initiated Save click - still writes the REAL editor_state.json
+      // (so reopening this chapter later restores it, see openChapterEditor()),
+      // just without the "Saved." toast/status line a deliberate save gets.
+      if (!silent) { setStatus('Editor state saved to ' + d.path); showToast('Saved.', null, null, 'ok'); }
+    }
   } catch (e) {
     if (recovery) setSaveState('autosave failed');
-    else setStatus('Save error: ' + e.message, true);
+    else if (!silent) setStatus('Save error: ' + e.message, true);
   }
 }
 
@@ -2556,6 +2603,19 @@ function fillSettingsForm() {
   updateSliderLabels();
   refreshWatermarkPreview();
   refreshBackgroundPreview();
+  setSettingsSaveState('ok', 'Autosaved');
+}
+
+// settings save indicator - these fields autosave (debounced) on every change,
+// there is no explicit Save button; this badge is the only feedback that a
+// change actually persisted, so it always reflects the current state
+// (idle/saving/saved/failed), not just a transient message.
+function setSettingsSaveState(kind, text) {
+  const el = $('pjSettingsSaved');
+  if (!el) return;
+  el.textContent = text;
+  el.classList.remove('saving', 'ok', 'err');
+  el.classList.add(kind);
 }
 
 function updateSliderLabels() {
@@ -2612,7 +2672,7 @@ function saveSettingsDebounced() {
   refreshVoiceActive();
   refreshWatermarkPreview();
   refreshBackgroundPreview();
-  $('pjSettingsSaved').textContent = 'saving…';
+  setSettingsSaveState('saving', 'Saving…');
   clearTimeout(settingsSaveTimer);
   settingsSaveTimer = setTimeout(async () => {
     try {
@@ -2621,8 +2681,8 @@ function saveSettingsDebounced() {
       const d = await res.json();
       if (!res.ok) throw new Error(d.error || 'save failed');
       CURRENT_PROJECT.settings = d.settings;
-      $('pjSettingsSaved').textContent = 'saved ' + new Date().toLocaleTimeString();
-    } catch (e) { $('pjSettingsSaved').textContent = 'save failed'; }
+      setSettingsSaveState('ok', 'Autosaved ' + new Date().toLocaleTimeString());
+    } catch (e) { setSettingsSaveState('err', 'Save failed'); }
   }, 400);
 }
 
@@ -2776,6 +2836,10 @@ $('musicFile').onchange = e => uploadAsset('music', e.target.files[0]);
 $('voiceFile').onchange = e => uploadAsset('voice', e.target.files[0]);
 $('wmFile').onchange = e => uploadAsset('watermark', e.target.files[0]);
 $('bgFile').onchange = e => uploadAsset('background', e.target.files[0]);
+$('musicBrowseBtn').onclick = () => $('musicFile').click();
+$('voiceBrowseBtn').onclick = () => $('voiceFile').click();
+$('wmBrowseBtn').onclick = () => $('wmFile').click();
+$('bgBrowseBtn').onclick = () => $('bgFile').click();
 
 $('dlBtn').onclick = doDownload;
 $('loadPdfBtn').onclick = loadPdf;

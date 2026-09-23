@@ -469,6 +469,13 @@ def index():
     return send_from_directory(HERE, "index.html")
 
 
+@app.get("/assets/<path:name>")
+def app_asset(name):
+    """Serves the app's own branding assets (logo/icon) from ROOT/assets -
+    used by index.html for the favicon and header logo."""
+    return send_from_directory(str(ROOT / "assets"), name)
+
+
 @app.post("/download")
 def download():
     """Download ONE webtoon.com chapter as a PDF. Gemini-part splitting/compression
@@ -1237,6 +1244,17 @@ def api_update():
 
     try:
         old = run_git("rev-parse", "HEAD")
+        if old.returncode != 0 and "dubious ownership" in (old.stderr or "").lower():
+            # Windows: git refuses to operate on a repo whose folder ownership
+            # looks unexpected (seen on some drives/installs, e.g. an install
+            # under G:\...) - self-heal by trusting this exact folder for this
+            # user, then retry once. Reactive (not run on every request) so it
+            # never bloats the user's global .gitconfig on the happy path.
+            subprocess.run(["git", "config", "--global", "--add", "safe.directory",
+                             str(ROOT).replace("\\", "/")],
+                            env=dict(os.environ, GIT_TERMINAL_PROMPT="0"),
+                            capture_output=True, text=True, timeout=30)
+            old = run_git("rev-parse", "HEAD")
         if old.returncode != 0:
             return jsonify(ok=False, message="Could not read the current version: "
                                               + (old.stderr or old.stdout).strip())

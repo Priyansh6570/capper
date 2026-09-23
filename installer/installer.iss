@@ -1,5 +1,5 @@
 ; ============================================================================
-; Manhwa Recap Studio - Windows installer (Inno Setup 6)
+; ReCapper - Windows installer (Inno Setup 6)
 ;
 ; Hybrid installer: bundles a static ffmpeg build, then (as post-install
 ; steps, in order) 1) ensures git is present (winget install if missing) and
@@ -15,9 +15,9 @@
 ; See INSTALLER_BUILD.md (next to this file) for the full build/compile guide.
 ; ============================================================================
 
-#define MyAppName "Manhwa Recap Studio"
+#define MyAppName "ReCapper"
 #define MyAppVersion "1.0.0"
-#define MyAppPublisher "Manhwa Recap Studio"
+#define MyAppPublisher "ReCapper"
 #define MyAppExeName "start.bat"
 #define ProjectRoot "..\"
 #define RepoURL "https://github.com/Priyansh6570/capper.git"
@@ -28,7 +28,7 @@ AppId={{81CAE141-D97D-4AB5-B39A-6445C8237F11}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
-DefaultDirName={localappdata}\ManhwaRecapStudio
+DefaultDirName={localappdata}\ReCapper
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 ; No admin required: everything installs per-user (venv, ffmpeg, Python via
@@ -38,7 +38,7 @@ DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 ArchitecturesInstallIn64BitMode=x64compatible
 OutputDir=output
-OutputBaseFilename=ManhwaRecapStudio_Setup
+OutputBaseFilename=ReCapper_Setup
 Compression=lzma2
 SolidCompression=yes
 SetupIconFile={#ProjectRoot}assets\icon.ico
@@ -231,7 +231,7 @@ end;
 procedure CloneRepo();
 var
   ResultCode: Integer;
-  GitExe, StagingDir: String;
+  GitExe, StagingDir, SafeDirPath: String;
 begin
   CloneOK := False;
   if not EnsureGit(GitExe) then
@@ -282,6 +282,23 @@ begin
     MsgBox('The app was downloaded, but setup.bat is missing from it - ' +
            'something is wrong with the repository. Contact support.',
            mbError, MB_OK);
+
+  // Git flags a repo folder's ownership as "dubious" (and refuses to run any
+  // command in it) whenever it looks unexpected - seen in testing on some
+  // drives/install locations. The clone+robocopy-merge above can trigger
+  // this, which would otherwise silently break the in-app "Check for
+  // updates" button forever. Mark this exact folder trusted for this user
+  // right now, once, so updates work from the first launch.
+  if CloneOK then
+  begin
+    // StringChange mutates its first arg IN PLACE (var param, not a return
+    // value) - it can't be called inline on an ExpandConstant() result,
+    // hence the intermediate variable.
+    SafeDirPath := ExpandConstant('{app}');
+    StringChange(SafeDirPath, '\', '/');
+    Exec(GitExe, 'config --global --add safe.directory "' + SafeDirPath + '"',
+         '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  end;
 end;
 
 // ----------------------------------------------------------------------------

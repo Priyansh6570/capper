@@ -345,13 +345,20 @@ def _preprocess_ref(ref_path: str, out_path: Path) -> str:
 
 
 def _save_wav(wav, sr: int, out: Path) -> float:
-    """Write `wav` to `out` and return its real duration in seconds."""
-    import torchaudio as ta
+    """Write `wav` to `out` and return its real duration in seconds.
+
+    Uses `soundfile` (already a dep for `_preprocess_ref` above) instead of
+    `torchaudio.save`: recent torchaudio releases dropped their built-in
+    sox/soundfile I/O backends and require the separate `torchcodec` package
+    for save()/load(), which isn't installed by requirements.txt/setup.bat.
+    """
+    import soundfile as sf
 
     w = wav.detach().to("cpu")
     if w.dim() == 1:
-        w = w.unsqueeze(0)           # (frames,) -> (1, frames) for torchaudio
-    ta.save(str(out), w, sr)
+        w = w.unsqueeze(0)           # (frames,) -> (1, frames)
+    data = w.T.contiguous().numpy().astype("float32", copy=False)  # (frames, ch)
+    sf.write(str(out), data, sr, subtype="FLOAT")
     return w.shape[-1] / float(sr)   # frames / sample_rate = true length
 
 

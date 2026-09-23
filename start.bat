@@ -1,5 +1,6 @@
 @echo off
 setlocal
+title ReCapper
 cd /d "%~dp0"
 
 set "VENV_PY=%~dp0.venv\Scripts\python.exe"
@@ -23,7 +24,7 @@ set "PATH=%FFMPEG_BIN%;%PATH%"
 
 echo.
 echo ============================================================
-echo   Starting Manhwa Recap Studio...
+echo   Starting ReCapper...
 echo   Your browser will open automatically in a few seconds.
 echo.
 echo   Note: the FIRST time you click "Generate audio + video", the

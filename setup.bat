@@ -1,5 +1,6 @@
 @echo off
 setlocal EnableDelayedExpansion
+title ReCapper - Setup
 cd /d "%~dp0"
 
 set "LOGFILE=%~dp0setup_log.txt"
@@ -12,11 +13,24 @@ set "PYEXE="
 set "STEP_FAILED=0"
 set "TMPFILE=%TEMP%\manhwa_setup_tmp.txt"
 
-echo ===== Manhwa Recap - setup started %DATE% %TIME% ===== > "%LOGFILE%"
+echo ===== ReCapper - setup started %DATE% %TIME% ===== > "%LOGFILE%"
+
+REM Git refuses to run any command in a repo folder whose ownership looks
+REM unexpected ("dubious ownership") - seen on some drives/install locations
+REM and breaks the in-app "Check for updates" button. Mark this exact folder
+REM trusted for this user; harmless/no-op if this isn't a git checkout or
+REM it's already trusted. Covers manual `git clone` installs (the installer
+REM does its own equivalent step right after cloning).
+if exist "%~dp0.git" (
+    where git >nul 2>&1
+    if not errorlevel 1 (
+        git config --global --add safe.directory "%~dp0" >nul 2>&1
+    )
+)
 
 echo.
 echo ============================================================
-echo   Manhwa Recap Studio - one-time setup
+echo   ReCapper - one-time setup
 echo ============================================================
 echo   This will:
 echo     1. Check for an NVIDIA GPU + driver
