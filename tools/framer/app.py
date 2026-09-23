@@ -256,18 +256,24 @@ def _download_dir(chapter_id: str) -> Path:
 
 
 def _webtoon_cmd() -> list[str] | None:
-    """Locate the webtoon-downloader CLI: the installed console script if on PATH,
-    else `python -m webtoon_downloader` when only the package is importable.
+    """Locate the webtoon-downloader CLI. `pip install webtoon-downloader` only
+    ever installs a console-script entry point - the package has no
+    `__main__.py`, so `python -m webtoon_downloader` ALWAYS fails with
+    "'webtoon_downloader' is a package and cannot be directly executed",
+    regardless of how it was installed. So look for the entry-point script
+    next to the running interpreter first (that's where `pip install` puts it
+    when run inside this app's own .venv, which is how the README says to
+    install it - and start.bat launches app.py with the bare venv python, not
+    an activated venv, so .venv\\Scripts is NOT on PATH for this process),
+    then fall back to PATH for a global/other-env install.
     Returns the command prefix, or None if the tool isn't installed."""
+    venv_script = Path(sys.executable).parent / (
+        "webtoon-downloader.exe" if os.name == "nt" else "webtoon-downloader")
+    if venv_script.exists():
+        return [str(venv_script)]
     exe = shutil.which("webtoon-downloader")
     if exe:
         return [exe]
-    try:
-        import importlib.util
-        if importlib.util.find_spec("webtoon_downloader") is not None:
-            return [sys.executable, "-m", "webtoon_downloader"]
-    except Exception:  # noqa: BLE001 - any import probe failure -> treat as absent
-        pass
     return None
 
 
@@ -299,8 +305,11 @@ def _run_webtoon_downloader(url: str, chapter_no: str, dest: Path
     base = _webtoon_cmd()
     if base is None:
         raise RuntimeError(
-            "webtoon-downloader is not installed. Install it with:\n"
-            "    pip install webtoon-downloader")
+            "webtoon-downloader is not installed into this app's .venv. "
+            "Install it with:\n"
+            "    .venv\\Scripts\\pip install webtoon-downloader\n"
+            "(run from the project root) - a plain `pip install` may land in "
+            "a different Python and won't be found by this app.")
     cmd = base + [url, _webtoon_out_flag(base), str(dest), "--save-as", "pdf"]
     if chapter_no:
         cmd += ["--start", str(chapter_no), "--end", str(chapter_no)]

@@ -132,8 +132,9 @@ right before rendering, so a last-minute tweak still lands.
      button so you can hand them to Gemini.
 
    The status panel lists each step (command, page count, per-part compress
-   progress). (Requires `pip install webtoon-downloader`. We do NOT touch Gemini;
-   you upload the files.)
+   progress). (Requires `.venv\Scripts\pip install webtoon-downloader` — into
+   this app's own venv, not a global/system Python, so the app can find it. We
+   do NOT touch Gemini; you upload the files.)
 1. **Stitch PDF** — enter a PDF path (or choose a file) and optionally a chapter
    id. The strip is built with the SAME code as `stages/s1_pdf_to_pages.py`
    (every page rendered + vertically concatenated). The view is a downscaled

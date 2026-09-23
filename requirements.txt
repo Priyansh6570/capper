@@ -38,6 +38,9 @@ mutagen>=1.47         # draft: read the real MP3 duration
 moviepy>=2.0           # fallback ONLY, used if the direct ffmpeg path fails
 
 # Optional, not required by the workflow above: the `webtoon-downloader` CLI
-# powers Framer's "Download PDF" button (`pip install webtoon-downloader`).
+# powers Framer's "Download PDF" button
+# (`.venv\Scripts\pip install webtoon-downloader` - into THIS app's venv, not
+# a global/system Python, so Framer's subprocess call can find it; it has no
+# `__main__.py`, so `python -m webtoon_downloader` never works either way).
 # Framer detects its absence and reports a clear error instead of crashing, so
 # it's left out of this file - install it only if you use that button.
