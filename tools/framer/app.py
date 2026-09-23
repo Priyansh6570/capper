@@ -1605,8 +1605,8 @@ def api_preview_watermark(slug):
     mirrors the real gate: no watermark in the preview when disabled."""
     enabled = (request.args.get("enabled", "1")).strip().lower() not in ("0", "false", "")
     sample = _placeholder_frame(slug)
-    still = s7._compose_still(str(sample))
 
+    wm = None
     if enabled:
         cfg = {
             "type": request.args.get("type", "text"),
@@ -1619,9 +1619,11 @@ def api_preview_watermark(slug):
         watermark_asset = projects.find_asset(slug, "watermark")
         cfg["file"] = str(watermark_asset) if watermark_asset else None
         wm = s7._build_watermark_layer({"watermark": cfg})
-        if wm is not None:
-            still = Image.alpha_composite(still.convert("RGBA"), wm).convert("RGB")
 
+    # wm goes to the BACKGROUND layer only (see _compose_still), matching the
+    # real render - so this preview accurately shows the watermark hidden
+    # under the sample frame and visible only around/behind it.
+    still = s7._compose_still(str(sample), wm=wm)
     return _png_response(still.resize((960, 540), Image.LANCZOS))
 
 

@@ -1,92 +1,73 @@
 # Work log
 
-## Task: restore intelligent script-splitting in the framer (regression)
+## Task: move stage 7's watermark from on-top-of-frames to background-only
 
-### What was actually wrong
+### Root cause
 
-`tools/framer/app.py`'s `/load_script` route (used by the "Load script"
-button next to the pasted-narration textarea) was doing exactly what the bug
-report described - and had been since this repo's very first commit
-(`git log` shows only 3 commits touch `app.py`; even the initial commit
-already had this code, so there's no earlier "smart" version left to recover
-via git):
+`stages/s7_assemble.py`'s `_precompose()` built each beat's full still (crop
+already pasted over its background via `_compose_still`/`_compose_grid_still`)
+and only THEN alpha-composited the tiled watermark layer onto that finished
+still:
 
 ```python
-lines = [ln.strip() for ln in text.splitlines()]
-lines = [ln for ln in lines if ln]
+still = _compose_still(it["frames"][0], bg)
+if wm is not None:
+    still = Image.alpha_composite(still.convert("RGBA"), wm).convert("RGB")
 ```
 
-A pure newline split: one input line in, one segment out, full stop. A
-pasted PARAGRAPH (no hard line breaks inside it) became exactly one
-unusably-long segment - never split at sentence boundaries, never sized
-toward a ~4s-per-frame target. (Blank/whitespace-only lines were already
-filtered by this old code and did NOT produce empty segments in practice -
-the one exception being a line containing ONLY non-breaking spaces or other
-non-ASCII whitespace, which `.strip()` doesn't remove, so it would survive
-the `if ln` filter as a "non-empty" empty-looking line. Handled in the fix
-below too.)
+Since the frame crop was already baked into `still`, the watermark landed on
+top of everything, including the comic art. The settings panel's watermark
+live preview (`tools/framer/app.py`, `/api/projects/<slug>/preview/watermark.png`)
+had the exact same bug, compositing onto the finished preview still the same
+way - so the preview matched the (wrong) render behavior.
 
-The textarea's own placeholder text ("Paste the narration script, one
-segment per line") documented this same wrong-for-prose expectation, which
-is why it read as intentional rather than broken.
+### Fix
 
-### The fix
+Moved the watermark composite to happen on the BACKGROUND layer, before the
+frame crop is pasted on top, in both `_compose_still` and
+`_compose_grid_still` (`stages/s7_assemble.py`):
 
-`tools/framer/app.py`: replaced the two-line splitter with
-`split_script_into_lines()` (+ two small helpers, `_normalize_ws` and
-`_split_long_sentence`) that:
+- Added `_paste_background(base, bg, wm=None)`: composites `wm` onto `bg`
+  first (if given), then pastes the result onto `base`. Both compose
+  functions now call this instead of `base.paste(bg, (0, 0))` directly.
+- Both functions take a new optional `wm` param; the frame crop(s) are
+  pasted on top of `base` AFTER `_paste_background()`, same as before - so a
+  crop now always covers/hides whatever watermark tiling sits under it.
+- `_precompose()` passes `wm` straight into `_compose_still`/
+  `_compose_grid_still` instead of compositing it onto the finished still
+  afterward.
+- Updated `tools/framer/app.py`'s watermark preview route the same way
+  (`_compose_still(str(sample), wm=wm)` instead of a post-hoc composite), so
+  the settings panel preview now accurately shows the new behavior.
 
-1. Splits the input into PARAGRAPHS on blank lines (`\n\s*\n`) - the unit
-   the bug report calls out ("splitting long paragraphs...").
-2. Within each paragraph, collapses all whitespace (including non-breaking
-   spaces) and joins any hard-wrapped lines into one blob, then splits that
-   at SENTENCE boundaries (after `.`/`!`/`?` + whitespace).
-3. Greedily repacks consecutive sentences into segments targeting
-   `_SCRIPT_TARGET_CHARS` (~60 chars, from a ~15 chars/sec narration-pace
-   estimate * the requested 4.0s target) - a segment closes once it's
-   already at/over the target OR the next sentence would push it past a
-   hard cap (~90 chars, 1.5x target).
-4. A single sentence longer than the hard cap (run-on prose, no punctuation)
-   falls back to splitting at clause punctuation (commas/semicolons/colons),
-   then a plain word-boundary wrap as a last resort.
-5. A clause-split sentence's trailing fragment is flushed immediately
-   rather than allowed to blend into the NEXT sentence's segment - avoids
-   awkward joins like "...the gate. Finally," gluing a dangling fragment
-   from the following sentence onto the one before it.
-6. Empty paragraphs (blank lines, or lines of only whitespace/non-breaking
-   spaces) never produce a segment.
-
-Also updated the textarea's placeholder text in `tools/framer/index.html` to
-describe the restored (correct) behavior instead of the old wrong one.
+Tiling/opacity/size/angle are untouched - `_build_watermark_layer()` (which
+builds the single 1920x1080 tiled RGBA layer from those settings) wasn't
+touched at all, only WHERE that layer gets composited changed.
 
 ### Verified
 
-- Direct unit-level test of `split_script_into_lines()` against several
-  inputs (short lines, empty/whitespace-only input, a long multi-sentence
-  paragraph, a paragraph with a very long run-on sentence, multi-paragraph
-  input) - all split as intended, no empty segments.
-- Killed a STALE leftover `app.py` process from an earlier task in this
-  session that was still bound to port 5005 and silently serving pre-fix
-  code (why the first couple of live re-tests looked unchanged) - restarted
-  clean, then confirmed via a real `/load_script` POST and via the actual
-  in-app "Load script" button (checked `S.lines` and the rendered `#lines`
-  panel) that segments come out split correctly end-to-end.
-- Tested against a real chapter's editor via `loadScript()` (which is
-  undo-tracked) then called `undo()` to restore its original 43 lines
-  afterward, so no real project data was disturbed by the test.
-- Server stopped afterward; confirmed port 5005 has no listener.
+Rendered real test stills directly through `_compose_still`/
+`_compose_grid_still` with a solid-color placeholder "frame" and a high-
+opacity tiled text watermark (so it's unambiguous in a screenshot):
+- Single-frame layout: watermark tiles fill the whole background, but the
+  frame crop area is completely clean - no watermark text anywhere on it.
+- Grid ("together") layout, 2 frames: watermark shows in the gaps
+  around/between both frame crops, absent from both crops themselves.
+
+Both confirm the compositing order is now background -> watermark -> frame
+crops, per the request. Test images were deleted after inspection - no
+leftover files.
 
 ### Files changed
 
-- `tools/framer/app.py` (`/load_script` + new `split_script_into_lines`,
-  `_split_long_sentence`, `_normalize_ws` helpers)
-- `tools/framer/index.html` (`#scriptText` placeholder text)
+- `stages/s7_assemble.py` (`_paste_background` new, `_compose_still`,
+  `_compose_grid_still`, `_precompose`)
+- `tools/framer/app.py` (`api_preview_watermark`)
 
 ### Next steps for the user
 
-- No backend/pipeline changes, no new dependencies - refresh the browser tab
-  (or restart `start.bat`) to pick this up.
-- The ~4s/60-char target is a tunable constant
-  (`_SCRIPT_TARGET_SEC`/`_SCRIPT_CHARS_PER_SEC` near the top of the
-  `/load_script` section in `app.py`) if the narration pace assumption needs
-  adjusting later.
+- No new dependencies. Next real chapter render (or "Re-render video") will
+  use the fixed compositing order automatically.
+- The settings panel's watermark preview also now reflects this - worth a
+  quick look there before a full render if you want to sanity-check a
+  specific watermark config.

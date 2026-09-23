@@ -261,10 +261,27 @@ def _blurred_self_cover(img):
     return ImageEnhance.Brightness(bg).enhance(BG_BRIGHTNESS)
 
 
-def _compose_still(frame_path: str | None, bg=None):
+def _paste_background(base, bg, wm=None):
+    """Composite the background layer (custom `bg` or, when the caller passes
+    None as `bg`, whatever the caller already resolved - see call sites) onto
+    `base`, with the tiled watermark `wm` (if any) composited onto the
+    BACKGROUND FIRST. Callers paste the frame crop(s) on top of `base`
+    afterward, so a crop always covers/hides the watermark under it - the
+    watermark only ever shows in the background area around/between frames,
+    never on top of the comic art itself."""
+    from PIL import Image
+
+    if wm is not None:
+        bg = Image.alpha_composite(bg.convert("RGBA"), wm).convert("RGB")
+    base.paste(bg, (0, 0))
+
+
+def _compose_still(frame_path: str | None, bg=None, wm=None):
     """Build the full 1920x1080 still for a beat: the frame fit to ~85%H/~92%W,
     centered over `bg` (a project's custom background) if given, else a blurred
-    + darkened cover of itself as before. Returns a PIL RGB image."""
+    + darkened cover of itself as before. `wm` (a watermark RGBA layer), if
+    given, is composited onto the background ONLY, before the frame crop goes
+    on top - see _paste_background. Returns a PIL RGB image."""
     from PIL import Image
 
     base = Image.new("RGB", (W, H), (12, 12, 12))
@@ -272,7 +289,7 @@ def _compose_still(frame_path: str | None, bg=None):
     if img is None:
         return base
 
-    base.paste(bg if bg is not None else _blurred_self_cover(img), (0, 0))
+    _paste_background(base, bg if bg is not None else _blurred_self_cover(img), wm)
 
     # Foreground: fit within 85%H / 92%W (whichever is tighter), centered.
     fscale = min((CROP_FRAC_H * H) / img.height, (CROP_FRAC_W * W) / img.width)
@@ -282,21 +299,23 @@ def _compose_still(frame_path: str | None, bg=None):
     return base
 
 
-def _compose_grid_still(frame_paths: list[str | None], bg=None):
+def _compose_grid_still(frame_paths: list[str | None], bg=None, wm=None):
     """Build the full 1920x1080 still for a "together" line: every frame fit into
     its cell of a simple grid (2 -> side by side, 3-4 -> 2x2, etc.), over `bg`
     (a project's custom background) if given, else a shared blurred + darkened
-    cover of the first frame as before. Returns a PIL RGB image."""
+    cover of the first frame as before. `wm`, if given, is composited onto the
+    background ONLY, before any frame crop goes on top - see _compose_still.
+    Returns a PIL RGB image."""
     from PIL import Image
 
     imgs = [im for im in (_open_rgb(p) for p in frame_paths) if im is not None]
     if not imgs:
         return Image.new("RGB", (W, H), (12, 12, 12))
     if len(imgs) == 1:
-        return _compose_still(frame_paths[0], bg)
+        return _compose_still(frame_paths[0], bg, wm)
 
     base = Image.new("RGB", (W, H), (12, 12, 12))
-    base.paste(bg if bg is not None else _blurred_self_cover(imgs[0]), (0, 0))
+    _paste_background(base, bg if bg is not None else _blurred_self_cover(imgs[0]), wm)
 
     # Foreground grid: cols ~ sqrt(N), each frame fit within ~92% of its cell.
     n = len(imgs)
@@ -419,18 +438,16 @@ def _precompose(items: list[dict], stills_dir: Path, wm=None, bg=None) -> None:
     item (key "still"). All the per-frame compositing work happens here, once.
     A "grid" item lays its frames out together; everything else is one frame.
     `bg` (a PIL image) replaces the default blurred self-cover when given; `wm`
-    (a PIL RGBA layer) is alpha-composited on top of every still when given."""
-    from PIL import Image
-
+    (a PIL RGBA layer), when given, is composited onto the BACKGROUND layer
+    only (see _compose_still/_compose_grid_still) - frame crops are pasted on
+    top of that afterward, so they always cover/hide the watermark under them."""
     stills_dir.mkdir(parents=True, exist_ok=True)
     for i, it in enumerate(items):
         out = stills_dir / f"beat_{i:04d}.png"
         if it["layout"] == "grid":
-            still = _compose_grid_still(it["frames"], bg)
+            still = _compose_grid_still(it["frames"], bg, wm)
         else:
-            still = _compose_still(it["frames"][0], bg)
-        if wm is not None:
-            still = Image.alpha_composite(still.convert("RGBA"), wm).convert("RGB")
+            still = _compose_still(it["frames"][0], bg, wm)
         still.save(out)
         it["still"] = str(out)
 
