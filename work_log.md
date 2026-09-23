@@ -1,120 +1,92 @@
 # Work log
 
-## Task: fix 5 framer editor UI/bug reports
+## Task: restore intelligent script-splitting in the framer (regression)
 
-All changes in `tools/framer/index.html` unless noted.
+### What was actually wrong
 
-### 1. "Re-render video" button overflowing its container
+`tools/framer/app.py`'s `/load_script` route (used by the "Load script"
+button next to the pasted-narration textarea) was doing exactly what the bug
+report described - and had been since this repo's very first commit
+(`git log` shows only 3 commits touch `app.py`; even the initial commit
+already had this code, so there's no earlier "smart" version left to recover
+via git):
 
-`#genVoiceBtn`/`#genVidBtn` were two `class="small"` buttons side by side in a
-`.row2` flex row inside the 300px sidebar. `.sidecard .row2 > input` had
-`flex:1`, but the matching rule for `> button` never existed, so both buttons
-sized to their own text+icon content and the row's total width exceeded the
-sidebar, overflowing it (their `white-space:nowrap` meant the text couldn't
-wrap to absorb the overflow either).
+```python
+lines = [ln.strip() for ln in text.splitlines()]
+lines = [ln for ln in lines if ln]
+```
 
-Fix: dropped the `.row2` wrapper for just these two buttons and gave each
-`class="small wide"` (the same full-width pattern already used by
-`#genAVBtn`/`#genCancelBtn` right next to them) so they stack vertically at
-100% width - can't overflow at any sidebar width.
+A pure newline split: one input line in, one segment out, full stop. A
+pasted PARAGRAPH (no hard line breaks inside it) became exactly one
+unusably-long segment - never split at sentence boundaries, never sized
+toward a ~4s-per-frame target. (Blank/whitespace-only lines were already
+filtered by this old code and did NOT produce empty segments in practice -
+the one exception being a line containing ONLY non-breaking spaces or other
+non-ASCII whitespace, which `.strip()` doesn't remove, so it would survive
+the `if ln` filter as a "non-empty" empty-looking line. Handled in the fix
+below too.)
 
-### 2. Zoom sticks to the left instead of staying centered
+The textarea's own placeholder text ("Paste the narration script, one
+segment per line") documented this same wrong-for-prose expectation, which
+is why it read as intentional rather than broken.
 
-`#world` (the strip element) was a plain block div inside `#stage`
-(`overflow:auto`) with no centering rule. When zoomed below "fit width" (the
-strip narrower than the viewport), a block child with no auto margins sits
-flush against the container's left edge - that's what "sticks to the left"
-was. The JS zoom math (`setZoom()`) already correctly keeps the viewport-
-center point fixed while zooming; the bug was purely CSS layout.
+### The fix
 
-Fix: added `margin:0 auto` to `#world`. This centers it whenever it's
-narrower than `#stage` and has zero effect (auto margins resolve to 0) once
-it's wider, so normal edge-to-edge scrolling at high zoom is unchanged.
-Verified `screenToTrue()` (used for all box-drawing coordinate math) still
-maps correctly since it reads `world.getBoundingClientRect()` directly, which
-already reflects the margin offset - no JS changes needed.
+`tools/framer/app.py`: replaced the two-line splitter with
+`split_script_into_lines()` (+ two small helpers, `_normalize_ws` and
+`_split_long_sentence`) that:
 
-### 3. Unstyled "Browse" buttons + messy settings panel layout
+1. Splits the input into PARAGRAPHS on blank lines (`\n\s*\n`) - the unit
+   the bug report calls out ("splitting long paragraphs...").
+2. Within each paragraph, collapses all whitespace (including non-breaking
+   spaces) and joins any hard-wrapped lines into one blob, then splits that
+   at SENTENCE boundaries (after `.`/`!`/`?` + whitespace).
+3. Greedily repacks consecutive sentences into segments targeting
+   `_SCRIPT_TARGET_CHARS` (~60 chars, from a ~15 chars/sec narration-pace
+   estimate * the requested 4.0s target) - a segment closes once it's
+   already at/over the target OR the next sentence would push it past a
+   hard cap (~90 chars, 1.5x target).
+4. A single sentence longer than the hard cap (run-on prose, no punctuation)
+   falls back to splitting at clause punctuation (commas/semicolons/colons),
+   then a plain word-boundary wrap as a last resort.
+5. A clause-split sentence's trailing fragment is flushed immediately
+   rather than allowed to blend into the NEXT sentence's segment - avoids
+   awkward joins like "...the gate. Finally," gluing a dangling fragment
+   from the following sentence onto the one before it.
+6. Empty paragraphs (blank lines, or lines of only whitespace/non-breaking
+   spaces) never produce a segment.
 
-The 4 asset pickers (music/voice/watermark logo/background image) were raw
-`<input type=file>` elements rendering the browser's native "Choose File"
-button, unlike the one other file picker in the app (`pdfPath`/`pdfBrowseBtn`)
-which already used the hidden-input + styled-button pattern.
+Also updated the textarea's placeholder text in `tools/framer/index.html` to
+describe the restored (correct) behavior instead of the old wrong one.
 
-Fix:
-- Hid all 5 file inputs (the 4 above + `pdfFile`, unified for consistency)
-  behind a new reusable `.filehidden` class, each paired with a themed
-  `class="small ghost"` "Browse…" button that triggers `.click()` on the
-  hidden input - wired in the same block as the existing `pdfBrowseBtn`.
-- Empty filename `.swatch` spans now show a dim "No file chosen" via
-  `:empty::before` instead of looking blank/broken.
-- Redesigned `.setgrid` from a `flex-wrap` row (uneven column heights, no
-  visual separation) to a CSS grid
-  (`repeat(auto-fit, minmax(260px,1fr))`), and gave each `.setcol` a
-  `.sidecard`-style sub-panel treatment (background/border/radius/padding)
-  with an icon+label `<h3>` heading (music/audio/droplet/image icons) -
-  each settings group (Music/Voice/Watermark/Background) now reads as a
-  distinct, bounded card instead of floating text in a loose row.
+### Verified
 
-### 4. Unclear save behavior in settings
-
-Settings WERE already autosaving (400ms debounce, see `saveSettingsDebounced`)
-- there was just no clear, persistent indicator, only a plain text line at
-the bottom of the panel that stayed blank until you touched something.
-
-Fix: moved the indicator into the "Project settings" header as a colored pill
-badge (`.savebadge`, green/amber/red dot for saved/saving/failed, matching
-the `.stpill` status-pill pattern used elsewhere in the app), and gave it an
-idle state ("Autosaved") set as soon as the panel's data loads
-(`fillSettingsForm()`), not just after the first edit - so it's obvious from
-the moment you open Settings that changes save automatically, with no
-separate "Save" button needed.
-
-### 5. BUG: stitching a chapter with no script doesn't restore on reopen
-
-Root cause: `editor_state.json` (the file `openChapterEditor()` checks for
-and auto-restores from) was ONLY ever written by an explicit "Save" click or
-by adding/editing script lines (`markDirty()` → debounced autosave). Neither
-`doDownload()` nor `loadPdf()` (the "Stitch PDF" action) ever called it, so
-downloading/stitching a chapter and leaving before touching the script left
-NOTHING on disk for that chapter - reopening it correctly found no saved
-state and reported exactly that ("No saved editor state for ...").
-
-Fix (`tools/framer/index.html`):
-- `saveEditorState(recovery, opts)` now takes an optional `{silent:true}` -
-  writes the real `editor_state.json` (so `openChapterEditor()`'s existing
-  restore check finds it) without the "Saved." toast/status line a
-  deliberate user Save gets, so it can be called automatically.
-- `doDownload()` now sets `S.chapter_id`/`S.source_pdf` from the response and
-  fires a silent checkpoint save right after a successful download.
-- `loadPdf()` fires a silent checkpoint save right after a successful stitch.
-
-Verified end-to-end: stitched a real chapter with 0 script lines, confirmed
-`editor_state.json` was written (`lines: 0`, full strip metadata present),
-then closed and reopened the chapter - it restored the strip/tiles with no
-error (`"Loaded saved state ... - 0 line(s)."`) instead of the old error.
-
-### Verified in-browser (Chrome, local `tools/framer/app.py`)
-
-- Settings panel: cards, icons, styled Browse buttons, autosave badge (idle
-  "Autosaved" → "Saving…" → "Autosaved HH:MM:SS") all confirmed visually.
-- Chapter editor sidebar: "Re-render voice"/"Re-render video" now full-width,
-  no overflow.
-- Zoomed a real stitched strip (1667×643945px) down to 10%: strip centered
-  with equal left/right gaps (was flush-left before the fix). Confirmed
-  `screenToTrue()` math still correct at non-1.0 zoom.
-- Reproduced bug 5 exactly (stitch, 0 lines, leave, reopen) against a real
-  project chapter, confirmed the fix, then deleted the ~440MB of test
-  tiles/state this created under `projects/the-stellar-swordmaster/chapters/2/`
-  so the user's actual project data is unaffected (chapter 2 is back to
-  untouched `not_started`, no `work/` folder).
-- No console errors at any point.
+- Direct unit-level test of `split_script_into_lines()` against several
+  inputs (short lines, empty/whitespace-only input, a long multi-sentence
+  paragraph, a paragraph with a very long run-on sentence, multi-paragraph
+  input) - all split as intended, no empty segments.
+- Killed a STALE leftover `app.py` process from an earlier task in this
+  session that was still bound to port 5005 and silently serving pre-fix
+  code (why the first couple of live re-tests looked unchanged) - restarted
+  clean, then confirmed via a real `/load_script` POST and via the actual
+  in-app "Load script" button (checked `S.lines` and the rendered `#lines`
+  panel) that segments come out split correctly end-to-end.
+- Tested against a real chapter's editor via `loadScript()` (which is
+  undo-tracked) then called `undo()` to restore its original 43 lines
+  afterward, so no real project data was disturbed by the test.
+- Server stopped afterward; confirmed port 5005 has no listener.
 
 ### Files changed
 
-- `tools/framer/index.html` (all 5 fixes)
+- `tools/framer/app.py` (`/load_script` + new `split_script_into_lines`,
+  `_split_long_sentence`, `_normalize_ws` helpers)
+- `tools/framer/index.html` (`#scriptText` placeholder text)
 
 ### Next steps for the user
 
-- No backend/pipeline changes, no new dependencies - just refresh the
-  browser tab (or restart `start.bat`) to pick this up.
+- No backend/pipeline changes, no new dependencies - refresh the browser tab
+  (or restart `start.bat`) to pick this up.
+- The ~4s/60-char target is a tunable constant
+  (`_SCRIPT_TARGET_SEC`/`_SCRIPT_CHARS_PER_SEC` near the top of the
+  `/load_script` section in `app.py`) if the narration pace assumption needs
+  adjusting later.

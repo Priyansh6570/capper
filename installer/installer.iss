@@ -66,6 +66,17 @@ Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription
 ; since it isn't part of the cloned repo. setup.bat looks for ffmpeg at
 ; exactly this path and skips its own download step when it's already there.
 Source: "{#ProjectRoot}vendor\ffmpeg\bin\*"; DestDir: "{app}\vendor\ffmpeg\bin"; Flags: recursesubdirs createallsubdirs ignoreversion
+; The app icon IS bundled here (unlike the rest of the app code) because
+; [Files]/[Icons] are both processed during Inno's normal ssInstall phase,
+; BEFORE CurStepChanged(ssPostInstall) runs CloneRepo(). The [Icons] entries
+; below reference {app}\assets\icon.ico at shortcut-creation time - if that
+; path only existed later via the git clone, the shortcuts would be created
+; pointing at a file that doesn't exist yet, and can end up stuck showing a
+; blank/stale icon that surviving an icon-cache clear + reboot doesn't fix.
+; Bundling it here guarantees the correct icon exists before the shortcuts
+; are created. The later git clone + robocopy merge just overwrites this
+; with the identical git-tracked copy, so there's no conflict.
+Source: "{#ProjectRoot}assets\icon.ico"; DestDir: "{app}\assets"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; IconFilename: "{app}\assets\icon.ico"
