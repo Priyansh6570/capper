@@ -7,9 +7,19 @@
 ; not a plain file copy, so the in-app "Check for updates" button can later
 ; `git pull` it - then 2) runs setup.bat to build the Python 3.13 + CUDA-torch
 ; + Chatterbox environment (GPU/driver-specific, can't be pre-bundled).
-; Chatterbox's ~4GB model weights are NOT downloaded here; they download on
-; the app's first real use (see SETUP_GUIDE.md / work_log.md for what that
-; needs in the app itself).
+; setup.bat's own step 5 pre-downloads Chatterbox's model weights (several GB
+; total across the Turbo + full models) at install time - resumable, retrying
+; on a stalled/throttled connection, with an optional HF_TOKEN to speed it up
+; (see SETUP_GUIDE.md / tools/predownload_tts_models.py) - so they're normally
+; NOT left to download on the app's first real use like before; that first-use
+; download only still happens as a fallback if step 5 couldn't finish.
+;
+; setup.bat runs HIDDEN during install (no console window) - RunEnvSetup below
+; polls a small progress file it writes and reflects it in the wizard's own
+; status text + progress bar instead. Desktop/Start Menu shortcuts likewise
+; launch through start_hidden.vbs, not start.bat directly, so double-clicking
+; the shortcut never shows a console either - see tools/framer/tray_launcher.py
+; for how the app itself then runs (and is stopped: a tray icon, no console).
 ;
 ; Build with: "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss
 ; See INSTALLER_BUILD.md (next to this file) for the full build/compile guide.
@@ -19,6 +29,12 @@
 #define MyAppVersion "1.0.0"
 #define MyAppPublisher "ReCapper"
 #define MyAppExeName "start.bat"
+; What shortcuts actually launch - a hidden VBScript wrapper around start.bat
+; (see start_hidden.vbs), not start.bat directly, because Windows always shows
+; a visible console the instant a .bat file runs, no matter what it then does
+; internally. wscript.exe (its host) has no window of its own, and the .vbs
+; hides the cmd.exe window it spawns for start.bat too.
+#define MyAppLauncher "start_hidden.vbs"
 #define ProjectRoot "..\"
 #define RepoURL "https://github.com/Priyansh6570/capper.git"
 #define RepoBranch "main"
@@ -79,12 +95,15 @@ Source: "{#ProjectRoot}vendor\ffmpeg\bin\*"; DestDir: "{app}\vendor\ffmpeg\bin";
 Source: "{#ProjectRoot}assets\icon.ico"; DestDir: "{app}\assets"; Flags: ignoreversion
 
 [Icons]
-Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; IconFilename: "{app}\assets\icon.ico"
+; Filename is wscript.exe (not start.bat, not start_hidden.vbs directly) so
+; the shortcut's own icon/properties are stable regardless of whichever app
+; .vbs happens to be associated with on this PC. See MyAppLauncher above.
+Name: "{group}\{#MyAppName}"; Filename: "{sys}\wscript.exe"; Parameters: """{app}\{#MyAppLauncher}"""; WorkingDir: "{app}"; IconFilename: "{app}\assets\icon.ico"
 Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; IconFilename: "{app}\assets\icon.ico"; Tasks: desktopicon
+Name: "{autodesktop}\{#MyAppName}"; Filename: "{sys}\wscript.exe"; Parameters: """{app}\{#MyAppLauncher}"""; WorkingDir: "{app}"; IconFilename: "{app}\assets\icon.ico"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName} now"; WorkingDir: "{app}"; Flags: nowait postinstall skipifsilent shellexec; Check: EnvSetupOKCheck
+Filename: "{sys}\wscript.exe"; Parameters: """{app}\{#MyAppLauncher}"""; WorkingDir: "{app}"; Description: "Launch {#MyAppName} now"; Flags: nowait postinstall skipifsilent; Check: EnvSetupOKCheck
 
 [Code]
 var
@@ -314,45 +333,133 @@ end;
 
 // ----------------------------------------------------------------------------
 // Post-install: run setup.bat (Python 3.13 -> venv -> requirements.txt ->
-// CUDA torch override -> ffmpeg check -> verification) as a VISIBLE console
-// window, so the user sees the exact same plain-English step-by-step output
-// setup.bat already gives someone who double-clicks it by hand. This reuses
-// setup.bat's own tested logic instead of re-implementing it in Pascal.
-// SETUP_UNATTENDED=1 makes it skip its interactive "press any key"/"continue
-// without a GPU?" prompts, which would otherwise hang with no one to answer
-// them from inside an installer flow.
+// CUDA torch override -> ffmpeg check -> verification) HIDDEN (SW_HIDE +
+// ewNoWait - no console window ever appears), reusing setup.bat's own tested
+// logic instead of re-implementing it in Pascal. Real progress is shown in
+// the installer's OWN UI instead: setup.bat, whenever SETUP_UNATTENDED=1,
+// writes "<step>@<message>" to SetupProgressFile after every one of its 8
+// numbered sub-steps (see :progress in setup.bat) and "0" or "1" to
+// SetupDoneFile as its very last action. Since Exec with ewNoWait returns
+// immediately (no ResultCode to wait on), SetupDoneFile - not Exec's return
+// value - is what tells us setup.bat actually finished and whether it
+// succeeded; polling it is also what drives the live status text + progress
+// bar below. SETUP_UNATTENDED=1 additionally makes setup.bat skip its
+// interactive "press any key"/"continue without a GPU?" prompts, which would
+// otherwise hang forever with no console for anyone to answer them in.
 // ----------------------------------------------------------------------------
+function SetupProgressFile(): String;
+begin
+  Result := GetEnv('TEMP') + '\recapper_setup_progress.txt';
+end;
+
+function SetupDoneFile(): String;
+begin
+  Result := GetEnv('TEMP') + '\recapper_setup_done.txt';
+end;
+
+// Reads one "<step>@<message>" line (see :progress in setup.bat - '@' avoids
+// needing to escape the separator in batch) and reflects it in the wizard's
+// own status text + progress bar. Swallows any error (e.g. the line is
+// mid-write by setup.bat when we happen to poll) - we just retry next tick.
+procedure UpdateSetupProgress(const ProgressFile: String);
+var
+  Lines: TStringList;
+  Line, StepText, Msg: String;
+  SepPos, StepNum: Integer;
+begin
+  Lines := TStringList.Create;
+  try
+    try
+      Lines.LoadFromFile(ProgressFile);
+    except
+      Exit;
+    end;
+    if Lines.Count = 0 then Exit;
+    Line := Lines[0];
+    SepPos := Pos('@', Line);
+    if SepPos = 0 then Exit;
+    StepText := Copy(Line, 1, SepPos - 1);
+    Msg := Copy(Line, SepPos + 1, MaxInt);
+    StepNum := StrToIntDef(StepText, -1);
+    if StepNum >= 0 then
+      WizardForm.ProgressGauge.Position := StepNum;
+    if Msg <> '' then
+    begin
+      WizardForm.StatusLabel.Caption := Msg;
+      WizardForm.StatusLabel.Repaint;
+    end;
+  finally
+    Lines.Free;
+  end;
+end;
+
 procedure RunEnvSetup();
 var
   ResultCode: Integer;
-  SetupBat, LogFile, InstallLog: String;
+  SetupBat, LogFile, InstallLog, ProgressFile, DoneFile: String;
+  DoneLines: TStringList;
+  ElapsedMs, TotalSteps, PollMs, MaxWaitMs: Integer;
 begin
+  TotalSteps := 8;
+  PollMs := 400;
+  MaxWaitMs := 90 * 60 * 1000; // 90 min safety cap - never hang forever
   EnvSetupOK := False;
   CudaOK := False;
   if not CloneOK then Exit;   // no setup.bat to run if the clone itself failed
   SetupBat := ExpandConstant('{app}\setup.bat');
   LogFile := ExpandConstant('{app}\setup_log.txt');
   InstallLog := ExpandConstant('{app}\install_log.txt');
+  ProgressFile := SetupProgressFile();
+  DoneFile := SetupDoneFile();
+  DeleteFile(ProgressFile);
+  DeleteFile(DoneFile);
 
+  WizardForm.ProgressGauge.Style := npbstNormal;
+  WizardForm.ProgressGauge.Min := 0;
+  WizardForm.ProgressGauge.Max := TotalSteps;
+  WizardForm.ProgressGauge.Position := 0;
   WizardForm.StatusLabel.Caption :=
-    'Setting up the Python + AI environment. A console window will open ' +
-    'showing live progress - this can take 10-30+ minutes depending on your ' +
-    'internet connection. Please don''t close that window.';
+    'Setting up the Python + AI environment - this can take 10-30+ minutes ' +
+    'depending on your internet connection...';
   WizardForm.StatusLabel.Repaint;
 
   if not Exec(ExpandConstant('{cmd}'),
               '/c set "SETUP_UNATTENDED=1" && "' + SetupBat + '"',
-              ExpandConstant('{app}'), SW_SHOWNORMAL, ewWaitUntilTerminated, ResultCode) then
+              ExpandConstant('{app}'), SW_HIDE, ewNoWait, ResultCode) then
   begin
     if not IsSilentMode() then
       MsgBox('Could not launch setup.bat: ' + SysErrorMessage(ResultCode), mbError, MB_OK);
     Exit;
   end;
 
+  ElapsedMs := 0;
+  while not FileExists(DoneFile) do
+  begin
+    if FileExists(ProgressFile) then
+      UpdateSetupProgress(ProgressFile);
+    Sleep(PollMs);
+    ElapsedMs := ElapsedMs + PollMs;
+    if ElapsedMs > MaxWaitMs then Break;
+  end;
+  WizardForm.ProgressGauge.Position := TotalSteps;
+
   if FileExists(LogFile) then
     CopyFile(LogFile, InstallLog, False);
 
-  EnvSetupOK := (ResultCode = 0);
+  EnvSetupOK := False;
+  if FileExists(DoneFile) then
+  begin
+    DoneLines := TStringList.Create;
+    try
+      DoneLines.LoadFromFile(DoneFile);
+      if DoneLines.Count > 0 then
+        EnvSetupOK := (Trim(DoneLines[0]) = '0');
+    finally
+      DoneLines.Free;
+    end;
+  end;
+  DeleteFile(ProgressFile);
+  DeleteFile(DoneFile);
 
   // Independent check, per the request that we never claim GPU acceleration
   // works without actually re-verifying it ourselves: ask the venv directly,

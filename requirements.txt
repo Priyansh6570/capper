@@ -11,9 +11,12 @@
 # --- Framer app: serving the UI, stitching a PDF, project metadata --------
 flask>=3.0
 PyMuPDF>=1.24        # stage 1: render PDF pages -> stitched strip
-Pillow>=10.0         # stage 1 stitching + stage 7 compositing
+Pillow>=10.0         # stage 1 stitching + stage 7 compositing + tray icon image
 requests>=2.31       # webtoon_meta.py: best-effort series-metadata scraping
 beautifulsoup4>=4.12 # webtoon_meta.py
+pystray>=0.19        # tools/framer/tray_launcher.py: system tray icon + Quit,
+                     # the only way to stop the app now that start.bat launches
+                     # it with no console window (see tray_launcher.py)
 
 # --- Stage 6: Chatterbox TTS, runs locally (GPU with CPU fallback) --------
 # IMPORTANT (Windows): the default PyPI torch wheel is CPU-only. To use an

@@ -60,6 +60,7 @@ from stages import s1_pdf_to_pages as s1  # noqa: E402
 import config  # noqa: E402 - module import so chapter_scope()/set_/clear_ are reachable
 from config import chapter_work_dir, chapter_output_dir, WORK_DIR, OUTPUT_DIR, PROJECTS_DIR  # noqa: E402
 from manifest import Manifest, Page, Panel  # noqa: E402
+from atomic_io import atomic_write_json, read_json_with_backup_fallback  # noqa: E402
 
 import projects  # noqa: E402 - the project system (this package: tools/framer/projects.py)
 import webtoon_meta  # noqa: E402 - best-effort series-metadata scraper
@@ -222,10 +223,10 @@ def _make_preview(strip: Image.Image, chapter_id: str) -> dict:
         band.save(str(tiles_dir / name))
         tiles.append({"url": f"/tiles/{chapter_id}/{name}", "y": y0, "w": pw, "h": th})
 
-    (_framer_dir(chapter_id) / "preview.json").write_text(
-        json.dumps({"preview_scale": ps, "preview_w": pw, "preview_h": ph,
-                    "strip_w": sw, "strip_h": sh, "tile_h": TILE_PREVIEW_H, "n": n}),
-        encoding="utf-8",
+    atomic_write_json(
+        _framer_dir(chapter_id) / "preview.json",
+        {"preview_scale": ps, "preview_w": pw, "preview_h": ph,
+         "strip_w": sw, "strip_h": sh, "tile_h": TILE_PREVIEW_H, "n": n},
     )
     return {
         "chapter_id": chapter_id,
@@ -463,13 +464,22 @@ def _preview_payload(chapter_id: str) -> dict | None:
     meta_path = _framer_dir(chapter_id) / "preview.json"
     tiles_dir = _tiles_dir(chapter_id)
     have_tiles = tiles_dir.exists() and any(tiles_dir.glob("tile_*.png"))
-    if not meta_path.exists() or not have_tiles:
+    meta = None
+    if meta_path.exists() and have_tiles:
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            meta = None  # corrupt preview.json - fall through to regenerating it below
+    if meta is None:
+        # preview.json is a disposable cache (re-derivable from the strip), but
+        # this whole function gates /editor_state/load - a corrupt/missing
+        # cache here must never block getting back to the actual boxing/script
+        # session, so it's regenerated instead of raising.
         strip_path = _strip_path(chapter_id)
         if not strip_path.exists():
             return None
         return _make_preview(Image.open(strip_path).convert("RGB"), chapter_id)
 
-    meta = json.loads(meta_path.read_text(encoding="utf-8"))
     ps, pw, ph = meta["preview_scale"], meta["preview_w"], meta["preview_h"]
     tile_h, n = meta["tile_h"], meta["n"]
     sw = meta.get("strip_w") or round(pw / ps)
@@ -1027,11 +1037,10 @@ def export():
 
     framer_dir = _framer_dir(chapter_id)
     mapping_path = framer_dir / "mapping.json"
-    mapping_path.write_text(
-        json.dumps({"chapter_id": chapter_id, "lines": mapping}, indent=2,
-                   ensure_ascii=False),
-        encoding="utf-8",
-    )
+    # Atomic + backed up (see atomic_io.py) - this is the finished boxing/script
+    # work (line -> frame bindings), the exact thing that must never be lost
+    # to a half-written file.
+    atomic_write_json(mapping_path, {"chapter_id": chapter_id, "lines": mapping})
 
     # A manifest the orchestrator can resume from. stage="clean" means the next
     # stages to run are audio (s6) then video (s7); everything before is skipped.
@@ -1502,7 +1511,10 @@ def save_editor_state():
     state["chapter_id"] = chapter_id
     state["saved_at"] = _now_iso()
     path = _editor_state_path(chapter_id, recovery)
-    path.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
+    # Atomic + backed up (see atomic_io.py) - this is the live boxing/script
+    # session itself; a half-written editor_state.json/recovery.json from a
+    # crash mid-save is exactly the kind of loss this guards against.
+    atomic_write_json(path, state)
     return jsonify(ok=True, path=str(path), saved_at=state["saved_at"])
 
 
@@ -1517,10 +1529,12 @@ def load_editor_state():
     chapter_id = _sanitize_chapter(request.args.get("chapter", ""))
     recovery = request.args.get("recovery") in ("1", "true", "yes")
     path = _editor_state_path(chapter_id, recovery)
-    if not path.exists():
+    if not path.exists() and not path.with_name(path.name + ".bak").exists():
         return jsonify(error=f"No saved {'recovery' if recovery else 'editor'} state "
                              f"for {chapter_id}."), 404
-    state = json.loads(path.read_text(encoding="utf-8"))
+    # Falls back to the .bak of this same file if the primary is corrupt -
+    # see atomic_io.py.
+    state = read_json_with_backup_fallback(path)
     return jsonify(state=state, preview=_preview_payload(chapter_id))
 
 
@@ -2221,8 +2235,12 @@ def _resolve_port(host: str, port: int) -> int | None:
         choice = ""
         try:
             choice = input("  Choice [C/Enter]: ").strip().lower()
-        except (EOFError, OSError):
-            pass  # not an interactive console (e.g. launched by a script) - use the default
+        except (EOFError, OSError, AttributeError):
+            # not an interactive console - either launched by a script, or
+            # (since tray_launcher.py runs this under pythonw.exe with no
+            # console at all) sys.stdin is None, whose .readline() raises
+            # AttributeError rather than EOFError/OSError. Either way: default.
+            pass
         if choice == "c" and pid:
             try:
                 subprocess.run(["taskkill", "/F", "/PID", str(pid)],

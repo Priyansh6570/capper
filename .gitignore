@@ -11,6 +11,10 @@ vendor/
 setup_log.txt
 install_log.txt
 
+# --- tray_launcher.py: only created if pythonw's sys.stdout/stderr are None
+# (no console at all - see its module docstring) ---
+app_log.txt
+
 # --- installer.iss build output (the compiled Setup.exe) ---
 installer/output/
 

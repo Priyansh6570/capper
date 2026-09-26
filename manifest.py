@@ -36,10 +36,11 @@ the candidate reading order.
 """
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import List, Optional
+
+from atomic_io import atomic_write_json, read_json_with_backup_fallback
 
 # Ordered progress markers. Each stage SETS the next marker when it finishes.
 # Keep in sync with orchestrator.STAGES. STORY-FIRST order: the full script is
@@ -101,14 +102,18 @@ class Manifest:
         return Path(self.work_dir) / "manifest.json"
 
     def save(self) -> None:
+        # Atomic (temp file + os.replace, never a half-written manifest.json)
+        # plus a manifest.json.bak of whatever this save is about to overwrite
+        # - see atomic_io.py. This file is the whole pipeline's boxing/script
+        # state (beats, panels, script_line, ...), saved after every stage.
         Path(self.work_dir).mkdir(parents=True, exist_ok=True)
-        self.path.write_text(
-            json.dumps(asdict(self), indent=2, ensure_ascii=False), encoding="utf-8"
-        )
+        atomic_write_json(self.path, asdict(self))
 
     @classmethod
     def load(cls, work_dir: str | Path) -> "Manifest":
-        data = json.loads((Path(work_dir) / "manifest.json").read_text(encoding="utf-8"))
+        # Falls back to manifest.json.bak if the primary file is missing,
+        # empty, or unparsable - see atomic_io.py.
+        data = read_json_with_backup_fallback(Path(work_dir) / "manifest.json")
         pages = [
             Page(
                 index=p["index"],

@@ -161,8 +161,8 @@
   .sidefield { display:flex; flex-direction:column; gap:5px; }
   .sidefield .lbl { display:block; }
   .sidefield input[type=text] { width:100%; }
-  .sidecard .row2 { display:flex; gap:8px; }
-  .sidecard .row2 > input { flex:1; min-width:0; }
+  .row2 { display:flex; gap:8px; }
+  .row2 > input { flex:1; min-width:0; }
   .sidecard button.wide { width:100%; justify-content:center; }
   .drawtabs { display:flex; gap:6px; }
   .drawtabs button { flex:1; justify-content:center; }
@@ -584,7 +584,11 @@
         </div>
         <div class="field">
           <label>Manhwa URL</label>
-          <input id="npUrl" type="text" placeholder="webtoons.com series or chapter URL" style="width:100%" />
+          <div class="row2">
+            <input id="npUrl" type="text" placeholder="webtoons.com series or chapter URL" />
+            <button id="npOpenBtn" class="small ghost icon" data-icon="link" data-ic-size="14"
+                    title="Open this URL in your browser" onclick="openUrlField('npUrl')"></button>
+          </div>
         </div>
       </div>
       <button id="npCreateBtn" class="primary" data-icon="plus" data-ic-size="15"><span>Create project</span></button>
@@ -693,14 +697,16 @@
           <div class="radiorow">
             <label><input type="radio" name="bgMode" value="blur" /> Blurred crop (default)</label>
             <label><input type="radio" name="bgMode" value="image" /> Custom image</label>
+            <label><input type="radio" name="bgMode" value="video" /> Custom video (looped)</label>
           </div>
           <div class="setrow">
             <button type="button" id="bgBrowseBtn" class="small ghost" data-icon="folder" data-ic-size="14"><span>Browse…</span></button>
             <span class="swatch" id="bgFileName"></span>
-            <input id="bgFile" type="file" accept="image/*" class="filehidden" tabindex="-1" />
+            <input id="bgFile" type="file" accept="image/*,video/*" class="filehidden" tabindex="-1" />
           </div>
           <div class="slider"><div class="slbl"><span>Dim</span><span id="bgDimLbl"></span></div>
             <input id="bgDim" type="range" min="10" max="100" value="85" /></div>
+          <div class="hint" id="bgVideoHint" hidden>The video plays looped, full-screen behind the frames, for the whole render.</div>
           <div class="previewbox" id="bgPreviewBox"><span class="phmsg">Preview</span></div>
         </div>
 
@@ -725,6 +731,10 @@
           <div class="slider"><div class="slbl"><span>Duration</span><span id="animDurationLbl"></span></div>
             <input id="animDuration" type="range" min="5" max="100" value="35" /></div>
           <div class="hint">Applies to every frame transition in this project's renders. "Cut" is an instant switch, no animation.</div>
+          <div class="radiorow" style="margin-top:8px">
+            <label><input type="checkbox" id="animKenBurns" /> Alternating Ken Burns</label>
+          </div>
+          <div class="hint">Odd frames slowly zoom IN, even frames zoom OUT, alternating - independent of the transition above. Off by default: it noticeably slows rendering, since ffmpeg has to compute a moving crop for every output frame instead of just looping one still.</div>
         </div>
       </div>
     </div>
@@ -783,7 +793,11 @@
           <h2 data-icon="download" data-ic-size="14">Chapter Source</h2>
           <div class="sidefield">
             <label class="lbl">Webtoon URL</label>
-            <input id="dlUrl" type="text" placeholder="webtoon chapter URL" />
+            <div class="row2">
+              <input id="dlUrl" type="text" placeholder="webtoon chapter URL" />
+              <button id="dlOpenBtn" class="small ghost icon" data-icon="link" data-ic-size="14"
+                      title="Open this URL in your browser" onclick="openUrlField('dlUrl')"></button>
+            </div>
           </div>
           <div class="sidefield">
             <label class="lbl">Chapter</label>
@@ -974,7 +988,8 @@ const ICONS = {
   maximize:'<path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/>',
   minimize:'<path d="M8 3v3a2 2 0 0 1-2 2H3"/><path d="M21 8h-3a2 2 0 0 1-2-2V3"/><path d="M3 16h3a2 2 0 0 1 2 2v3"/><path d="M16 21v-3a2 2 0 0 1 2-2h3"/>',
   layout:'<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/><path d="M9 21V9"/>',
-  checkbox:'<rect x="3" y="3" width="18" height="18" rx="2"/><path d="m9 12 2 2 4-4"/>'
+  checkbox:'<rect x="3" y="3" width="18" height="18" rx="2"/><path d="m9 12 2 2 4-4"/>',
+  link:'<path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>'
 };
 function ic(n, s) {
   s = s || 16;
@@ -1187,6 +1202,18 @@ function showToast(msg, actionLabel, actionFn, kind) {
 function hideToast() { const s = $('toast'); if (s && s.lastChild) s.lastChild.remove(); }
 
 // ---------------------------------------------------------------------------
+// "Open website" buttons next to a pasted webtoon/series URL field - just
+// opens it in a new tab so the user can check/re-copy the URL without leaving
+// the app. Adds https:// if the field has no scheme (users often paste a bare
+// "www.webtoons.com/..." without one).
+function openUrlField(id) {
+  const el = $(id);
+  const raw = (el && el.value || '').trim();
+  if (!raw) { showToast('Paste a URL first.', null, null, 'err'); return; }
+  const url = /^https?:\/\//i.test(raw) ? raw : 'https://' + raw;
+  window.open(url, '_blank', 'noopener');
+}
+
 // download a chapter (webtoon-downloader) -> PDF, then ALWAYS split+compress it
 // into Gemini-ready parts (streamed over SSE so a long chapter shows progress).
 // The full-res PDF still feeds the existing "Stitch PDF" flow unchanged: we drop
@@ -2736,10 +2763,12 @@ function fillSettingsForm() {
   document.querySelector(`input[name=bgMode][value="${s.background.mode}"]`).checked = true;
   $('bgFileName').textContent = s.background.file ? s.background.file.split('/').pop() : '';
   $('bgDim').value = Math.round(s.background.dim * 100);
+  $('bgVideoHint').hidden = s.background.mode !== 'video';
 
   document.querySelector(`input[name=animStyle][value="${s.animation.style}"]`).checked = true;
   $('animDirection').value = s.animation.direction || 'left';
   $('animDuration').value = Math.round(s.animation.duration * 100);
+  $('animKenBurns').checked = !!s.animation.ken_burns;
 
   updateSliderLabels();
   refreshWatermarkPreview();
@@ -2809,6 +2838,7 @@ function currentSettingsFromForm() {
       style: document.querySelector('input[name=animStyle]:checked').value,
       direction: $('animDirection').value,
       duration: (+$('animDuration').value) / 100,
+      ken_burns: $('animKenBurns').checked,
     },
   };
 }
@@ -2855,9 +2885,28 @@ function refreshWatermarkPreview() {
 let bgPreviewTimer = null;
 function refreshBackgroundPreview() {
   clearTimeout(bgPreviewTimer);
+  const mode = document.querySelector('input[name=bgMode]:checked').value;
+  $('bgVideoHint').hidden = mode !== 'video';
   bgPreviewTimer = setTimeout(() => {
     if (!CURRENT_PROJECT) return;
-    const q = new URLSearchParams({ dim: (+$('bgDim').value) / 100, t: Date.now() });
+    const dim = (+$('bgDim').value) / 100;
+    if (mode === 'video') {
+      // A real <video> (looped, muted, dimmed via CSS) - not a rendered still,
+      // since the whole point is showing that it actually plays/loops. Reuses
+      // the plain asset-download route (send_from_directory supports HTTP
+      // range requests, which <video> needs for seeking/looping).
+      const box = $('bgPreviewBox');
+      box.innerHTML = '';
+      const video = document.createElement('video');
+      video.autoplay = true; video.loop = true; video.muted = true; video.playsInline = true;
+      video.style.cssText = 'width:100%;height:100%;object-fit:cover;display:block';
+      video.style.filter = `brightness(${dim})`;
+      video.onerror = () => { box.innerHTML = '<span class="phmsg">No video uploaded yet</span>'; };
+      video.src = `/api/projects/${encodeURIComponent(CURRENT_PROJECT.slug)}/asset/background?t=${Date.now()}`;
+      box.appendChild(video);
+      return;
+    }
+    const q = new URLSearchParams({ dim, t: Date.now() });
     setPreviewImage('bgPreviewBox', `/api/projects/${encodeURIComponent(CURRENT_PROJECT.slug)}/preview/background.png?${q}`);
   }, 250);
 }
@@ -3050,6 +3099,7 @@ $('pjSettingsBtn').onclick = () => $('pjSettings').classList.toggle('on');
 $('wmEnabled').onchange = saveSettingsDebounced;
 $('wmText').oninput = saveSettingsDebounced;
 $('animDirection').onchange = saveSettingsDebounced;
+$('animKenBurns').onchange = saveSettingsDebounced;
 ['wmOpacity', 'wmSize', 'wmSpacing', 'wmAngle', 'bgDim', 'animDuration'].forEach(id => { $(id).oninput = saveSettingsDebounced; });
 $('musicFile').onchange = e => uploadAsset('music', e.target.files[0]);
 $('voiceFile').onchange = e => uploadAsset('voice', e.target.files[0]);

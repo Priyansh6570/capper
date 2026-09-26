@@ -54,6 +54,7 @@ from pathlib import Path
 
 from config import ROOT, chapter_output_dir, chapter_work_dir
 from manifest import Manifest, Panel
+from atomic_io import read_json_with_backup_fallback
 
 # --- frame + template constants ------------------------------------------- #
 W, H = 1920, 1080
@@ -71,6 +72,9 @@ CROSSFADE = 0.35       # DEFAULT crossfade length - overridden per-project by th
                        # falls back to, matching what was always hardcoded here.
 CROP_FRAC_H = 0.85     # frame fit to this fraction of HEIGHT ...
 CROP_FRAC_W = 0.92     # ... and capped at this fraction of WIDTH (wide panels)
+KEN_BURNS_MAX_ZOOM = 1.15  # peak scale for the alternating Ken Burns effect -
+                           # always >= 1.0 so the zoompan crop never samples
+                           # outside the still's own 1920x1080 canvas
 BG_BLUR = 40           # background gaussian blur radius (px)
 BG_BRIGHTNESS = 0.40   # darken background to ~40% brightness
 MUSIC_VOL = 0.06       # static music bed volume (low; ducked further under speech)
@@ -104,12 +108,18 @@ def _audio_len(p: Panel) -> float:
 def _load_mapping(chapter_id: str) -> dict[int, dict]:
     """Read the framer's mapping.json (the authoritative per-line plan with
     multiple frames + play mode), keyed by line `order`. Returns {} when there is
-    no mapping (legacy manifests) so the render falls back to one frame per line."""
+    no mapping (legacy manifests) so the render falls back to one frame per line.
+
+    Tries mapping.json.bak (see atomic_io.py) before giving up on a corrupt/
+    unreadable primary file - a mapping full of hand-drawn boxes silently
+    degrading to "one frame per line" is itself a real loss of the user's
+    boxing work, not just a render glitch, so it's worth one extra try before
+    accepting that fallback."""
     path = chapter_work_dir(chapter_id) / "framer" / "mapping.json"
     if not path.exists():
         return {}
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = read_json_with_backup_fallback(path)
     except Exception:  # noqa: BLE001 - a bad mapping must not sink the render
         return {}
     return {ln["order"]: ln for ln in data.get("lines", []) if "order" in ln}
@@ -137,25 +147,58 @@ def _load_media_settings(chapter_id: str) -> dict:
 _SLIDE_XFADE = {"left": "slideleft", "right": "slideright", "up": "slideup", "down": "slidedown"}
 
 
-def _resolve_animation(settings: dict) -> tuple[str, float]:
-    """(xfade transition name, or "cut" for a hard cut; crossfade seconds) for
-    this render, from the project's `animation` setting. Missing/garbled
-    settings (or an old project.json/media_settings.json saved before this
-    setting existed) fall back to EXACTLY today's fixed behavior - a plain
-    fade crossfade at CROSSFADE seconds - so nothing changes unless someone
-    explicitly picks something else in Project Settings."""
+def _zoompan_filter(dur: float, zoom_in: bool) -> str:
+    """One still's `zoompan` filter for the alternating Ken Burns effect:
+    `zoom_in` eases 1.0 -> KEN_BURNS_MAX_ZOOM over the still's on-screen time,
+    `zoom_in=False` starts there and eases back to 1.0 - run() alternates
+    this per item (odd position zooms in, even zooms out) so consecutive
+    beats visibly alternate direction. `x`/`y` keep the crop centered as zoom
+    changes, so it never samples outside the still's own canvas (zoom is
+    always >= 1.0, never revealing undefined edges).
+
+    `d=1` (one output frame per input frame) is required: the upstream
+    `-loop 1 -framerate FPS -t dur` input already emits one (identical) frame
+    per output tick, so zoompan's own `d` would otherwise multiply that
+    further. `on` is zoompan's per-instance output-frame counter - a
+    CLOSED-FORM function of it (not the self-referential `zoom` variable) is
+    used deliberately, so "zoom out" can start already-zoomed without
+    depending on any previous frame's state; `on` resets to 0 for each still
+    because every item gets its own zoompan filter instance in the graph
+    (see _build_filtergraph), each processing only that one still's frames."""
+    n = max(1, round(dur * FPS))
+    denom = max(1, n - 1)
+    span = KEN_BURNS_MAX_ZOOM - 1.0
+    if zoom_in:
+        z = f"1+{span:.4f}*on/{denom}"
+    else:
+        z = f"{KEN_BURNS_MAX_ZOOM:.4f}-{span:.4f}*on/{denom}"
+    return (f"zoompan=z='{z}':d=1:s={W}x{H}:fps={FPS}:"
+            f"x='(iw-iw/zoom)/2':y='(ih-ih/zoom)/2'")
+
+
+def _resolve_animation(settings: dict) -> tuple[str, float, bool]:
+    """(xfade transition name, or "cut" for a hard cut; crossfade seconds;
+    alternating-Ken-Burns on/off) for this render, from the project's
+    `animation` setting. Missing/garbled settings (or an old project.json/
+    media_settings.json saved before a setting existed) fall back to EXACTLY
+    today's fixed behavior - a plain fade crossfade at CROSSFADE seconds, Ken
+    Burns off - so nothing changes unless someone explicitly picks something
+    else in Project Settings. Ken Burns is independent of the transition
+    style: it animates each still WHILE it's on screen (see
+    _zoompan_filter()), the transition still plays between them as chosen."""
     cfg = settings.get("animation") or {}
     style = cfg.get("style")
     if style not in ("cut", "fade", "slide", "zoom"):
         style = "fade"
     duration = max(0.0, min(1.0, float(cfg.get("duration") or CROSSFADE)))
+    ken_burns = bool(cfg.get("ken_burns"))
     if style == "cut":
-        return "cut", 0.0
+        return "cut", 0.0, ken_burns
     if style == "slide":
-        return _SLIDE_XFADE.get(cfg.get("direction"), "slideleft"), duration
+        return _SLIDE_XFADE.get(cfg.get("direction"), "slideleft"), duration, ken_burns
     if style == "zoom":
-        return "zoomin", duration
-    return "fade", duration
+        return "zoomin", duration, ken_burns
+    return "fade", duration, ken_burns
 
 
 def _line_frames(b: Panel, mapping: dict[int, dict]) -> tuple[list[str | None], str]:
@@ -278,13 +321,31 @@ def _cover_crop(img, w: int, h: int):
     return r.crop((left, top, left + w, top + h))
 
 
-def _load_background(settings: dict):
-    """The project's custom background image, cover-cropped to 1920x1080 and
-    dimmed (NOT blurred - a user-chosen background is deliberate art). Returns
-    None when no custom background is set, so callers fall back to today's
-    blurred-self-cover default untouched. Loaded once per render by run()."""
+def _resolve_video_background(settings: dict) -> Path | None:
+    """The project's VIDEO background file, if `background.kind == "video"` -
+    played looped for the whole render as a base ffmpeg input, with the
+    (transparent) frame stills overlaid on top - see run()/_build_filtergraph.
+    This is a fundamentally different path from _load_background() below: a
+    moving video can't be baked into a static PIL still, so it's never loaded
+    as an image here, only resolved to a file path for ffmpeg itself to
+    decode and loop. None when not configured, so run() falls back to
+    _load_background()'s PIL-composited image/blur background untouched."""
     bg_cfg = settings.get("background")
-    if not bg_cfg or not bg_cfg.get("file"):
+    if not bg_cfg or bg_cfg.get("kind") != "video" or not bg_cfg.get("file"):
+        return None
+    p = Path(bg_cfg["file"])
+    return p if p.exists() else None
+
+
+def _load_background(settings: dict):
+    """The project's custom background IMAGE, cover-cropped to 1920x1080 and
+    dimmed (NOT blurred - a user-chosen background is deliberate art). Returns
+    None when no custom background is set (including when it's a VIDEO
+    background - see _resolve_video_background() above), so callers fall back
+    to today's blurred-self-cover default untouched. Loaded once per render
+    by run()."""
+    bg_cfg = settings.get("background")
+    if not bg_cfg or bg_cfg.get("kind") == "video" or not bg_cfg.get("file"):
         return None
     from PIL import Image, ImageEnhance
     p = Path(bg_cfg["file"])
@@ -306,35 +367,62 @@ def _blurred_self_cover(img):
     return ImageEnhance.Brightness(bg).enhance(BG_BRIGHTNESS)
 
 
-def _paste_background(base, bg, wm=None):
+def _paste_background(base, bg, wm=None, transparent: bool = False):
     """Composite the background layer (custom `bg` or, when the caller passes
     None as `bg`, whatever the caller already resolved - see call sites) onto
     `base`, with the tiled watermark `wm` (if any) composited onto the
     BACKGROUND FIRST. Callers paste the frame crop(s) on top of `base`
     afterward, so a crop always covers/hides the watermark under it - the
     watermark only ever shows in the background area around/between frames,
-    never on top of the comic art itself."""
+    never on top of the comic art itself.
+
+    `transparent=True` (a VIDEO background is playing behind this still - see
+    run()/_resolve_video_background) skips pasting any image at all: `bg` is
+    ignored and `base` (already an RGBA canvas, see _compose_still) is left
+    fully transparent outside the watermark, so the moving video underneath
+    shows through once this still is `overlay`'d onto it in the ffmpeg
+    filtergraph. Uses `Image.alpha_composite`, NOT `base.paste(wm, box, wm)` -
+    tried that first, but pasting an RGBA image using ITS OWN alpha as the
+    mask double-applies that alpha (once as the "source" pixels being
+    blended, once again as the blend weight itself), which - verified with a
+    quick manual check - darkens the color and under-reports the resulting
+    opacity on a fully-transparent destination. `alpha_composite` implements
+    real "over" compositing and doesn't have that problem. Returns `base`
+    (a NEW object in this branch, unlike the plain `.paste()` below) -
+    callers must use the return value, not assume in-place mutation."""
     from PIL import Image
+
+    if transparent:
+        if wm is not None:
+            base = Image.alpha_composite(base, wm)
+        return base
 
     if wm is not None:
         bg = Image.alpha_composite(bg.convert("RGBA"), wm).convert("RGB")
     base.paste(bg, (0, 0))
+    return base
 
 
-def _compose_still(frame_path: str | None, bg=None, wm=None):
+def _compose_still(frame_path: str | None, bg=None, wm=None, transparent: bool = False):
     """Build the full 1920x1080 still for a beat: the frame fit to ~85%H/~92%W,
     centered over `bg` (a project's custom background) if given, else a blurred
-    + darkened cover of itself as before. `wm` (a watermark RGBA layer), if
-    given, is composited onto the background ONLY, before the frame crop goes
-    on top - see _paste_background. Returns a PIL RGB image."""
+    + darkened cover of itself as before - UNLESS `transparent` is set (a video
+    background - see _paste_background), in which case the background area is
+    left transparent instead (an RGBA image is returned, not RGB). `wm` (a
+    watermark RGBA layer), if given, is composited onto the background/
+    transparent area ONLY, before the frame crop goes on top - see
+    _paste_background."""
     from PIL import Image
 
-    base = Image.new("RGB", (W, H), (12, 12, 12))
+    base = (Image.new("RGBA", (W, H), (0, 0, 0, 0)) if transparent
+            else Image.new("RGB", (W, H), (12, 12, 12)))
     img = _open_rgb(frame_path)
     if img is None:
         return base
 
-    _paste_background(base, bg if bg is not None else _blurred_self_cover(img), wm)
+    if bg is None and not transparent:
+        bg = _blurred_self_cover(img)
+    base = _paste_background(base, bg, wm, transparent)
 
     # Foreground: fit within 85%H / 92%W (whichever is tighter), centered.
     fscale = min((CROP_FRAC_H * H) / img.height, (CROP_FRAC_W * W) / img.width)
@@ -344,23 +432,27 @@ def _compose_still(frame_path: str | None, bg=None, wm=None):
     return base
 
 
-def _compose_grid_still(frame_paths: list[str | None], bg=None, wm=None):
+def _compose_grid_still(frame_paths: list[str | None], bg=None, wm=None, transparent: bool = False):
     """Build the full 1920x1080 still for a "together" line: every frame fit into
     its cell of a simple grid (2 -> side by side, 3-4 -> 2x2, etc.), over `bg`
     (a project's custom background) if given, else a shared blurred + darkened
-    cover of the first frame as before. `wm`, if given, is composited onto the
-    background ONLY, before any frame crop goes on top - see _compose_still.
-    Returns a PIL RGB image."""
+    cover of the first frame as before (or left transparent - see
+    _compose_still - when `transparent` is set for a video background). `wm`,
+    if given, is composited onto the background/transparent area ONLY, before
+    any frame crop goes on top - see _compose_still."""
     from PIL import Image
 
     imgs = [im for im in (_open_rgb(p) for p in frame_paths) if im is not None]
     if not imgs:
-        return Image.new("RGB", (W, H), (12, 12, 12))
+        return Image.new("RGBA", (W, H), (0, 0, 0, 0)) if transparent else Image.new("RGB", (W, H), (12, 12, 12))
     if len(imgs) == 1:
-        return _compose_still(frame_paths[0], bg, wm)
+        return _compose_still(frame_paths[0], bg, wm, transparent)
 
-    base = Image.new("RGB", (W, H), (12, 12, 12))
-    _paste_background(base, bg if bg is not None else _blurred_self_cover(imgs[0]), wm)
+    base = (Image.new("RGBA", (W, H), (0, 0, 0, 0)) if transparent
+            else Image.new("RGB", (W, H), (12, 12, 12)))
+    if bg is None and not transparent:
+        bg = _blurred_self_cover(imgs[0])
+    base = _paste_background(base, bg, wm, transparent)
 
     # Foreground grid: cols ~ sqrt(N), each frame fit within ~92% of its cell.
     n = len(imgs)
@@ -478,21 +570,25 @@ def _build_watermark_layer(settings: dict):
     return canvas.crop((left, top, left + W, top + H))
 
 
-def _precompose(items: list[dict], stills_dir: Path, wm=None, bg=None) -> None:
+def _precompose(items: list[dict], stills_dir: Path, wm=None, bg=None,
+                transparent: bool = False) -> None:
     """Render every item's still PNG into stills_dir and record its path on the
     item (key "still"). All the per-frame compositing work happens here, once.
     A "grid" item lays its frames out together; everything else is one frame.
     `bg` (a PIL image) replaces the default blurred self-cover when given; `wm`
     (a PIL RGBA layer), when given, is composited onto the BACKGROUND layer
     only (see _compose_still/_compose_grid_still) - frame crops are pasted on
-    top of that afterward, so they always cover/hide the watermark under them."""
+    top of that afterward, so they always cover/hide the watermark under them.
+    `transparent=True` (a video background - see run()) saves RGBA PNGs with
+    the background area left transparent instead, for ffmpeg to `overlay`
+    onto the looped background video."""
     stills_dir.mkdir(parents=True, exist_ok=True)
     for i, it in enumerate(items):
         out = stills_dir / f"beat_{i:04d}.png"
         if it["layout"] == "grid":
-            still = _compose_grid_still(it["frames"], bg, wm)
+            still = _compose_grid_still(it["frames"], bg, wm, transparent)
         else:
-            still = _compose_still(it["frames"][0], bg, wm)
+            still = _compose_still(it["frames"][0], bg, wm, transparent)
         still.save(out)
         it["still"] = str(out)
 
@@ -514,37 +610,68 @@ def _has_nvenc(ffmpeg: str) -> bool:
 
 
 def _build_filtergraph(items: list[dict], music_in: int | None, total: float,
-                       transition: str = "fade", crossfade: float = CROSSFADE
+                       transition: str = "fade", crossfade: float = CROSSFADE,
+                       ken_burns: bool = False, bg_in: int | None = None,
+                       bg_dim: float = 0.85
                        ) -> tuple[str, str, str | None]:
     """Build the ffmpeg filter_complex for the video transition chain + audio
-    mix. Image inputs are 0..n-1; narration audio inputs follow; music (if
-    any) is at index `music_in`. `transition` is an ffmpeg `xfade` transition
-    name (e.g. "fade", "slideleft", "zoomin") - or "cut" for a hard cut,
-    which uses `concat` instead of `xfade` (a 0-duration xfade isn't a
-    reliable no-op). `crossfade` must be the SAME value _plan() timed these
-    items' overlaps with - see _resolve_animation()/run(). Returns
-    (filter_complex, video_label, audio_label|None)."""
+    mix. Image inputs are 0..n-1; narration audio inputs follow; the video
+    background (if any) is at index `bg_in`; music (if any) is at index
+    `music_in`. `transition` is an ffmpeg `xfade` transition name (e.g.
+    "fade", "slideleft", "zoomin") - or "cut" for a hard cut, which uses
+    `concat` instead of `xfade` (a 0-duration xfade isn't a reliable no-op).
+    `crossfade` must be the SAME value _plan() timed these items' overlaps
+    with - see _resolve_animation()/run(). Returns (filter_complex,
+    video_label, audio_label|None).
+
+    `ken_burns` applies a per-still zoompan (see _zoompan_filter) BEFORE the
+    transition chain, alternating zoom direction by each item's position.
+
+    `bg_in` (set only when a video background is configured - see
+    _resolve_video_background/run()) changes what the still chain normalizes
+    to: `yuva420p` (keeps alpha) instead of `yuv420p`, since with a video
+    background the stills were precomposed with a TRANSPARENT background
+    (see _precompose(..., transparent=True)) - the transition chain's output
+    is then `overlay`'d onto the looped/dimmed background video as this
+    function's last step, and THAT combined result becomes `vlabel`."""
     n = len(items)
     parts: list[str] = []
+    fg_pix_fmt = "yuva420p" if bg_in is not None else "yuv420p"
+    fg_out = "[vout_fg]" if bg_in is not None else "[vout]"
 
-    # --- video: normalize each still, then chain transitions ---
+    # --- video: normalize each still (+ optional Ken Burns), then chain transitions ---
     for i in range(n):
-        parts.append(f"[{i}:v]fps={FPS},format=yuv420p,setsar=1[v{i}]")
+        chain = f"[{i}:v]fps={FPS}"
+        if ken_burns:
+            chain += "," + _zoompan_filter(items[i]["dur"], zoom_in=(i % 2 == 0))
+        chain += f",format={fg_pix_fmt},setsar=1[v{i}]"
+        parts.append(chain)
     if n == 1:
         vlabel = "[v0]"
     elif transition == "cut" or crossfade <= 0:
         vparts = "".join(f"[v{i}]" for i in range(n))
-        parts.append(f"{vparts}concat=n={n}:v=1:a=0[vout]")
-        vlabel = "[vout]"
+        parts.append(f"{vparts}concat=n={n}:v=1:a=0{fg_out}")
+        vlabel = fg_out
     else:
         prev, acc = "[v0]", items[0]["dur"]
         for j in range(1, n):
             off = acc - crossfade
-            out = "[vout]" if j == n - 1 else f"[x{j}]"
+            out = fg_out if j == n - 1 else f"[x{j}]"
             parts.append(f"{prev}[v{j}]xfade=transition={transition}:"
                          f"duration={crossfade:.3f}:offset={off:.3f}{out}")
             acc += items[j]["dur"] - crossfade
             prev = out
+        vlabel = fg_out
+
+    # --- video background: loop it under the (transparent) foreground track ---
+    if bg_in is not None:
+        brightness = max(-1.0, min(1.0, float(bg_dim) - 1.0))
+        parts.append(
+            f"[{bg_in}:v]scale={W}:{H}:force_original_aspect_ratio=increase,"
+            f"crop={W}:{H},fps={FPS},eq=brightness={brightness:.3f},"
+            f"format=yuv420p,setsar=1[bgv]"
+        )
+        parts.append(f"[bgv]{vlabel}overlay=x=0:y=0:format=auto,format=yuv420p[vout]")
         vlabel = "[vout]"
 
     # --- audio: delay each narration onto the timeline, mix, duck music ---
@@ -595,7 +722,9 @@ def _build_filtergraph(items: list[dict], music_in: int | None, total: float,
 
 def _build_cmd(ffmpeg: str, items: list[dict], music_path: Path | None,
                total: float, out: Path, codec: str,
-               transition: str = "fade", crossfade: float = CROSSFADE) -> list[str]:
+               transition: str = "fade", crossfade: float = CROSSFADE,
+               ken_burns: bool = False, video_bg: Path | None = None,
+               bg_dim: float = 0.85) -> list[str]:
     cmd = [ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-stats"]
     # Image inputs (timed, looped to their duration).
     for it in items:
@@ -605,13 +734,22 @@ def _build_cmd(ffmpeg: str, items: list[dict], music_path: Path | None,
     for it in items:
         if it["audio"]:
             cmd += ["-i", it["audio"]]
+    next_in = len(items) + sum(1 for it in items if it["audio"])
+    # Video background (looped indefinitely - the final -t total below trims
+    # everything, including this, to the render's actual length).
+    bg_in = None
+    if video_bg is not None:
+        bg_in = next_in
+        cmd += ["-stream_loop", "-1", "-i", str(video_bg)]
+        next_in += 1
     # Music input (looped) last.
     music_in = None
     if music_path is not None:
-        music_in = len(items) + sum(1 for it in items if it["audio"])
+        music_in = next_in
         cmd += ["-stream_loop", "-1", "-i", str(music_path)]
 
-    fc, vlabel, alabel = _build_filtergraph(items, music_in, total, transition, crossfade)
+    fc, vlabel, alabel = _build_filtergraph(items, music_in, total, transition, crossfade,
+                                            ken_burns, bg_in, bg_dim)
     cmd += ["-filter_complex", fc, "-map", vlabel]
     if alabel is not None:
         cmd += ["-map", alabel, "-c:a", "aac", "-b:a", "192k"]
@@ -625,14 +763,17 @@ def _build_cmd(ffmpeg: str, items: list[dict], music_path: Path | None,
 
 
 def _assemble_ffmpeg(items: list[dict], music_path: Path | None, total: float, out: Path,
-                     transition: str = "fade", crossfade: float = CROSSFADE) -> str:
+                     transition: str = "fade", crossfade: float = CROSSFADE,
+                     ken_burns: bool = False, video_bg: Path | None = None,
+                     bg_dim: float = 0.85) -> str:
     """Render with ffmpeg directly. Tries h264_nvenc (if present) then libx264.
     Returns the codec used; raises if every attempt fails."""
     ffmpeg = _ffmpeg()
     codecs = ["h264_nvenc", "libx264"] if _has_nvenc(ffmpeg) else ["libx264"]
     last = ""
     for codec in codecs:
-        cmd = _build_cmd(ffmpeg, items, music_path, total, out, codec, transition, crossfade)
+        cmd = _build_cmd(ffmpeg, items, music_path, total, out, codec, transition, crossfade,
+                         ken_burns, video_bg, bg_dim)
         proc = subprocess.run(cmd)
         if proc.returncode == 0:
             return codec
@@ -650,7 +791,11 @@ def _assemble_moviepy(items: list[dict], music_path: Path | None, total: float, 
     styles, so this last-resort fallback (only used if the direct ffmpeg path
     fails outright) only distinguishes "cut" (crossfade<=0 - plain concat, no
     blend) from everything else (a plain crossfade at `crossfade` seconds,
-    i.e. today's only look, regardless of slide/zoom being configured)."""
+    i.e. today's only look, regardless of slide/zoom being configured). It
+    likewise does not support a video background or Ken Burns: if the
+    project has a video background, the precomposed stills it reuses are
+    TRANSPARENT (see run()), which MoviePy just renders as plain black here -
+    no crash, just a visibly plainer video than the primary ffmpeg path."""
     from moviepy import (ImageClip, AudioFileClip, CompositeAudioClip,
                          concatenate_videoclips)
     from moviepy.video.fx import CrossFadeIn
@@ -711,7 +856,7 @@ def run(m: Manifest) -> Manifest:
     beats = m.kept_panels()  # the matched narration beats (STAGE B)
     mapping = _load_mapping(m.chapter_id)  # framer's multi-frame + mode plan
     settings = _load_media_settings(m.chapter_id)  # framer's per-project media settings
-    transition, crossfade = _resolve_animation(settings)
+    transition, crossfade, ken_burns = _resolve_animation(settings)
     items, total, lines = _plan(beats, mapping, crossfade)
     music_path = _resolve_music(settings)
     wm_cfg = settings.get("watermark")
@@ -719,7 +864,15 @@ def run(m: Manifest) -> Manifest:
     watermark = _build_watermark_layer(settings)
     print(f"  [debug] watermark: enabled={bool(wm_cfg and wm_cfg.get('enabled'))}, "
           f"layer_built={watermark is not None}, compositing onto {len(items)} still(s)")
-    background = _load_background(settings)
+    # A video background (see _resolve_video_background) and a static image/
+    # blur background (see _load_background) are mutually exclusive - the
+    # project's `background.mode`/`kind` is either "video", "image", or
+    # "blur". When it's video, stills are precomposed TRANSPARENT instead
+    # (see _precompose(transparent=...)) and the video is `overlay`'d under
+    # them in the ffmpeg filtergraph - never both at once.
+    video_bg = _resolve_video_background(settings)
+    bg_dim = float((settings.get("background") or {}).get("dim", 0.85))
+    background = None if video_bg is not None else _load_background(settings)
 
     # Per-line report so multi-frame handling can be verified at a glance.
     for ln in lines:
@@ -736,6 +889,7 @@ def run(m: Manifest) -> Manifest:
             "chapter_id": m.chapter_id, "size": [W, H], "fps": FPS,
             "music": music_path.name if music_path else None,
             "watermark": bool(watermark), "background": bool(background),
+            "video_background": bool(video_bg), "ken_burns": ken_burns,
             "animation": {"transition": transition, "crossfade_s": crossfade},
             "total_s": total, "beats": items,
         }, indent=2, ensure_ascii=False),
@@ -751,16 +905,24 @@ def run(m: Manifest) -> Manifest:
     stills_dir = out_dir / "_stills"
     t0 = time.perf_counter()
     try:
-        _precompose(items, stills_dir, watermark, background)
+        _precompose(items, stills_dir, watermark, background, transparent=(video_bg is not None))
         anim_desc = "cut (no transition)" if transition == "cut" else f"{transition} @ {crossfade:.2f}s"
+        if ken_burns:
+            anim_desc += " + alternating Ken Burns"
         print(f"  precomposed {len(items)} stills ({total:.1f}s timeline), transition={anim_desc}"
-              f"{' + watermark' if watermark else ''}{' + custom background' if background else ''}")
+              f"{' + watermark' if watermark else ''}{' + custom background' if background else ''}"
+              f"{' + video background' if video_bg else ''}")
         try:
-            codec = _assemble_ffmpeg(items, music_path, total, out, transition, crossfade)
+            codec = _assemble_ffmpeg(items, music_path, total, out, transition, crossfade,
+                                     ken_burns, video_bg, bg_dim)
             path = "ffmpeg"
         except Exception as e:  # noqa: BLE001 - fall back to MoviePy
             print(f"  ffmpeg assembly failed ({type(e).__name__}: {e}); "
                   f"falling back to MoviePy")
+            if video_bg is not None:
+                print("  NOTE: the MoviePy fallback does not support a video background or "
+                      "Ken Burns (see _assemble_moviepy) - the transparent stills will show "
+                      "plain black where the video would have played.")
             codec = _assemble_moviepy(items, music_path, total, out, crossfade)
             path = "moviepy"
     finally:

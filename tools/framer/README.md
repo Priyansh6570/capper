@@ -102,9 +102,26 @@ and fall back to today's defaults when it's absent.
   (the tiled watermark over a sample frame — the project's own first exported
   frame if one exists, else a generated placeholder) updates ~250ms after you
   stop adjusting a control. Read by stage 7.
-- **Background** — the default blurred-crop-of-itself, or a project-specific
+- **Background** — the default blurred-crop-of-itself, a project-specific
   image (cover-scaled, **not** blurred — it's art you chose on purpose — just
-  dimmed by the **dim** slider). Also live-previewed. Read by stage 7.
+  dimmed by the **dim** slider), or a project-specific **video**, played
+  **looped** full-screen behind the frames for the whole render (same **dim**
+  slider, applied as an approximate brightness offset). Image mode is
+  live-previewed as a composited still; video mode previews as an actual
+  looping, dimmed `<video>` element (there's no static image to render for a
+  moving background). Read by stage 7 - see `_load_background` (image) /
+  `_resolve_video_background` (video) in `stages/s7_assemble.py`. A video
+  background works by precomposing each still with a TRANSPARENT background
+  instead of baking one in with PIL, then `overlay`-ing that onto the looped
+  background video in the ffmpeg filtergraph - fundamentally different from
+  the image path, which stays exactly as it always was.
+- **Frame Animation** → **Alternating Ken Burns** — a checkbox, independent of
+  the transition style above: when on, each still slowly zooms while it's on
+  screen (odd position zooms IN, even position zooms OUT, alternating), via a
+  per-still `zoompan` in the ffmpeg filtergraph. Off by default because it
+  measurably slows rendering (roughly 1.5x on this project's own dev machine,
+  GPU-encoded via NVENC - zoompan's per-output-frame crop math runs on the
+  CPU regardless of which encoder does the final encode).
 
 Uploading a file saves it immediately; sliders/text/radio choices save on a
 short debounce. A settings change rewrites the snapshot for every chapter the
@@ -281,9 +298,20 @@ see "Project settings" above) each run:
   (`_build_watermark_layer`) and alpha-composited onto every precomposed still
   in `_precompose` — so both the ffmpeg path AND the MoviePy fallback get it
   for free, at a cost of one composite per beat (not per output frame).
-- **Background** — `_load_background` cover-crops + dims (not blurs) the
-  project's image once per render; `_compose_still`/`_compose_grid_still` use
-  it instead of the default blurred self-cover when set.
+- **Background (image)** — `_load_background` cover-crops + dims (not blurs)
+  the project's image once per render; `_compose_still`/`_compose_grid_still`
+  use it instead of the default blurred self-cover when set.
+- **Background (video)** — `_resolve_video_background` just resolves the
+  file path (there's nothing to bake into a static PIL still for a moving
+  video); `_precompose(..., transparent=True)` then leaves each still's
+  background area transparent instead, and `_build_filtergraph` `overlay`s
+  the whole transition-chained foreground track onto the looped, scaled,
+  dimmed background video as its last step. Mutually exclusive with the
+  image background - see `run()`.
+- **Ken Burns** — `_zoompan_filter` builds one `zoompan` filter per still,
+  inserted into its per-input chain in `_build_filtergraph` BEFORE the
+  transition chain; alternates zoom direction by each item's position in the
+  render (not by anything about the source image itself).
 
-All four fields are optional; a project with no settings runs exactly as
-before this feature existed.
+All fields are optional; a project with no settings runs exactly as before
+this feature existed.

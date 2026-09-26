@@ -13,6 +13,19 @@ set "PYEXE="
 set "STEP_FAILED=0"
 set "TMPFILE=%TEMP%\manhwa_setup_tmp.txt"
 
+REM Read by the installer (see RunEnvSetup in installer/installer.iss), which
+REM runs this script HIDDEN (no console window) and polls PROGRESS_FILE +
+REM DONE_FILE to drive its own progress bar/status text instead - see
+REM :progress below. Only written when SETUP_UNATTENDED=1 (i.e. driven by the
+REM installer); a normal double-click run is unaffected and behaves exactly
+REM as before - it still shows all of this in a real console window.
+set "PROGRESS_FILE=%TEMP%\recapper_setup_progress.txt"
+set "DONE_FILE=%TEMP%\recapper_setup_done.txt"
+if "%SETUP_UNATTENDED%"=="1" (
+    del "%PROGRESS_FILE%" >nul 2>&1
+    del "%DONE_FILE%" >nul 2>&1
+)
+
 echo ===== ReCapper - setup started %DATE% %TIME% ===== > "%LOGFILE%"
 
 REM Git refuses to run any command in a repo folder whose ownership looks
@@ -39,8 +52,10 @@ echo     3. Create a private Python environment for this app (.venv)
 echo     4. Install the AI/video packages it needs (this is the slow
 echo        part - it downloads several GB and can take 10-30+ minutes
 echo        depending on your internet connection)
-echo     5. Make sure ffmpeg (video encoder) is available
-echo     6. Double-check everything actually works
+echo     5. Pre-download the AI voice model (several GB, one-time - so it
+echo        never has to happen mid-render later)
+echo     6. Make sure ffmpeg (video encoder) is available
+echo     7. Double-check everything actually works
 echo.
 echo   You need an internet connection for this. Everything it does
 echo   is logged to setup_log.txt if you need to troubleshoot later.
@@ -52,8 +67,9 @@ REM ==========================================================================
 REM Step 1: NVIDIA GPU + driver
 REM ==========================================================================
 echo.
-echo [1/6] Checking for an NVIDIA GPU + driver...
-call :log "[1/6] Checking for an NVIDIA GPU + driver..."
+echo [1/7] Checking for an NVIDIA GPU + driver...
+call :log "[1/7] Checking for an NVIDIA GPU + driver..."
+call :progress "1" "Checking your graphics card..."
 where nvidia-smi >nul 2>&1
 if errorlevel 1 (
     echo   [WARN] No NVIDIA GPU / driver detected ^(nvidia-smi not found^).
@@ -101,8 +117,9 @@ REM ==========================================================================
 REM Step 2: Python 3.13
 REM ==========================================================================
 echo.
-echo [2/6] Checking for Python 3.13...
-call :log "[2/6] Checking for Python 3.13..."
+echo [2/7] Checking for Python 3.13...
+call :log "[2/7] Checking for Python 3.13..."
+call :progress "2" "Installing Python..."
 call :find_python
 if not defined PYEXE (
     echo   Python 3.13 not found. Trying to install it automatically via winget...
@@ -140,8 +157,9 @@ REM ==========================================================================
 REM Step 3: virtual environment
 REM ==========================================================================
 echo.
-echo [3/6] Setting up the app's private Python environment...
-call :log "[3/6] Setting up .venv..."
+echo [3/7] Setting up the app's private Python environment...
+call :log "[3/7] Setting up .venv..."
+call :progress "3" "Setting up the app's private Python environment..."
 if exist "%VENV_PY%" (
     echo   [OK] .venv already exists, reusing it.
     call :log "  [OK] .venv already exists."
@@ -164,9 +182,10 @@ REM ==========================================================================
 REM Step 4: install packages (CUDA torch FIRST, then the rest)
 REM ==========================================================================
 echo.
-echo [4/6] Installing packages ^(this is the slow step - several GB,
+echo [4/7] Installing packages ^(this is the slow step - several GB,
 echo       can take 10-30+ minutes depending on your internet^)...
-call :log "[4/6] Installing packages..."
+call :log "[4/7] Installing packages..."
+call :progress "4" "Downloading AI libraries (about 2.5GB)..."
 
 echo   4a. Installing the app's packages ^(this pulls in a generic,
 echo       non-CUDA PyTorch as a side effect - step 4b fixes that^)...
@@ -179,6 +198,7 @@ if errorlevel 1 (
 echo   [OK] All packages installed.
 call :log "  [OK] All packages installed."
 
+call :progress "5" "Configuring GPU acceleration..."
 echo   4b. Switching PyTorch to the CUDA build - watch this window for progress...
 echo       ^(one of the AI packages above pins a specific plain-CPU
 echo       PyTorch version as ITS OWN dependency; this step deliberately
@@ -194,11 +214,79 @@ echo   [OK] PyTorch CUDA build installed.
 call :log "  [OK] PyTorch CUDA build installed (step 4b)."
 
 REM ==========================================================================
-REM Step 5: ffmpeg
+REM Step 5: Hugging Face token (optional) + pre-download the voice model
+REM ==========================================================================
+REM Chatterbox's model weights normally download on the app's FIRST render
+REM instead of here - and unauthenticated Hugging Face downloads are heavily
+REM rate-limited, so that first render can silently crawl for 10+ minutes.
+REM Doing it here instead: one clear, resumable, retrying step at install
+REM time, never mid-render. An optional free HF_TOKEN (persisted to .env,
+REM which is already gitignored) avoids the anonymous throttling entirely -
+REM see SETUP_GUIDE.md.
+echo.
+echo [5/7] Setting up the Chatterbox voice model...
+call :log "[5/7] Voice model setup..."
+call :progress "6" "Downloading voice model (about 4GB)..."
+
+set "ENVFILE=%~dp0.env"
+set "HF_TOKEN="
+if exist "%ENVFILE%" (
+    for /f "usebackq tokens=1,* delims==" %%A in ("%ENVFILE%") do (
+        if /i "%%A"=="HF_TOKEN" set "HF_TOKEN=%%B"
+    )
+)
+if defined HF_TOKEN (
+    echo   Using the Hugging Face token saved in .env.
+    call :log "  Using HF_TOKEN from .env."
+) else if "%SETUP_UNATTENDED%"=="1" (
+    echo   No Hugging Face token configured - skipping ^(unattended install^).
+    echo   Downloads may be slower/rate-limited. Add one to .env any time - see
+    echo   SETUP_GUIDE.md - then re-run setup.bat.
+    call :log "  No HF_TOKEN (unattended) - proceeding without one."
+) else (
+    echo   Optional: a free Hugging Face account token speeds up this download
+    echo   and avoids anonymous rate-limiting. Get one at
+    echo   https://huggingface.co/settings/tokens ^("Read" access is enough^).
+    set /p "HF_TOKEN=  Paste your Hugging Face token now, or press Enter to skip: "
+    if defined HF_TOKEN (
+        REM Terminate a possibly-unterminated last line before appending (an
+        REM existing .env with no trailing newline would otherwise get
+        REM HF_TOKEN glued onto the end of its last line) - a harmless extra
+        REM blank line if the file was already newline-terminated.
+        >>"%ENVFILE%" echo.
+        >>"%ENVFILE%" echo HF_TOKEN=!HF_TOKEN!
+        echo   Saved to .env - won't ask again on this PC.
+        call :log "  Saved a new HF_TOKEN to .env."
+    ) else (
+        call :log "  User skipped HF_TOKEN."
+    )
+)
+
+echo   Pre-downloading the voice model now ^(several GB, one-time^) so the app
+echo   never has to do this mid-render. This retries automatically on a slow
+echo   or stalled connection - it's normal for it to take a while.
+call :log "  Pre-downloading Chatterbox model weights..."
+set "MODEL_OK=1"
+powershell -NoProfile -Command "& { & '%VENV_PY%' '%~dp0tools\predownload_tts_models.py' 2>&1 | Tee-Object -FilePath '%LOGFILE%' -Append }"
+if errorlevel 1 (
+    set "MODEL_OK=0"
+    echo   [WARN] The voice model didn't fully download - see above / setup_log.txt.
+    echo          This is NOT fatal: the app will download the rest on first use
+    echo          instead, same as before this step existed. See SETUP_GUIDE.md
+    echo          if this keeps failing ^(includes a manual/offline option^).
+    call :log "  [WARN] predownload_tts_models.py did not finish for every model."
+) else (
+    echo   [OK] Voice model ready.
+    call :log "  [OK] Chatterbox voice model pre-downloaded."
+)
+
+REM ==========================================================================
+REM Step 6: ffmpeg
 REM ==========================================================================
 echo.
-echo [5/6] Checking for ffmpeg ^(video encoder^)...
-call :log "[5/6] Checking for ffmpeg..."
+echo [6/7] Checking for ffmpeg ^(video encoder^)...
+call :log "[6/7] Checking for ffmpeg..."
+call :progress "7" "Setting up video tools..."
 where ffmpeg >nul 2>&1
 if not errorlevel 1 (
     echo   [OK] ffmpeg is already on this PC's PATH.
@@ -226,11 +314,12 @@ if not errorlevel 1 (
 )
 
 REM ==========================================================================
-REM Step 6: final verification
+REM Step 7: final verification
 REM ==========================================================================
 echo.
-echo [6/6] Verifying everything works...
-call :log "[6/6] Final verification..."
+echo [7/7] Verifying everything works...
+call :log "[7/7] Final verification..."
+call :progress "8" "Finishing..."
 set "PATH=%FFMPEG_BIN%;%PATH%"
 
 set "CUDA_OK=0"
@@ -268,13 +357,18 @@ if "!FFMPEG_OK!"=="0" goto :fail
 echo   SETUP COMPLETE.
 call :log "SETUP COMPLETE."
 echo.
-echo   Note: the FIRST time you click "Generate audio + video" in the
-echo   app, it will download the AI voice model ^(a few GB, one time
-echo   only^) - that part needs internet and can take several minutes.
-echo   After that first time it's cached on your PC and stays fast.
-echo.
+if not "!MODEL_OK!"=="1" (
+    echo   Note: step 5's voice-model pre-download didn't fully finish - see
+    echo   above. The first "Generate audio + video" will finish it then,
+    echo   which needs internet and can take a while. After that it's
+    echo   cached on your PC and stays fast.
+    echo.
+)
 echo   Next: double-click start.bat any time you want to use the app.
 echo ============================================================
+if "%SETUP_UNATTENDED%"=="1" (
+    >"%DONE_FILE%" echo 0
+)
 call :maybe_pause
 exit /b 0
 
@@ -286,6 +380,9 @@ echo   setup_log.txt for details. Fix the issue and run
 echo   setup.bat again - it's safe to re-run.
 echo ============================================================
 call :log "SETUP FAILED."
+if "%SETUP_UNATTENDED%"=="1" (
+    >"%DONE_FILE%" echo 1
+)
 call :maybe_pause
 exit /b 1
 
@@ -294,6 +391,15 @@ REM Subroutines
 REM ==========================================================================
 :log
 >>"%LOGFILE%" echo %~1
+exit /b 0
+
+REM Writes "<step>@<message>" to PROGRESS_FILE for the installer to poll (see
+REM the top of this file + RunEnvSetup in installer.iss) - a no-op when run
+REM standalone (SETUP_UNATTENDED unset), since a real console already shows
+REM this same message via the echo right next to each call site.
+:progress
+if not "%SETUP_UNATTENDED%"=="1" exit /b 0
+>"%PROGRESS_FILE%" echo %~1@%~2
 exit /b 0
 
 REM Skips the "Press any key..." prompt when launched unattended (e.g. by the

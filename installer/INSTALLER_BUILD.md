@@ -77,21 +77,30 @@ to redo step 2 unless you want to update the bundled ffmpeg itself.
    repo must be public**: no credentials are available to an anonymous
    install, so a private repo would make every clone/pull fail with an auth
    error.
-5. **Post-install environment setup** - this is the slow part. A console
-   window opens running the just-cloned `setup.bat` (unattended:
-   `SETUP_UNATTENDED=1`, so it skips its own "press any key"/"continue
-   without a GPU?" prompts) - GPU/driver check, Python 3.13 (installed via
-   winget if missing), `.venv` creation, `pip install -r requirements.txt`,
-   then a **deliberate override**: reinstalling `torch`/`torchaudio` from
-   the PyTorch cu128 index, because `chatterbox-tts` pins an exact non-CUDA
-   torch version as its own dependency and would otherwise silently
-   downgrade it (this is a real bug we hit and fixed while building this -
-   see `work_log.md`). Then an ffmpeg check, and finally the installer
-   independently re-verifies `torch.cuda.is_available()` itself (not just
-   trusting `setup.bat`'s own exit code) so it can never claim GPU
-   acceleration works when it doesn't. Typically 10-30+ minutes depending on
-   internet speed; the console window shows live plain-English progress
-   throughout.
+5. **Post-install environment setup** - this is the slow part, and it runs
+   completely HIDDEN - no console window ever appears. The just-cloned
+   `setup.bat` runs with `SETUP_UNATTENDED=1` (so it skips its own "press any
+   key"/"continue without a GPU?" prompts, which would otherwise hang with no
+   console for anyone to answer them in) via `Exec(..., SW_HIDE, ewNoWait,
+   ...)` in `RunEnvSetup` (`installer.iss`) - GPU/driver check, Python 3.13
+   (installed via winget if missing), `.venv` creation, `pip install -r
+   requirements.txt`, then a **deliberate override**: reinstalling
+   `torch`/`torchaudio` from the PyTorch cu128 index, because
+   `chatterbox-tts` pins an exact non-CUDA torch version as its own
+   dependency and would otherwise silently downgrade it (this is a real bug
+   we hit and fixed while building this - see `work_log.md`). Then an ffmpeg
+   check, and finally the installer independently re-verifies
+   `torch.cuda.is_available()` itself (not just trusting `setup.bat`'s own
+   exit code) so it can never claim GPU acceleration works when it doesn't.
+   Typically 10-30+ minutes depending on internet speed; instead of a console
+   window, the wizard's own status text + progress bar (8 steps) show live
+   plain-English progress throughout - `setup.bat` writes
+   `"<step>@<message>"` to `%TEMP%\recapper_setup_progress.txt` after each
+   step (see `:progress` in `setup.bat`), which `RunEnvSetup` polls every
+   ~400ms, and `"0"`/`"1"` to `%TEMP%\recapper_setup_done.txt` as its very
+   last action - since `Exec` with `ewNoWait` returns immediately, that done
+   file (not `Exec`'s own return value) is what tells the installer setup.bat
+   actually finished and whether it succeeded.
 6. **Finished page** - never just says "Complete." It always states the
    real GPU-acceleration status, and if the download or environment setup
    genuinely failed, says so explicitly (with a pointer to `install_log.txt`
@@ -101,16 +110,28 @@ to redo step 2 unless you want to update the bundled ffmpeg itself.
 
 Also created: a Start Menu entry, an optional desktop shortcut (checkbox on
 the "Select Additional Tasks" page, checked off by default), and an
-uninstaller.
+uninstaller. Both shortcuts (and the "Launch now" checkbox on the finished
+page) point at `wscript.exe start_hidden.vbs`, not `start.bat` directly -
+Windows always shows a visible console the instant a `.bat` file itself
+runs, no matter what it then does internally, and `start_hidden.vbs` is what
+avoids that (see "First run" below).
 
 ### First run (after the installer window has already closed)
 The **Chatterbox AI voice model (~4GB) is NOT downloaded during install** -
 Inno Setup has no way to show progress for it, because it doesn't happen
 until later. It downloads automatically the first time the app actually
 needs it: when someone clicks **"Generate audio + video"** in the Framer UI
-for the first time ever. What the app itself needs changed so that moment
-shows real progress instead of looking frozen is reported (by request) in
-the chat/root `work_log.md`, rather than implemented here.
+for the first time ever.
+
+Launching the app itself (`start_hidden.vbs` -> `start.bat`) now shows no
+console window either: `start.bat` hands off to `pythonw.exe` running
+`tools/framer/tray_launcher.py` (no console subsystem at all) and exits
+immediately, so the only thing the user ever sees is their browser opening.
+`tray_launcher.py` puts a **"ReCapper" icon in the system tray** - since
+there's no console left to close, its **"Quit ReCapper"** menu item is now
+the only way to stop the app (it also best-effort terminates any in-progress
+render/merge subprocess first, so nothing is left running orphaned in the
+background).
 
 ### Uninstalling
 Since the app code is now a `git clone`, not an Inno-tracked file copy, Inno

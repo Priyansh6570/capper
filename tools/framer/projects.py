@@ -18,7 +18,6 @@ config.py. Nothing here imports Flask; app.py wires this to routes.
 from __future__ import annotations
 
 import json
-import os
 import re
 import threading
 from dataclasses import asdict, dataclass, field
@@ -27,6 +26,7 @@ from pathlib import Path
 from typing import Optional
 
 from config import PROJECTS_DIR
+from atomic_io import atomic_write_text, read_json_with_backup_fallback
 
 # Status rank - forward-only transitions (never downgraded automatically).
 STATUS_RANK = {"not_started": 0, "downloaded": 1, "boxed": 2, "rendered": 3, "complete": 4}
@@ -98,10 +98,9 @@ def merged_dir(slug: str) -> Path:
 
 
 def _atomic_write(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + f".tmp{os.getpid()}")
-    tmp.write_text(text, encoding="utf-8")
-    os.replace(tmp, path)
+    # See atomic_io.py: temp file + os.replace (never a half-written
+    # project.json/media_settings.json) plus a rolling `<path>.bak`.
+    atomic_write_text(path, text)
 
 
 # --------------------------------------------------------------------------- #
@@ -113,14 +112,21 @@ def _default_settings() -> dict:
         "voice": {"mode": "default", "file": None},
         "watermark": {"enabled": False, "type": "text", "text": "", "file": None,
                       "opacity": 0.12, "size": 0.12, "spacing": 1.0, "angle": -30},
+        # mode: "blur" (default) | "image" | "video" - a video background is
+        # played LOOPED behind the frames (see s7_assemble._resolve_video_
+        # background); "dim" applies to either custom mode (brightness for
+        # image, an approximate eq=brightness offset for video).
         "background": {"mode": "blur", "file": None, "dim": 0.85},
         # Frame entry/exit animation for stage 7's render. "fade"/0.35s matches
         # the crossfade s7_assemble.py has always hardcoded - this is the
         # default specifically so existing projects (loaded via load()'s
         # deep-merge, which backfills any settings key missing from an older
         # project.json) keep rendering EXACTLY as before until someone
-        # actually changes it in Project Settings.
-        "animation": {"style": "fade", "direction": "left", "duration": 0.35},
+        # actually changes it in Project Settings. "ken_burns" (off by
+        # default, same reasoning) alternates a slow zoom in/out per still -
+        # independent of the transition style above; see s7_assemble.
+        "animation": {"style": "fade", "direction": "left", "duration": 0.35,
+                     "ken_burns": False},
     }
 
 
@@ -148,7 +154,9 @@ def exists(slug: str) -> bool:
 
 
 def load(slug: str) -> dict:
-    data = json.loads(project_json_path(slug).read_text(encoding="utf-8"))
+    # Falls back to project.json.bak if the primary file is missing, empty,
+    # or unparsable - see atomic_io.py.
+    data = read_json_with_backup_fallback(project_json_path(slug))
     data.setdefault("schema", SCHEMA_VERSION)
     data.setdefault("chapters", [])
     data.setdefault("merges", [])
@@ -301,7 +309,10 @@ _ASSET_EXTS = {
     "music": {".mp3", ".wav", ".m4a", ".ogg", ".oga", ".aac", ".flac"},
     "voice": {".wav"},          # Chatterbox reference clip - wav only
     "watermark": {".png", ".jpg", ".jpeg", ".webp"},
-    "background": {".png", ".jpg", ".jpeg", ".webp"},
+    # Both image AND video extensions - the SAME upload slot serves either,
+    # depending on the project's `background.mode` ("image" or "video"; see
+    # _default_settings()). save_asset() below doesn't otherwise care which.
+    "background": {".png", ".jpg", ".jpeg", ".webp", ".mp4", ".mov", ".webm", ".mkv", ".m4v"},
 }
 
 
@@ -317,12 +328,15 @@ def update_settings(slug: str, settings: dict) -> dict:
         wm["angle"] = max(-90, min(90, float(wm.get("angle", -30))))
         bg = project["settings"]["background"]
         bg["dim"] = max(0.1, min(1.0, float(bg.get("dim", 0.85))))
+        if bg.get("mode") not in ("blur", "image", "video"):
+            bg["mode"] = "blur"
         anim = project["settings"]["animation"]
         if anim.get("style") not in ("cut", "fade", "slide", "zoom"):
             anim["style"] = "fade"
         if anim.get("direction") not in ("left", "right", "up", "down"):
             anim["direction"] = "left"
         anim["duration"] = max(0.05, min(1.0, float(anim.get("duration", 0.35))))
+        anim["ken_burns"] = bool(anim.get("ken_burns"))
         save(project)
     write_all_media_snapshots(slug)
     return project
@@ -330,13 +344,21 @@ def update_settings(slug: str, settings: dict) -> dict:
 
 def save_asset(slug: str, kind: str, filename: str, file_storage) -> str:
     """Save an uploaded file into projects/<slug>/assets/, returning the path
-    stored in project.json (relative to the project folder)."""
+    stored in project.json (relative to the project folder). Any OTHER
+    `<kind>.*` file already there is removed first - matters most for
+    "background", whose extension can now change kind (an image swapped for
+    a video, or vice versa): without this, the old file would linger and
+    find_asset()'s `background.*` glob could resolve to the WRONG one for
+    the delete/preview routes."""
     if kind not in VALID_ASSET_KINDS:
         raise ValueError(f"unknown asset kind: {kind}")
     ext = Path(filename or "").suffix.lower()
     if ext not in _ASSET_EXTS[kind]:
         raise ValueError(f"unsupported file type for {kind}: {ext or '(none)'}")
     safe_name = f"{kind}{ext}"
+    for stale in assets_dir(slug).glob(f"{kind}.*"):
+        if stale.name != safe_name:
+            stale.unlink(missing_ok=True)
     dest = assets_dir(slug) / safe_name
     file_storage.save(str(dest))
     return f"assets/{safe_name}"
@@ -391,7 +413,12 @@ def media_settings_snapshot(slug: str) -> dict:
         "background": {
             "file": _resolved_str(slug, background.get("file")),
             "dim": background.get("dim", 0.85),
-        } if background.get("mode") == "image" else None,
+            # "kind" (not "mode") is what s7_assemble._load_background /
+            # _resolve_video_background actually branch on, so a snapshot
+            # written before "video" existed (kind missing -> KeyError-safe
+            # via .get() there) still resolves as an image, unchanged.
+            "kind": background.get("mode"),
+        } if background.get("mode") in ("image", "video") else None,
         # No paths to resolve here (style/direction/duration are plain
         # scalars) - passed straight through; load()'s deep-merge guarantees
         # this key exists even for a project.json saved before this setting
