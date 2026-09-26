@@ -1,72 +1,55 @@
 # Work log
 
-## Task: fix the "open website" button, add a loading splash screen
+## Task: fix project-card overflow on the Projects home screen
 
-### 1. Fixed the "Open website" button (previous session misunderstood the ask)
+`.pcard` (the project card in `tools/framer/index.html`'s `renderProjectsList()`)
+was overflowing: the title and long webtoons.com URL rendered past both edges
+of the card, with no ellipsis and no avatar visible.
 
-It was opening whatever URL was already typed in the field - the actual ask
-was a shortcut to browse webtoons.com itself (to find a series/chapter,
-before you have a URL to paste). `tools/framer/index.html`: both buttons
-(next to "Webtoon URL" in the chapter editor and "Manhwa URL" on New Project)
-now just `window.open('https://www.webtoons.com/')` unconditionally -
-`openUrlField(id)` (read the field, needed a non-empty value, guessed at a
-scheme) replaced by a plain `openWebtoonsHome()` with no field-reading logic
-at all. Updated both buttons' tooltips to match ("Open webtoons.com to find
-a series/chapter").
+### Root cause
 
-### 2. Loading splash screen (Adobe-style)
+`.pcard` (and `.recentitem`, the sidebar's matching recent-projects row) are
+real `<button>` elements, and the app's base stylesheet has a generic
+```
+button { display:inline-flex; align-items:center; gap:7px; padding:8px 11px; ... }
+```
+My `.pcard`/`.recentitem` class rules override `display`/`gap`/`padding` (class
+beats tag-selector specificity) but never set `align-items` themselves - so
+`align-items:center` from that generic rule won by default, instead of the
+`stretch` I'd assumed. With `align-items:center` on a column-direction flex
+container, its children (`.ptop`/`.pbottom` in the card; the name/progress rows
+in the recent-list item) size to their own **content width** rather than
+stretching to the card's width - and since `.ptop` contains a `white-space:nowrap`
+URL span with no break opportunities, its content width was the full,
+un-wrapped URL (~500px), centered inside a ~300px card, overflowing evenly past
+both edges (clipped title on the left was this, not a text-direction bug).
 
-`tools/framer/tray_launcher.py` - new `_show_splash_and_wait(host, port)`: a
-small (360x220) borderless, centered, dark-themed window with the app logo
-(`assets/ReCapper.png`) and a "Loading..." status (animated dots), shown
-right after the Flask server starts (in its background thread) and before
-the browser opens. Polls the server's own port every 180ms and closes itself
-once it accepts a connection - with a floor (`SPLASH_MIN_S=0.8s`, so it never
-just flashes on an already-warm/fast start) and a ceiling
-(`SPLASH_MAX_S=8s`, so a stuck/slow server never leaves it on screen forever
-- the browser opens either way once it returns). Skipped on a self-restart
-(`/api/restart`), same as the browser-open itself already was - that's a
-fast in-place swap, not a fresh launch. Built with `tkinter` + `PIL.ImageTk`
-- both already available (tkinter ships with the Python.org/winget install
-this project already requires; ImageTk comes with Pillow, already a
-dependency) - no new dependency added.
+While tracing this I also hardened the actual truncation chain: `min-width:0`
+was missing on `.pcard` itself (a CSS Grid item) and on `.pcard .ptop` (a nested
+flex container) - both needed for the ellipsis truncation on `.pname`/`.purl`
+to actually take effect, since a flex/grid item's default `min-width:auto`
+otherwise floors it at its content's min-content size regardless of an
+ancestor's `overflow:hidden`/`text-overflow:ellipsis`.
 
-Runs entirely on the main thread and returns (destroying the window) BEFORE
-`main()` ever starts pystray's own main-thread tray-icon loop, so the two
-never run at the same time and can't conflict over who owns the thread's
-message pump. Wrapped so tkinter being unavailable/misbehaving can never
-block the app itself from starting - worst case, the splash step is silently
-skipped and the browser still opens.
+### Fix (`tools/framer/index.html`, CSS only)
 
-**Verified for real, not just read through** - and this took real digging:
-this session's Bash-tool-launched processes turned out to run in a window
-station isolated from the actual interactive desktop (confirmed by
-enumerating ALL visible windows via a raw Win32 `EnumWindows` P/Invoke from
-PowerShell, which - unlike from Bash - showed the user's real, current
-desktop: Explorer, Word, Firefox, etc. - with nothing from any Bash-launched
-process visible there, splash or otherwise). Relaunching the same test via
-PowerShell's `Start-Process` instead did attach to that real desktop, and
-the same `EnumWindows` check found the actual splash window on screen -
-title `"tk"`, size exactly `360x220` (confirming geometry was applied
-correctly, no DPI-scaling surprise), at the expected screen position -
-staying up for the whole simulated "server not ready yet" period and then
-provably closing itself (a completion message only prints after
-`root.mainloop()` returns, which only happens once `root.destroy()` runs) at
-almost exactly the moment a fake listener started accepting connections on
-the port it was watching. All test scripts/processes cleaned up afterward.
+- Added `align-items:stretch` to `.pcard` and `.recentitem`.
+- Added `min-width:0` to `.pcard`, `.pcard .ptop`, `.pcard .pbottom`, `.pcard .pmeta`,
+  `.pcard .pcount` (plus `overflow:hidden` on `.pcard` itself as a defensive
+  clip, and ellipsis/`white-space:nowrap`/`flex:none` tuning on `.pcount`/`.popened`
+  so "N/M done" and the timestamp never crowd each other).
 
-Also noted along the way, and NOT touched: this dev machine has the user's
-own real, separately-installed ReCapper running from a prior install at
-`G:\Documents\ReCapper\` (found via a stray port/process check while setting
-up the splash test) - left completely alone rather than risk interrupting
-whatever the user might be doing with it.
+### Verification
 
-### Files changed
-- `tools/framer/index.html` - "Open website" button fix (#1)
-- `tools/framer/tray_launcher.py` - splash screen (#2)
+Loaded the app in a real browser (Chrome extension) against the existing
+"The Stellar Swordmaster" project (a genuinely long webtoons.com URL with a
+query string). Confirmed via screenshot and a `getBoundingClientRect()` check
+that the URL row's rect is now fully inside the card's rect (no overflow),
+the avatar initial renders, the title is intact, and "1/128 done · 7m ago" is
+cleanly laid out. Also confirmed the sidebar's "Recent" progress bar (same
+underlying bug, `.recentitem`) now renders full-width instead of collapsing.
 
-### Next steps for the user
-Nothing required - no new dependency, no config. Next time you launch
-ReCapper (via `start.bat`, the desktop shortcut, or a fresh install), you
-should see the small ReCapper splash appear centered on screen for at least
-~0.8s while the app starts, then close right as your browser opens to it.
+Note: a ReCapper instance was already running on port 5005 from earlier
+testing (not started by me this session) - I verified the fix against it but
+left it running rather than kill a process I didn't start, in case it's the
+user's own open session.

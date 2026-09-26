@@ -382,32 +382,90 @@
               color:var(--muted); margin-top:2px; }
 
   /* ==========================================================================
-     Projects landing + project (chapter list + settings) screens. The editor
-     workspace (.app) is unchanged and lives inside #scr-editor; only ONE
-     top-level screen is visible at a time (see showScreen() in the script).
+     Projects landing + project (chapters) + project settings screens - sidebar
+     app shell (Claude Design "ReCapper App" redesign). The editor workspace
+     (.app) is unchanged and lives inside #scr-editor; only ONE top-level
+     screen is visible at a time (see showScreen() in the script). Reuses the
+     existing --bg/--panel/--accent/... tokens (see :root / body.light above)
+     rather than hardcoding the mockup's own hex values, so the light/dark
+     theme toggle keeps working unchanged on these screens too.
      ========================================================================== */
   .screen { display:none; }
   .screen.on { display:block; }
   #scr-editor { height:100vh; overflow:hidden; }
-  #scr-projects, #scr-project { height:100vh; overflow:auto; background:var(--bg); }
+  #scr-projects, #scr-project, #scr-settings { height:100vh; overflow:hidden; background:var(--bg); }
 
-  .shell { max-width:920px; margin:0 auto; padding:28px 20px 60px; }
-  .shellhead { display:flex; align-items:center; gap:12px; margin-bottom:22px; flex-wrap:wrap; }
-  .shellhead h1 { font-size:19px; margin:0; font-weight:800; }
-  .shellhead .back { flex:none; }
-  .shellhead .crumb { color:var(--muted); font-size:13px; }
-  .shellhead .spacer { flex:1; }
+  .appshell { display:flex; height:100%; }
+  .appsidebar { width:224px; flex:none; background:var(--panel); border-right:1px solid var(--line);
+                display:flex; flex-direction:column; padding:16px 12px 14px; gap:20px; overflow-y:auto; }
+  .applogo { display:flex; align-items:center; gap:10px; padding:0 6px; }
+  .applogo img { width:28px; height:28px; display:block; filter:drop-shadow(0 0 8px color-mix(in srgb, var(--accent) 45%, transparent)); }
+  .applogo .an { font-weight:800; font-size:14px; letter-spacing:.01em; }
+  .applogo .av { font-family:ui-monospace,Consolas,monospace; font-size:10px; color:var(--muted); letter-spacing:.06em; }
+  .appnav { display:flex; flex-direction:column; gap:2px; }
+  .appnav a, .appnav button { display:flex; align-items:center; gap:10px; padding:8px 10px; border-radius:8px;
+             color:var(--muted); font-size:13px; text-decoration:none; cursor:pointer;
+             background:none; border:0; font-weight:500; width:100%; text-align:left; }
+  .appnav a:hover, .appnav button:hover { background:var(--btn); color:var(--txt); }
+  .appnav a.on { background:color-mix(in srgb, var(--accent) 14%, transparent); color:var(--txt);
+                 box-shadow:inset 0 0 0 1px color-mix(in srgb, var(--accent) 30%, transparent); }
+  .appnav a.on .ic { color:var(--accent); }
+  .appnav .navcount { margin-left:auto; font-family:ui-monospace,Consolas,monospace; font-size:10px; color:var(--muted); }
+  .navlabel { font-family:ui-monospace,Consolas,monospace; font-size:10px; letter-spacing:.12em;
+              color:var(--muted); padding:0 10px; text-transform:uppercase; }
+  .navtitle { font-family:ui-monospace,Consolas,monospace; font-size:10px; letter-spacing:.1em; color:var(--muted);
+              padding:0 10px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; text-transform:uppercase; }
+  .recentlist { display:flex; flex-direction:column; gap:6px; }
+  /* align-items:stretch - these are real <button> elements, and the base
+     stylesheet's generic `button { align-items:center }` rule would otherwise
+     win (nothing else here sets align-items), sizing each row to its own
+     content width and centering it instead of stretching full-width. */
+  .recentitem { display:flex; flex-direction:column; align-items:stretch; gap:6px; padding:8px 10px; border-radius:8px;
+                color:var(--muted); cursor:pointer; background:none; border:0; text-align:left; width:100%; font-size:13px; }
+  .recentitem:hover { background:var(--btn); color:var(--txt); }
+  .recentitem .rn { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .recenttrack { height:2px; background:var(--line); border-radius:1px; display:block; }
+  .recentfill { display:block; height:100%; background:var(--accent); border-radius:1px; }
+  .sidebarfoot { margin-top:auto; display:flex; flex-direction:column; gap:2px; }
+  .sidebarcard { margin-top:auto; padding:11px; border-radius:10px; background:var(--surface);
+                 border:1px solid var(--line); display:flex; flex-direction:column; gap:7px; }
+  .sidebarcard .sctop { display:flex; justify-content:space-between; font-size:12px; }
+  .sidebarcard .sctop b { font-family:ui-monospace,Consolas,monospace; font-weight:600; font-size:11px; }
+  .sidebarcard .sctrack { height:4px; background:var(--line); border-radius:2px; overflow:hidden; }
+  .sidebarcard .scfill { height:100%; background:var(--accent); border-radius:2px; }
 
-  .card { background:var(--panel); border:1px solid var(--line); border-radius:var(--r);
-          padding:16px; margin-bottom:18px; }
-  .card h2 { font-size:13px; margin:0 0 12px; text-transform:uppercase; letter-spacing:.08em;
-             color:var(--muted); font-weight:800; }
+  .appmain { flex:1; min-width:0; display:flex; flex-direction:column; }
+  .apptopbar { height:56px; flex:none; display:flex; align-items:center; justify-content:space-between;
+               padding:0 26px; border-bottom:1px solid var(--line); gap:12px; }
+  .apptopbar .crumbs { display:flex; align-items:center; gap:8px; min-width:0; font-size:13px; }
+  .apptopbar .crumbs a { color:var(--muted); }
+  .apptopbar .crumbs a:hover { color:var(--txt); }
+  .apptopbar .crumbs .sep { color:var(--line); }
+  .apptopbar .crumbs .cur { font-size:17px; font-weight:800; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .apptopbar .actions { display:flex; gap:8px; flex:none; }
+  .srclink { display:inline-flex; align-items:center; gap:6px; padding:4px 9px; border-radius:6px;
+             font-family:ui-monospace,Consolas,monospace; font-size:11px; color:var(--muted);
+             background:var(--btn); border:1px solid var(--line); }
+  .srclink:hover { color:var(--txt); border-color:var(--muted); }
+  .srclink[hidden] { display:none; }
+  /* NOTE: named .screenbody, not .appbody - .appbody is the EDITOR's own row-flex
+     class (sidebar/workspace/right, see the comment near the top of this file);
+     reusing that name here previously clobbered the editor's 3-column layout
+     into a stacked column, since this rule came later in the stylesheet. */
+  .screenbody { flex:1; min-height:0; overflow-y:auto; padding:24px 26px 40px; display:flex; flex-direction:column; gap:22px; }
+
+  .composer { background:var(--panel); border:1px solid var(--line); border-radius:var(--r);
+              padding:18px 20px; display:none; flex-direction:column; gap:14px; }
+  .composer.on { display:flex; }
+  .composerhead { display:flex; justify-content:space-between; align-items:flex-start; gap:12px; }
+  .composerhead h2 { margin:0; font-size:14px; }
+  .composerhead p { margin:2px 0 0; font-size:12px; color:var(--muted); font-weight:400; text-transform:none; letter-spacing:0; }
   .field { display:flex; flex-direction:column; gap:5px; margin-bottom:11px; }
   .field label { font-size:11px; font-weight:700; color:var(--muted); text-transform:uppercase;
                  letter-spacing:.06em; }
   .field input[type=text], .field input[type=number] { width:100%; }
-  .fieldrow { display:flex; gap:10px; flex-wrap:wrap; }
-  .fieldrow .field { flex:1; min-width:160px; }
+  .fieldrow { display:flex; gap:10px; flex-wrap:wrap; align-items:flex-end; }
+  .fieldrow .field { flex:1; min-width:160px; margin-bottom:0; }
   .newprog { display:none; align-items:center; gap:9px; margin:4px 0 2px; font-size:12px; color:var(--muted); }
   .newprog.on { display:flex; }
   .newprog .spinner { width:14px; height:14px; border-width:2px; }
@@ -416,72 +474,171 @@
   .fetchresult.ok { background:var(--frame-fill); color:var(--frame); border:1px solid var(--frame); }
   .fetchresult.warn { background:var(--blur-fill); color:var(--blur); border:1px solid var(--blur); }
 
-  .plist { display:flex; flex-direction:column; gap:9px; }
-  .pcard { display:flex; align-items:center; gap:12px; padding:12px 14px; background:var(--panel);
-           border:1px solid var(--line); border-radius:var(--r); cursor:pointer; text-align:left; }
-  .pcard:hover { border-color:var(--accent); }
-  .pcard .pname { font-weight:800; font-size:14px; }
-  .pcard .purl { font-size:11px; color:var(--muted); overflow:hidden; text-overflow:ellipsis;
-                 white-space:nowrap; max-width:360px; }
-  .pcard .pmeta { margin-left:auto; display:flex; align-items:center; gap:10px; flex:none; }
-  .pcard .pcount { font-size:12px; color:var(--muted); white-space:nowrap; }
-  .pcard .ptrack { width:90px; height:6px; background:var(--input2); border:1px solid var(--line);
-                   border-radius:999px; overflow:hidden; flex:none; }
-  .pcard .pfill { height:100%; background:var(--ok); }
+  .sectiontitle { display:flex; align-items:center; justify-content:space-between; }
+  .sectiontitle .lbl { padding:0; }
+  .plist { display:grid; grid-template-columns:repeat(auto-fill, minmax(280px, 1fr)); gap:14px; }
+  /* min-width:0 at every nested flex/grid level between here and the long,
+     unbreakable URL text below - without it, each container's default
+     min-width:auto sizes to its content's min-content width (i.e. the full
+     un-wrapped URL), which bubbles all the way up and overflows both the
+     card and its grid track instead of actually shrinking to fit. */
+  /* align-items:stretch - .pcard is a real <button>, and the base stylesheet's
+     generic `button { align-items:center }` rule would otherwise win (nothing
+     else here set align-items), sizing .ptop/.pbottom to their own content
+     width (i.e. the full unbreakable URL) and centering that instead of
+     stretching it to the card - which is what caused the text to overflow
+     symmetrically past both edges instead of truncating. */
+  .pcard { display:flex; flex-direction:column; align-items:stretch; gap:14px; padding:16px 16px 14px; background:var(--panel);
+           border:1px solid var(--line); border-radius:var(--r); cursor:pointer; text-align:left;
+           min-width:0; overflow:hidden; }
+  .pcard:hover { border-color:var(--muted); background:var(--surface); }
+  .pcard .ptop { display:flex; gap:11px; align-items:flex-start; min-width:0; }
+  .pcard .pinitial { width:38px; height:38px; flex:none; border-radius:9px; background:var(--input2);
+                      border:1px solid var(--line); display:flex; align-items:center; justify-content:center;
+                      font-family:ui-monospace,Consolas,monospace; font-size:14px; color:var(--accent); }
+  .pcard .ptexts { display:flex; flex-direction:column; gap:3px; min-width:0; flex:1; }
+  .pcard .pname { font-weight:800; font-size:14px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .pcard .purl { font-family:ui-monospace,Consolas,monospace; font-size:11px; color:var(--muted);
+                 overflow:hidden; text-overflow:ellipsis; white-space:nowrap; display:block; }
+  .pcard .pbottom { display:flex; flex-direction:column; gap:7px; min-width:0; }
+  .pcard .ptrack { height:4px; background:var(--input2); border-radius:2px; overflow:hidden; }
+  .pcard .pfill { height:100%; background:var(--accent); }
+  .pcard .pmeta { display:flex; justify-content:space-between; gap:8px; font-size:12px; min-width:0; }
+  .pcard .pcount { color:var(--txt); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; }
+  .pcard .popened { font-family:ui-monospace,Consolas,monospace; font-size:11px; color:var(--muted); flex:none; }
   .empty { padding:30px 14px; text-align:center; color:var(--muted); font-size:13px; }
 
-  .chlist { display:flex; flex-direction:column; gap:7px; }
-  .chrow { display:flex; align-items:center; gap:11px; padding:9px 12px; background:var(--panel);
-           border:1px solid var(--line); border-radius:var(--r2); }
-  .chrow .mergeCk, .chrow .chck-spacer { flex:none; width:15px; height:15px; }
-  .chrow .chno { font-family:ui-monospace,Consolas,monospace; font-weight:800; color:var(--accent);
-                 width:44px; flex:none; }
-  .chrow .chtitle { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .stpill { font-size:10px; font-weight:800; text-transform:uppercase; letter-spacing:.05em;
-            padding:3px 8px; border-radius:999px; flex:none; border:1px solid var(--line); }
-  .stpill.st-not_started { color:var(--muted); }
-  .stpill.st-downloaded { color:var(--warn); border-color:var(--warn); }
-  .stpill.st-boxed { color:var(--accent); border-color:var(--accent); }
-  .stpill.st-rendered, .stpill.st-complete { color:var(--ok); border-color:var(--ok); }
-  .chacts { display:flex; gap:6px; flex:none; }
+  .statgrid { display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:12px; }
+  .stattile { padding:13px 15px; border-radius:var(--r2); background:var(--panel); border:1px solid var(--line);
+              display:flex; flex-direction:column; gap:5px; }
+  .stattile .stlbl { font-family:ui-monospace,Consolas,monospace; font-size:10px; letter-spacing:.1em;
+                      color:var(--muted); text-transform:uppercase; }
+  .stattile .stlbl.done { color:var(--ok); }
+  .stattile .stval { font-size:21px; font-weight:800; }
 
-  .settingswrap { display:none; flex-direction:column; gap:0; }
-  .settingswrap.on { display:flex; }
-  .sethead { display:flex; align-items:center; gap:10px; margin-bottom:14px; flex-wrap:wrap; }
-  .sethead h2 { margin:0; }
-  .sethead .savebadge { margin-left:auto; }
-  .setgrid { display:grid; grid-template-columns:repeat(auto-fit, minmax(260px, 1fr)); gap:14px; }
-  .setcol { background:var(--surface); border:1px solid var(--line); border-radius:var(--r2);
-            padding:13px; display:flex; flex-direction:column; min-width:0; }
-  .setcol h3 { margin:0 0 11px; display:flex; align-items:center; gap:8px; font-size:11px;
-               font-weight:800; text-transform:uppercase; letter-spacing:.09em; color:var(--muted); }
-  .setrow { display:flex; align-items:center; gap:9px; margin-bottom:9px; flex-wrap:wrap; }
-  .setrow .swatch { font-size:12px; color:var(--muted); flex:1; min-width:0; overflow:hidden;
-                     text-overflow:ellipsis; white-space:nowrap; }
-  .setrow .swatch:empty::before { content:'No file chosen'; opacity:.6; font-style:italic; }
+  .chaptercard { background:var(--panel); border:1px solid var(--line); border-radius:var(--r); overflow:hidden; }
+  .chaptercardhead { display:flex; align-items:center; justify-content:space-between; padding:14px 18px;
+                     border-bottom:1px solid var(--line); gap:12px; }
+  .chaptercardhead h2 { margin:0 0 3px; text-transform:none; letter-spacing:0; font-size:14px; color:var(--txt); }
+  .chaptercardhead .hint { margin:0; }
+  .chheadrow, .chrow { display:grid; grid-template-columns:38px 42px minmax(0,1fr) 160px 230px; align-items:center; gap:8px; }
+  .chheadrow { padding:7px 18px; font-family:ui-monospace,Consolas,monospace; font-size:10px; letter-spacing:.1em;
+               color:var(--muted); text-transform:uppercase; border-bottom:1px solid var(--line); }
+  .chlist { display:flex; flex-direction:column; }
+  .chrow { padding:11px 18px; border-bottom:1px solid var(--line); background:var(--panel); }
+  .chrow:last-child { border-bottom:0; }
+  .chrow:hover { background:var(--surface); }
+  .chrow .mergeCk, .chrow .chck-spacer { flex:none; width:16px; height:16px; }
+  .chrow .chck-spacer { border:1px dashed var(--line); border-radius:5px; display:block; }
+  .chrow .chno { font-family:ui-monospace,Consolas,monospace; font-weight:700; color:var(--accent); font-size:12px; }
+  .chrow .chtexts { display:flex; flex-direction:column; gap:2px; min-width:0; }
+  .chrow .chtitle { font-weight:600; font-size:13.5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .chrow .chmeta { font-family:ui-monospace,Consolas,monospace; font-size:10.5px; color:var(--muted); }
+  .chrow .chstatuswrap { display:flex; flex-direction:column; gap:6px; padding-right:14px; }
+  .chsteps { display:flex; gap:3px; }
+  .chsteps span { flex:1; height:3px; border-radius:2px; background:var(--line); }
+  .chsteps span.on { background:var(--accent); }
+  .stpill { font-size:11.5px; font-weight:600; }
+  .stpill.st-not_started { color:var(--muted); }
+  .stpill.st-downloaded, .stpill.st-boxed { color:var(--warn); }
+  .stpill.st-rendered, .stpill.st-complete { color:var(--ok); }
+  .chacts { display:flex; justify-content:flex-end; gap:7px; flex:none; }
+
+  .mergebar2 { flex:none; margin:16px 26px 22px; padding:14px 18px; border-radius:var(--r);
+               background:var(--panel); border:1px solid var(--line); display:flex; flex-direction:column;
+               gap:0; box-shadow:0 -10px 30px rgba(0,0,0,.15); }
+  .mergebar2 .mergetop { display:flex; align-items:center; justify-content:space-between; gap:16px; flex-wrap:wrap; }
+  .mergebar2 .mtexts { display:flex; flex-direction:column; gap:2px; min-width:0; }
+  .mergebar2 .mtexts b { font-size:14px; }
+  .mergebar2 .macts { display:flex; gap:8px; flex:none; }
+  .mergebar2 .progress { margin-top:10px; }
+
+  /* --- settings screen ------------------------------------------------------ */
+  .settingsbody { flex:1; min-height:0; display:flex; }
+  .settingsnav { width:190px; flex:none; padding:22px 0 0 26px; display:flex; flex-direction:column; gap:2px; overflow-y:auto; }
+  .settingsnav a { padding:7px 10px; border-radius:6px; color:var(--muted); font-size:13px; text-decoration:none; }
+  .settingsnav a:hover { color:var(--txt); }
+  .settingsnav a.on { color:var(--txt); background:var(--btn); font-weight:600; }
+  .settingsnote { margin-top:22px; margin-right:14px; padding:11px; border-radius:10px; background:var(--surface);
+                  border:1px solid var(--line); color:var(--muted); font-size:12px; line-height:1.5; }
+  .settingscontent { flex:1; min-width:0; overflow-y:auto; padding:22px 26px 40px 18px; display:flex;
+                      flex-direction:column; gap:14px; }
+  .setcard { background:var(--panel); border:1px solid var(--line); border-radius:var(--r);
+             padding:18px 20px; display:grid; grid-template-columns:200px minmax(0,1fr); gap:22px; }
+  .setcard .setlabel { display:flex; flex-direction:column; gap:4px; }
+  .setcard .setlabel b { font-size:14px; }
+  .setcard .setlabel span { color:var(--muted); font-size:12px; line-height:1.5; }
+  .setbody { display:flex; flex-direction:column; gap:10px; min-width:0; }
+  .optionlist { display:flex; flex-direction:column; gap:7px; }
+  .optbtn { display:flex; align-items:center; gap:11px; padding:10px 12px; border-radius:9px;
+            background:var(--surface); border:1px solid var(--line); cursor:pointer; font-size:13px; }
+  .optbtn:hover { border-color:var(--muted); }
+  .optbtn:has(input:checked) { background:color-mix(in srgb, var(--accent) 10%, var(--surface));
+                                border-color:var(--accent); }
+  .optbtn input[type=radio], .optbtn input[type=checkbox] { flex:none; width:15px; height:15px; margin:0; accent-color:var(--accent); }
+  .optbtn .otexts { display:flex; flex-direction:column; gap:2px; min-width:0; }
+  .optbtn .otexts b { font-weight:600; }
+  .optbtn .otexts span { font-family:ui-monospace,Consolas,monospace; font-size:11px; color:var(--muted); }
+  /* position:relative so the hidden .filehidden <input> inside (position:absolute,
+     no offsets) is contained here instead of escaping to the initial containing
+     block - unpositioned, it would render outside body's overflow:hidden box
+     entirely and inflate the whole page's (not just this panel's) scroll height. */
+  .filerow { display:flex; align-items:center; gap:10px; padding:2px 0 0 1px; flex-wrap:wrap; position:relative; }
+  .filerow .swatch { font-size:12px; color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:260px; }
+  .filerow .swatch:empty::before { content:'No file chosen'; opacity:.6; font-style:italic; }
+  .setgridpair { display:grid; grid-template-columns:1fr 1fr; gap:12px 20px; margin-top:4px; }
+  .segctl { display:inline-flex; padding:3px; border-radius:9px; background:var(--input2);
+            border:1px solid var(--line); align-self:flex-start; gap:2px; }
+  .segopt { height:28px; padding:0 14px; border-radius:6px; font-size:12px; font-weight:600;
+            display:inline-flex; align-items:center; cursor:pointer; color:var(--muted); position:relative; }
+  .segopt input { position:absolute; opacity:0; width:1px; height:1px; }
+  .segopt:has(input:checked) { background:var(--accent); color:var(--accent-ink); }
+  .togglesw { display:inline-flex; align-items:center; gap:10px; cursor:pointer;
+              color:var(--txt); font-size:13px; font-weight:600; position:relative; }
+  .togglesw .tk { width:34px; height:20px; border-radius:10px; position:relative; flex:none;
+                  background:var(--line); transition:background .15s; }
+  .togglesw .tk::after { content:''; position:absolute; top:2px; left:2px; width:16px; height:16px;
+                          border-radius:50%; background:#fff; transition:left .15s; }
+  .togglesw:has(input:checked) .tk { background:var(--accent); }
+  .togglesw:has(input:checked) .tk::after { left:16px; }
+  .setnote { display:flex; gap:10px; align-items:flex-start; padding:10px 12px; border-radius:8px;
+             background:var(--surface); border:1px solid var(--line); color:var(--muted); line-height:1.5; font-size:12px; }
+  .setnote .tag { color:var(--accent); font-family:ui-monospace,Consolas,monospace; font-size:11px; padding-top:2px; flex:none; }
+  .setmedia { display:flex; gap:16px; }
+  .setmedia .setbody { flex:1; }
+  .previewcol { width:190px; flex:none; display:flex; flex-direction:column; gap:6px; }
+  .previewcol .plbl { font-family:ui-monospace,Consolas,monospace; font-size:10px; color:var(--muted);
+                       letter-spacing:.08em; text-align:center; text-transform:uppercase; }
   .filehidden { position:absolute; width:1px; height:1px; opacity:0; pointer-events:none; }
-  .slider { display:flex; flex-direction:column; gap:3px; margin-bottom:10px; }
-  .slider .slbl { display:flex; justify-content:space-between; font-size:11px; color:var(--muted); }
+  .slider { display:flex; flex-direction:column; gap:3px; margin-bottom:0; }
+  .slider .slbl { display:flex; justify-content:space-between; font-size:12px; color:var(--muted); }
+  .slider .slbl span:last-child { font-family:ui-monospace,Consolas,monospace; color:var(--txt); }
   .slider input[type=range] { width:100%; }
   .previewbox { width:100%; aspect-ratio:16/9; background:var(--stage); border:1px solid var(--line);
-                border-radius:var(--r2); overflow:hidden; position:relative; margin-top:8px; }
+                border-radius:var(--r2); overflow:hidden; position:relative; }
   .previewbox img { width:100%; height:100%; object-fit:cover; display:block; }
   .previewbox .phmsg { position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
-                        font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.08em; }
-  .radiorow { display:flex; gap:14px; margin-bottom:9px; flex-wrap:wrap; }
-  .radiorow label { display:flex; align-items:center; gap:6px; font-size:12px; cursor:pointer; }
+                        font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.08em; text-align:center; }
   #voicePreview { width:100%; height:32px; }
-  /* autosave status badge next to "Project settings" - colored pill so the
-     save state (idle/saving/saved/failed) is visible at a glance, not just
-     a line of text easy to miss below the form. */
+  /* autosave status badge in the settings topbar - colored pill so the save
+     state (idle/saving/saved/failed) is visible at a glance, not just a line
+     of text easy to miss below the form. */
   .savebadge { display:inline-flex; align-items:center; gap:6px; font-size:11px; font-weight:700;
-               text-transform:uppercase; letter-spacing:.05em; padding:4px 10px; border-radius:999px;
-               border:1px solid var(--line); color:var(--muted); white-space:nowrap; }
+               text-transform:uppercase; letter-spacing:.05em; padding:5px 11px; border-radius:999px;
+               border:1px solid var(--line); color:var(--muted); white-space:nowrap; flex:none; }
   .savebadge::before { content:''; width:6px; height:6px; border-radius:50%; background:currentColor;
                         flex:none; }
   .savebadge.saving { color:var(--warn); border-color:var(--warn); }
-  .savebadge.ok { color:var(--ok); border-color:var(--ok); }
+  .savebadge.ok { color:var(--ok); border-color:var(--ok); background:color-mix(in srgb, var(--ok) 10%, transparent); }
   .savebadge.err { color:var(--blur); border-color:var(--blur); }
+
+  @media (max-width: 860px) {
+    .appsidebar { display:none; }
+    .setcard, .composer .fieldrow { grid-template-columns:1fr; }
+    .chheadrow { display:none; }
+    .chrow { grid-template-columns:28px 30px minmax(0,1fr); }
+    .chrow .chstatuswrap, .chrow .chacts { grid-column:1 / -1; }
+  }
 
   /* ==========================================================================
      Fullscreen strip view - "read like a webtoon": hide everything except the
@@ -565,198 +722,320 @@
 
 <!-- ==================== PROJECTS landing screen ==================== -->
 <section id="scr-projects" class="screen">
-  <div class="shell">
-    <div class="shellhead">
-      <img class="brandmark" src="/assets/ReCapper.png" alt="ReCapper" />
-      <h1>ReCapper Projects</h1>
-      <div class="spacer"></div>
-      <button id="checkUpdateBtn" class="small ghost" data-icon="refresh" data-ic-size="14" title="Pull the latest app code from git"><span>Check for updates</span></button>
-      <button id="themeBtnP" class="small ghost" data-icon="moon" data-ic-size="14"><span>Dark</span></button>
-    </div>
-    <div class="fetchresult" id="updateResult"></div>
-
-    <div class="card">
-      <h2>New project</h2>
-      <div class="fieldrow">
-        <div class="field">
-          <label>Project name</label>
-          <input id="npName" type="text" placeholder="e.g. Omniscient Reader" style="width:100%" />
+  <div class="appshell">
+    <aside class="appsidebar">
+      <div class="applogo">
+        <img src="/assets/ReCapper.png" alt="ReCapper" />
+        <div><div class="an">ReCapper</div><div class="av">v1.0.0</div></div>
+      </div>
+      <nav class="appnav">
+        <a href="javascript:void(0)" class="on" data-icon="layout" data-ic-size="14"><span>Projects</span></a>
+      </nav>
+      <div>
+        <div class="navlabel">Recent</div>
+        <div class="recentlist" id="recentList"></div>
+      </div>
+      <div class="sidebarfoot">
+        <button id="checkUpdateBtn" data-icon="refresh" data-ic-size="14" title="Pull the latest app code from git"><span>Check for updates</span></button>
+        <button id="themeBtnP" data-icon="moon" data-ic-size="14"><span>Dark</span></button>
+      </div>
+    </aside>
+    <main class="appmain">
+      <div class="apptopbar">
+        <div class="crumbs"><span class="cur">Projects</span></div>
+        <div class="actions">
+          <button id="npToggleBtn" class="primary" data-icon="plus" data-ic-size="15"><span>New project</span></button>
         </div>
-        <div class="field">
-          <label>Manhwa URL</label>
-          <div class="row2">
-            <input id="npUrl" type="text" placeholder="webtoons.com series or chapter URL" />
-            <button id="npOpenBtn" class="small ghost icon" data-icon="link" data-ic-size="14"
-                    title="Open webtoons.com to find a series" onclick="openWebtoonsHome()"></button>
+      </div>
+      <div class="screenbody">
+        <div class="fetchresult" id="updateResult"></div>
+
+        <div class="composer" id="npComposer">
+          <div class="composerhead">
+            <div><h2>New project</h2><p>Paste a series or chapter URL - chapters are detected automatically.</p></div>
+            <button type="button" id="npCloseBtn" class="small ghost icon" data-icon="x" data-ic-size="12" title="Close"></button>
+          </div>
+          <div class="fieldrow">
+            <div class="field">
+              <label>Project name</label>
+              <input id="npName" type="text" placeholder="e.g. Omniscient Reader" style="width:100%" />
+            </div>
+            <div class="field">
+              <label>Manhwa URL</label>
+              <div class="row2">
+                <input id="npUrl" type="text" placeholder="webtoons.com series or chapter URL" />
+                <button id="npOpenBtn" class="small ghost icon" data-icon="link" data-ic-size="14"
+                        title="Open webtoons.com to find a series" onclick="openWebtoonsHome()"></button>
+              </div>
+            </div>
+            <div class="field" style="flex:none">
+              <label>&nbsp;</label>
+              <button id="npCreateBtn" class="primary" data-icon="plus" data-ic-size="15"><span>Create project</span></button>
+            </div>
+          </div>
+          <div class="newprog" id="npProg"><div class="spinner"></div><span>Fetching series details…</span></div>
+          <div class="fetchresult" id="npFetchResult"></div>
+          <div class="fieldrow" id="npManualRow" style="display:none">
+            <div class="field" style="max-width:120px">
+              <label>First chapter</label>
+              <input id="npFrom" type="number" min="1" value="1" />
+            </div>
+            <div class="field" style="max-width:120px">
+              <label>Last chapter</label>
+              <input id="npTo" type="number" min="1" value="1" />
+            </div>
+            <div class="field">
+              <button id="npManualBtn" data-icon="check" data-ic-size="14"><span>Use this range</span></button>
+            </div>
           </div>
         </div>
-      </div>
-      <button id="npCreateBtn" class="primary" data-icon="plus" data-ic-size="15"><span>Create project</span></button>
-      <div class="newprog" id="npProg"><div class="spinner"></div><span>Fetching series details…</span></div>
-      <div class="fetchresult" id="npFetchResult"></div>
-      <div class="fieldrow" id="npManualRow" style="display:none; margin-top:6px">
-        <div class="field" style="max-width:120px">
-          <label>First chapter</label>
-          <input id="npFrom" type="number" min="1" value="1" />
-        </div>
-        <div class="field" style="max-width:120px">
-          <label>Last chapter</label>
-          <input id="npTo" type="number" min="1" value="1" />
-        </div>
-        <div class="field" style="justify-content:flex-end">
-          <button id="npManualBtn" data-icon="check" data-ic-size="14"><span>Use this range</span></button>
-        </div>
-      </div>
-    </div>
 
-    <div class="card">
-      <h2>Your projects</h2>
-      <div class="plist" id="pList"></div>
-    </div>
+        <div class="sectiontitle"><span class="navlabel">Your projects</span></div>
+        <div class="plist" id="pList"></div>
+      </div>
+    </main>
   </div>
 </section>
 
-<!-- ==================== PROJECT screen: chapter list + settings ==================== -->
+<!-- ==================== PROJECT screen: chapters + merge ==================== -->
 <section id="scr-project" class="screen">
-  <div class="shell">
-    <div class="shellhead">
-      <button class="small ghost back" id="backToProjectsBtn" data-icon="chevleft" data-ic-size="15"><span>Projects</span></button>
-      <h1 id="pjTitle">Project</h1>
-      <div class="spacer"></div>
-      <button id="pjRefetchBtn" class="small ghost" data-icon="refresh" data-ic-size="14" title="Re-fetch chapter list from the series URL"><span>Refetch</span></button>
-      <button id="pjSettingsBtn" class="small" data-icon="settings" data-ic-size="14"><span>Settings</span></button>
-    </div>
+  <div class="appshell">
+    <aside class="appsidebar">
+      <div class="applogo">
+        <img src="/assets/ReCapper.png" alt="ReCapper" />
+        <div><div class="an">ReCapper</div><div class="av">v1.0.0</div></div>
+      </div>
+      <nav class="appnav">
+        <a href="javascript:void(0)" id="backToProjectsBtn" data-icon="chevleft" data-ic-size="14"><span>All projects</span></a>
+      </nav>
+      <div>
+        <div class="navtitle" id="pjSideTitle"></div>
+        <nav class="appnav">
+          <a href="javascript:void(0)" id="pjChaptersNav" class="on" data-icon="film" data-ic-size="14"><span>Chapters</span><span class="navcount" id="pjChapNavCount"></span></a>
+          <a href="javascript:void(0)" id="pjSettingsBtn" data-icon="settings" data-ic-size="14"><span>Project settings</span></a>
+        </nav>
+      </div>
+      <div class="sidebarcard">
+        <div class="sctop"><span class="hint">Progress</span><b id="pjSideProgress"></b></div>
+        <div class="sctrack"><div class="scfill" id="pjSideProgressFill"></div></div>
+      </div>
+    </aside>
+    <main class="appmain">
+      <div class="apptopbar">
+        <div class="crumbs">
+          <a href="javascript:void(0)" id="pjCrumbProjects">Projects</a><span class="sep">/</span>
+          <span class="cur" id="pjTitle">Project</span>
+          <a href="javascript:void(0)" id="pjSourceLink" class="srclink" data-icon="link" data-ic-size="10" title="Open source in browser" hidden><span id="pjSourceLabel"></span></a>
+        </div>
+        <div class="actions">
+          <button id="pjRefetchBtn" class="small ghost" data-icon="refresh" data-ic-size="14" title="Re-fetch chapter list from the series URL"><span>Refetch</span></button>
+        </div>
+      </div>
+      <div class="screenbody">
+        <div class="statgrid">
+          <div class="stattile"><span class="stlbl">Not started</span><span class="stval" id="stNotStarted">0</span></div>
+          <div class="stattile"><span class="stlbl">Downloaded &middot; in editor</span><span class="stval" id="stInProgress">0</span></div>
+          <div class="stattile"><span class="stlbl done">Complete</span><span class="stval" id="stComplete">0</span></div>
+        </div>
+        <div class="chaptercard">
+          <div class="chaptercardhead">
+            <div><h2>Chapters</h2><p class="hint">Each chapter goes Download &rarr; Edit &rarr; Complete. Check the box on any complete chapter to select it for merging.</p></div>
+            <button id="selectAllBtn" class="small ghost" data-icon="checkbox" data-ic-size="13"><span>Select all complete</span></button>
+          </div>
+          <div class="chheadrow"><span></span><span>#</span><span>Title</span><span>Status</span><span style="text-align:right">Actions</span></div>
+          <div class="chlist" id="chList"></div>
+        </div>
+      </div>
+      <div class="mergebar2" id="mergeCard">
+        <div class="mergetop">
+          <div class="mtexts">
+            <b>Merge complete chapters</b>
+            <span class="hint" id="mergeSelHint">No chapters selected.</span>
+          </div>
+          <div class="macts">
+            <button id="mergeCancelBtn" class="small danger" data-icon="stop" data-ic-size="14" disabled title="Stop the running merge"><span>Stop</span></button>
+            <button id="mergeBtn" class="primary" data-icon="film" data-ic-size="14" disabled><span>Merge selected videos</span></button>
+          </div>
+        </div>
+        <div class="progress" id="mergeProgress"><div class="bar" id="mergeBar"></div></div>
+        <div class="genlog" id="mergeStatus"></div>
+        <div class="result" id="mergeResult"></div>
+        <div id="pastMerges"></div>
+      </div>
+    </main>
+  </div>
+</section>
 
-    <div class="card settingswrap" id="pjSettings">
-      <div class="sethead">
-        <h2>Project settings</h2>
+<!-- ==================== PROJECT SETTINGS screen ==================== -->
+<section id="scr-settings" class="screen">
+  <div class="appshell">
+    <aside class="appsidebar">
+      <div class="applogo">
+        <img src="/assets/ReCapper.png" alt="ReCapper" />
+        <div><div class="an">ReCapper</div><div class="av">v1.0.0</div></div>
+      </div>
+      <nav class="appnav">
+        <a href="javascript:void(0)" id="stAllProjectsBtn" data-icon="chevleft" data-ic-size="14"><span>All projects</span></a>
+      </nav>
+      <div>
+        <div class="navtitle" id="stSideTitle"></div>
+        <nav class="appnav">
+          <a href="javascript:void(0)" id="stChaptersNav" data-icon="film" data-ic-size="14"><span>Chapters</span><span class="navcount" id="stChapNavCount"></span></a>
+          <a href="javascript:void(0)" class="on" data-icon="settings" data-ic-size="14"><span>Project settings</span></a>
+        </nav>
+      </div>
+    </aside>
+    <main class="appmain">
+      <div class="apptopbar">
+        <div class="crumbs">
+          <a href="javascript:void(0)" id="stCrumbProjects">Projects</a><span class="sep">/</span>
+          <a href="javascript:void(0)" id="stCrumbProject">Project</a><span class="sep">/</span>
+          <span class="cur">Settings</span>
+        </div>
         <span class="savebadge" id="pjSettingsSaved">Autosaved</span>
       </div>
-      <div class="setgrid">
-        <div class="setcol">
-          <h3 data-icon="music" data-ic-size="13">Background music</h3>
-          <div class="radiorow">
-            <label><input type="radio" name="musicMode" value="default" /> Default track (assets/music)</label>
-            <label><input type="radio" name="musicMode" value="file" /> Custom file</label>
-          </div>
-          <div class="setrow">
-            <button type="button" id="musicBrowseBtn" class="small ghost" data-icon="folder" data-ic-size="14"><span>Browse…</span></button>
-            <span class="swatch" id="musicName"></span>
-            <input id="musicFile" type="file" accept="audio/*" class="filehidden" tabindex="-1" />
-          </div>
-        </div>
+      <div class="settingsbody">
+        <nav class="settingsnav">
+          <span class="navlabel">Output</span>
+          <a href="#s-music" class="on">Background music</a>
+          <a href="#s-voice">Narration voice</a>
+          <a href="#s-watermark">Watermark</a>
+          <span class="navlabel" style="margin-top:14px">Visuals</span>
+          <a href="#s-bg">Video background</a>
+          <a href="#s-anim">Frame animation</a>
+          <div class="settingsnote">Changes apply to every chapter rendered in this project. Already-rendered chapters need a re-render.</div>
+        </nav>
+        <div class="settingscontent">
 
-        <div class="setcol">
-          <h3 data-icon="audio" data-ic-size="13">Narration voice</h3>
-          <div class="radiorow">
-            <label><input type="radio" name="voiceMode" value="default" /> Default voice (assets/voice_ref.wav)</label>
-            <label><input type="radio" name="voiceMode" value="file" /> Custom voice sample</label>
+          <div class="setcard" id="s-music">
+            <div class="setlabel"><b>Background music</b><span>Plays under the narration for the whole video.</span></div>
+            <div class="setbody">
+              <div class="optionlist">
+                <label class="optbtn"><input type="radio" name="musicMode" value="default" /><span class="otexts"><b>Default track</b><span>assets/music</span></span></label>
+                <label class="optbtn"><input type="radio" name="musicMode" value="file" /><span class="otexts"><b>Custom file</b><span>Upload your own audio</span></span></label>
+              </div>
+              <div class="filerow">
+                <button type="button" id="musicBrowseBtn" class="small ghost" data-icon="folder" data-ic-size="14"><span>Browse…</span></button>
+                <span class="swatch" id="musicName"></span>
+                <input id="musicFile" type="file" accept="audio/*" class="filehidden" tabindex="-1" />
+              </div>
+            </div>
           </div>
-          <div class="setrow">
-            <button type="button" id="voiceBrowseBtn" class="small ghost" data-icon="folder" data-ic-size="14"><span>Browse…</span></button>
-            <span class="swatch" id="voiceName"></span>
-            <input id="voiceFile" type="file" accept=".wav,audio/wav" class="filehidden" tabindex="-1" />
-          </div>
-          <div class="setrow">
-            <audio id="voicePreview" controls hidden></audio>
-          </div>
-          <div class="hint" id="voiceActiveHint"></div>
-          <div class="hint">Reuses the default's float32/mono/24kHz preprocessing for Chatterbox cloning. After changing this, use <b>Re-render voice</b> in the chapter editor to regenerate narration without redoing frame selection.</div>
-        </div>
 
-        <div class="setcol">
-          <h3 data-icon="droplet" data-ic-size="13">Watermark</h3>
-          <div class="radiorow">
-            <label><input type="checkbox" id="wmEnabled" /> Enabled (tiled across the whole video)</label>
+          <div class="setcard" id="s-voice">
+            <div class="setlabel"><b>Narration voice</b><span>The voice cloned for narration. Samples are converted to 24kHz mono automatically.</span></div>
+            <div class="setbody">
+              <div class="optionlist">
+                <label class="optbtn"><input type="radio" name="voiceMode" value="default" /><span class="otexts"><b>Default voice</b><span>assets/voice_ref.wav</span></span></label>
+                <label class="optbtn"><input type="radio" name="voiceMode" value="file" /><span class="otexts"><b>Custom voice sample</b><span>10-30s of clean speech works best</span></span></label>
+              </div>
+              <div class="filerow">
+                <button type="button" id="voiceBrowseBtn" class="small ghost" data-icon="folder" data-ic-size="14"><span>Browse…</span></button>
+                <span class="swatch" id="voiceName"></span>
+                <input id="voiceFile" type="file" accept=".wav,audio/wav" class="filehidden" tabindex="-1" />
+              </div>
+              <audio id="voicePreview" controls hidden></audio>
+              <div class="hint" id="voiceActiveHint"></div>
+              <div class="setnote"><span class="tag">NOTE</span><span>Changing the voice doesn't touch your frame selection. Use <b>Re-render voice</b> in the chapter editor to regenerate narration only.</span></div>
+            </div>
           </div>
-          <div class="radiorow">
-            <label><input type="radio" name="wmType" value="text" /> Text</label>
-            <label><input type="radio" name="wmType" value="image" /> Logo image</label>
-          </div>
-          <div class="setrow">
-            <input id="wmText" type="text" placeholder="watermark text" style="flex:1" />
-          </div>
-          <div class="setrow">
-            <button type="button" id="wmBrowseBtn" class="small ghost" data-icon="folder" data-ic-size="14"><span>Browse…</span></button>
-            <span class="swatch" id="wmFileName"></span>
-            <input id="wmFile" type="file" accept="image/*" class="filehidden" tabindex="-1" />
-          </div>
-          <div class="slider"><div class="slbl"><span>Opacity</span><span id="wmOpacityLbl"></span></div>
-            <input id="wmOpacity" type="range" min="2" max="50" value="12" /></div>
-          <div class="slider"><div class="slbl"><span>Size</span><span id="wmSizeLbl"></span></div>
-            <input id="wmSize" type="range" min="4" max="40" value="12" /></div>
-          <div class="slider"><div class="slbl"><span>Spacing</span><span id="wmSpacingLbl"></span></div>
-            <input id="wmSpacing" type="range" min="20" max="300" value="100" /></div>
-          <div class="slider"><div class="slbl"><span>Angle</span><span id="wmAngleLbl"></span></div>
-            <input id="wmAngle" type="range" min="-90" max="90" value="-30" /></div>
-          <div class="previewbox" id="wmPreviewBox"><span class="phmsg">Preview</span></div>
-        </div>
 
-        <div class="setcol">
-          <h3 data-icon="image" data-ic-size="13">Video background</h3>
-          <div class="radiorow">
-            <label><input type="radio" name="bgMode" value="blur" /> Blurred crop (default)</label>
-            <label><input type="radio" name="bgMode" value="image" /> Custom image</label>
-            <label><input type="radio" name="bgMode" value="video" /> Custom video (looped)</label>
+          <div class="setcard" id="s-watermark">
+            <div class="setlabel">
+              <b>Watermark</b><span>Tiled across the whole video.</span>
+              <label class="togglesw" id="wmEnabledWrap" style="margin-top:6px"><input type="checkbox" id="wmEnabled" style="position:absolute;opacity:0;width:1px;height:1px" /><span class="tk"></span>Enabled</label>
+            </div>
+            <div class="setbody">
+              <div class="setmedia">
+                <div class="setbody">
+                  <div class="segctl">
+                    <label class="segopt"><input type="radio" name="wmType" value="text" /><span>Text</span></label>
+                    <label class="segopt"><input type="radio" name="wmType" value="image" /><span>Logo image</span></label>
+                  </div>
+                  <input id="wmText" type="text" placeholder="watermark text" />
+                  <div class="filerow">
+                    <button type="button" id="wmBrowseBtn" class="small ghost" data-icon="folder" data-ic-size="14"><span>Browse…</span></button>
+                    <span class="swatch" id="wmFileName"></span>
+                    <input id="wmFile" type="file" accept="image/*" class="filehidden" tabindex="-1" />
+                  </div>
+                  <div class="setgridpair">
+                    <label class="slider"><div class="slbl"><span>Opacity</span><span id="wmOpacityLbl"></span></div>
+                      <input id="wmOpacity" type="range" min="2" max="50" value="12" /></label>
+                    <label class="slider"><div class="slbl"><span>Size</span><span id="wmSizeLbl"></span></div>
+                      <input id="wmSize" type="range" min="4" max="40" value="12" /></label>
+                    <label class="slider"><div class="slbl"><span>Spacing</span><span id="wmSpacingLbl"></span></div>
+                      <input id="wmSpacing" type="range" min="20" max="300" value="100" /></label>
+                    <label class="slider"><div class="slbl"><span>Angle</span><span id="wmAngleLbl"></span></div>
+                      <input id="wmAngle" type="range" min="-90" max="90" value="-30" /></label>
+                  </div>
+                </div>
+                <div class="previewcol">
+                  <div class="previewbox" id="wmPreviewBox"><span class="phmsg">Preview</span></div>
+                  <span class="plbl">Live preview</span>
+                </div>
+              </div>
+            </div>
           </div>
-          <div class="setrow">
-            <button type="button" id="bgBrowseBtn" class="small ghost" data-icon="folder" data-ic-size="14"><span>Browse…</span></button>
-            <span class="swatch" id="bgFileName"></span>
-            <input id="bgFile" type="file" accept="image/*,video/*" class="filehidden" tabindex="-1" />
-          </div>
-          <div class="slider"><div class="slbl"><span>Dim</span><span id="bgDimLbl"></span></div>
-            <input id="bgDim" type="range" min="10" max="100" value="85" /></div>
-          <div class="hint" id="bgVideoHint" hidden>The video plays looped, full-screen behind the frames, for the whole render.</div>
-          <div class="previewbox" id="bgPreviewBox"><span class="phmsg">Preview</span></div>
-        </div>
 
-        <div class="setcol">
-          <h3 data-icon="film" data-ic-size="13">Frame Animation</h3>
-          <div class="hint" style="margin-bottom:2px">How every frame enters/exits in the rendered video.</div>
-          <div class="radiorow">
-            <label><input type="radio" name="animStyle" value="cut" /> Cut</label>
-            <label><input type="radio" name="animStyle" value="fade" /> Fade</label>
-            <label><input type="radio" name="animStyle" value="slide" /> Slide</label>
-            <label><input type="radio" name="animStyle" value="zoom" /> Zoom</label>
+          <div class="setcard" id="s-bg">
+            <div class="setlabel"><b>Video background</b><span>What fills the frame behind tall comic panels.</span></div>
+            <div class="setbody">
+              <div class="setmedia">
+                <div class="setbody">
+                  <div class="optionlist">
+                    <label class="optbtn"><input type="radio" name="bgMode" value="blur" /><span class="otexts"><b>Blurred crop</b><span>Default</span></span></label>
+                    <label class="optbtn"><input type="radio" name="bgMode" value="image" /><span class="otexts"><b>Custom image</b><span>Upload a still image</span></span></label>
+                    <label class="optbtn"><input type="radio" name="bgMode" value="video" /><span class="otexts"><b>Custom video</b><span>Looped, full-screen</span></span></label>
+                  </div>
+                  <div class="filerow">
+                    <button type="button" id="bgBrowseBtn" class="small ghost" data-icon="folder" data-ic-size="14"><span>Browse…</span></button>
+                    <span class="swatch" id="bgFileName"></span>
+                    <input id="bgFile" type="file" accept="image/*,video/*" class="filehidden" tabindex="-1" />
+                  </div>
+                  <label class="slider"><div class="slbl"><span>Dim background</span><span id="bgDimLbl"></span></div>
+                    <input id="bgDim" type="range" min="10" max="100" value="85" /></label>
+                  <div class="hint" id="bgVideoHint" hidden>The video plays looped, full-screen behind the frames, for the whole render.</div>
+                </div>
+                <div class="previewcol">
+                  <div class="previewbox" id="bgPreviewBox"><span class="phmsg">Preview</span></div>
+                  <span class="plbl">Live preview</span>
+                </div>
+              </div>
+            </div>
           </div>
-          <div class="sidefield">
-            <label class="lbl">Slide direction</label>
-            <select id="animDirection">
-              <option value="left">Left</option>
-              <option value="right">Right</option>
-              <option value="up">Up</option>
-              <option value="down">Down</option>
-            </select>
+
+          <div class="setcard" id="s-anim">
+            <div class="setlabel"><b>Frame animation</b><span>How each panel enters and exits. Applies to every transition in this project.</span></div>
+            <div class="setbody">
+              <div class="segctl">
+                <label class="segopt"><input type="radio" name="animStyle" value="cut" /><span>Cut</span></label>
+                <label class="segopt"><input type="radio" name="animStyle" value="fade" /><span>Fade</span></label>
+                <label class="segopt"><input type="radio" name="animStyle" value="slide" /><span>Slide</span></label>
+                <label class="segopt"><input type="radio" name="animStyle" value="zoom" /><span>Zoom</span></label>
+              </div>
+              <div class="hint">Applies to every frame transition in this project's renders. "Cut" is an instant switch, no animation.</div>
+              <div class="setgridpair">
+                <label class="field" style="margin:0"><span class="lbl" style="text-transform:none;letter-spacing:0;font-weight:400;color:var(--muted)">Slide direction</span>
+                  <select id="animDirection">
+                    <option value="left">From left</option>
+                    <option value="right">From right</option>
+                    <option value="up">From bottom</option>
+                    <option value="down">From top</option>
+                  </select>
+                </label>
+                <label class="slider"><div class="slbl"><span>Duration</span><span id="animDurationLbl"></span></div>
+                  <input id="animDuration" type="range" min="5" max="100" value="35" /></label>
+              </div>
+              <div style="border-top:1px solid var(--line);padding-top:12px;display:flex;flex-direction:column;gap:8px">
+                <label class="togglesw" id="animKenBurnsWrap"><input type="checkbox" id="animKenBurns" style="position:absolute;opacity:0;width:1px;height:1px" /><span class="tk"></span>Alternating Ken Burns</label>
+                <span class="hint">Odd frames slowly zoom IN, even frames zoom OUT, alternating - independent of the transition above. <b>Slows rendering noticeably</b>: ffmpeg computes a moving crop for every output frame.</span>
+              </div>
+            </div>
           </div>
-          <div class="slider"><div class="slbl"><span>Duration</span><span id="animDurationLbl"></span></div>
-            <input id="animDuration" type="range" min="5" max="100" value="35" /></div>
-          <div class="hint">Applies to every frame transition in this project's renders. "Cut" is an instant switch, no animation.</div>
-          <div class="radiorow" style="margin-top:8px">
-            <label><input type="checkbox" id="animKenBurns" /> Alternating Ken Burns</label>
-          </div>
-          <div class="hint">Odd frames slowly zoom IN, even frames zoom OUT, alternating - independent of the transition above. Off by default: it noticeably slows rendering, since ffmpeg has to compute a moving crop for every output frame instead of just looping one still.</div>
+
         </div>
       </div>
-    </div>
-
-    <div class="card">
-      <h2>Chapters</h2>
-      <div class="hint" style="margin-bottom:9px">Check the box on any <b>complete</b> chapter to select it for merging.</div>
-      <div class="chlist" id="chList"></div>
-    </div>
-
-    <div class="card" id="mergeCard">
-      <h2>Merge complete chapters</h2>
-      <div class="rmeta" style="margin:0 0 9px">
-        <span class="hint" id="mergeSelHint">No chapters selected.</span>
-        <button id="mergeBtn" class="primary" data-icon="film" data-ic-size="14" disabled style="margin-left:auto"><span>Merge selected videos</span></button>
-        <button id="mergeCancelBtn" class="small danger" data-icon="stop" data-ic-size="14" disabled title="Stop the running merge"><span>Stop</span></button>
-      </div>
-      <div class="progress" id="mergeProgress"><div class="bar" id="mergeBar"></div></div>
-      <div class="genlog" id="mergeStatus"></div>
-      <div class="result" id="mergeResult"></div>
-      <div id="pastMerges"></div>
-    </div>
+    </main>
   </div>
 </section>
 
@@ -2378,7 +2657,7 @@ let CURRENT_PROJECT = null;   // the project object backing the open Project scr
 
 function showScreen(name) {
   SCREEN = name;
-  ['projects', 'project', 'editor'].forEach(n => {
+  ['projects', 'project', 'settings', 'editor'].forEach(n => {
     const el = $('scr-' + n);
     if (el) el.classList.toggle('on', n === name);
   });
@@ -2426,44 +2705,84 @@ function navTo(params, push) {
   const qs = new URLSearchParams();
   if (params.project) qs.set('project', params.project);
   if (params.chapter) qs.set('chapter', params.chapter);
+  if (params.view) qs.set('view', params.view);
   const url = location.pathname + (qs.toString() ? '?' + qs.toString() : '');
   if (push !== false) history.pushState(params, '', url);
   dispatchRoute(params);
 }
 function dispatchRoute(params) {
   if (params.project && params.chapter) openChapterEditor(params.project, params.chapter);
+  else if (params.project && params.view === 'settings') openSettingsScreen(params.project);
   else if (params.project) openProjectScreen(params.project);
   else { showScreen('projects'); renderProjectsList(); }
 }
 function route() {
   const qs = new URLSearchParams(location.search);
-  dispatchRoute({ project: qs.get('project'), chapter: qs.get('chapter') });
+  dispatchRoute({ project: qs.get('project'), chapter: qs.get('chapter'), view: qs.get('view') });
 }
 window.addEventListener('popstate', () => route());
 
 // --- Projects landing screen -------------------------------------------------
+// Coarse "Nh ago" / "N days ago" label from an ISO updated_at timestamp - purely
+// cosmetic (sidebar "recent" list + project card), never used for any logic.
+function timeAgo(iso) {
+  if (!iso) return '';
+  const ms = Date.now() - new Date(iso).getTime();
+  if (!isFinite(ms) || ms < 0) return '';
+  const m = Math.round(ms / 60000);
+  if (m < 1) return 'just now';
+  if (m < 60) return `${m}m ago`;
+  const h = Math.round(m / 60);
+  if (h < 24) return `${h}h ago`;
+  const dd = Math.round(h / 24);
+  return `${dd}d ago`;
+}
+
 async function renderProjectsList() {
   const list = $('pList');
+  const recent = $('recentList');
   list.innerHTML = '<div class="empty">Loading…</div>';
   try {
     const d = await (await fetch('/api/projects')).json();
     const items = d.projects || [];
-    if (!items.length) { list.innerHTML = '<div class="empty">No projects yet - create one above.</div>'; return; }
+    if (!items.length) {
+      list.innerHTML = '<div class="empty">No projects yet - click "New project" above.</div>';
+      recent.innerHTML = '';
+      return;
+    }
     list.innerHTML = '';
     items.forEach(p => {
       const done = (p.counts && ((p.counts.rendered || 0) + (p.counts.complete || 0))) || 0;
       const pct = p.chapters ? Math.round(100 * done / p.chapters) : 0;
       const card = document.createElement('button');
       card.className = 'pcard';
-      card.innerHTML = '<div><div class="pname"></div><div class="purl"></div></div>' +
+      card.innerHTML =
+        `<div class="ptop"><span class="pinitial"></span>` +
+        `<div class="ptexts"><span class="pname"></span><span class="purl"></span></div></div>` +
+        `<div class="pbottom"><span class="ptrack"><span class="pfill" style="width:${pct}%"></span></span>` +
         `<div class="pmeta"><span class="pcount">${done}/${p.chapters} done</span>` +
-        `<span class="ptrack"><span class="pfill" style="width:${pct}%"></span></span></div>`;
+        `<span class="popened">${escHtml(timeAgo(p.updated_at))}</span></div></div>`;
+      card.querySelector('.pinitial').textContent = (p.name || '?').trim().charAt(0).toUpperCase();
       card.querySelector('.pname').textContent = p.name;
       card.querySelector('.purl').textContent = p.url || '(no URL set)';
       card.onclick = () => navTo({ project: p.slug });
       list.appendChild(card);
     });
-  } catch (e) { list.innerHTML = '<div class="empty">Could not load projects.</div>'; }
+    recent.innerHTML = '';
+    items.slice(0, 4).forEach(p => {
+      const done = (p.counts && ((p.counts.rendered || 0) + (p.counts.complete || 0))) || 0;
+      const pct = p.chapters ? Math.round(100 * done / p.chapters) : 0;
+      const item = document.createElement('button');
+      item.className = 'recentitem';
+      item.innerHTML = `<span class="rn"></span><span class="recenttrack"><span class="recentfill" style="width:${pct}%"></span></span>`;
+      item.querySelector('.rn').textContent = p.name;
+      item.onclick = () => navTo({ project: p.slug });
+      recent.appendChild(item);
+    });
+  } catch (e) {
+    list.innerHTML = '<div class="empty">Could not load projects.</div>';
+    recent.innerHTML = '';
+  }
 }
 
 async function createProject() {
@@ -2510,21 +2829,48 @@ async function useManualRange() {
   finally { btnBusy($('npManualBtn'), false); }
 }
 
-// --- Project screen: chapter list + settings ---------------------------------
+// --- Project screen: chapters -------------------------------------------------
+// Shared by the project (chapters) screen and the settings screen - both show
+// the same sidebar project title + "Chapters" nav count, and both need
+// CURRENT_PROJECT loaded (fetching it again is cheap and keeps each screen
+// independently deep-linkable / refreshable via the URL).
+async function loadCurrentProject(slug) {
+  const d = await (await fetch(`/api/projects/${encodeURIComponent(slug)}`)).json();
+  if (!d.project) throw new Error(d.error || 'not found');
+  CURRENT_PROJECT = d.project;
+  return CURRENT_PROJECT;
+}
+
+function paintProjectChrome() {
+  const p = CURRENT_PROJECT;
+  const chapters = p.chapters || [];
+  const done = chapters.filter(c => c.status === 'complete').length;
+  ['pjSideTitle', 'stSideTitle'].forEach(id => { const el = $(id); if (el) el.textContent = p.name; });
+  ['pjChapNavCount', 'stChapNavCount'].forEach(id => { const el = $(id); if (el) el.textContent = String(chapters.length); });
+  if ($('pjSideProgress')) $('pjSideProgress').textContent = `${done}/${chapters.length}`;
+  if ($('pjSideProgressFill')) $('pjSideProgressFill').style.width = (chapters.length ? Math.round(100 * done / chapters.length) : 0) + '%';
+  const src = $('pjSourceLink');
+  if (src) {
+    if (p.url) { src.hidden = false; $('pjSourceLabel').textContent = shortHost(p.url); src.onclick = () => window.open(p.url, '_blank'); }
+    else src.hidden = true;
+  }
+}
+
+function shortHost(url) {
+  try { return new URL(url).hostname.replace(/^www\./, ''); } catch (_) { return url; }
+}
+
 async function openProjectScreen(slug) {
   showScreen('project');
   $('pjTitle').textContent = 'Loading…';
   $('chList').innerHTML = '<div class="empty">Loading…</div>';
-  $('pjSettings').classList.remove('on');
   MERGE_SELECTION.clear();
   $('mergeStatus').textContent = ''; $('mergeResult').innerHTML = ''; $('pastMerges').innerHTML = '';
   try {
-    const d = await (await fetch(`/api/projects/${encodeURIComponent(slug)}`)).json();
-    if (!d.project) throw new Error(d.error || 'not found');
-    CURRENT_PROJECT = d.project;
+    await loadCurrentProject(slug);
     $('pjTitle').textContent = CURRENT_PROJECT.name;
+    paintProjectChrome();
     renderChapterList();
-    fillSettingsForm();
     refreshPastMerges();
   } catch (e) {
     setStatus('Open project error: ' + e.message, true);
@@ -2532,7 +2878,24 @@ async function openProjectScreen(slug) {
   }
 }
 
+// --- Project settings screen ---------------------------------------------------
+async function openSettingsScreen(slug) {
+  showScreen('settings');
+  try {
+    if (!CURRENT_PROJECT || CURRENT_PROJECT.slug !== slug) await loadCurrentProject(slug);
+    $('stCrumbProject').textContent = CURRENT_PROJECT.name;
+    paintProjectChrome();
+    fillSettingsForm();
+  } catch (e) {
+    setStatus('Open settings error: ' + e.message, true);
+  }
+}
+
 let MERGE_SELECTION = new Set();   // chapter numbers currently checked for merging
+
+// rank used only for the row's 3-segment "Download -> Edit -> Complete" mini
+// progress bar - purely cosmetic, mirrors projects.py's STATUS_RANK ordering.
+const CH_RANK = { not_started: 0, downloaded: 1, boxed: 2, rendered: 3, complete: 4 };
 
 function renderChapterList() {
   const list = $('chList');
@@ -2546,30 +2909,41 @@ function renderChapterList() {
   }
   list.innerHTML = '';
   chapters.forEach(ch => {
+    const rank = CH_RANK[ch.status] ?? 0;
     const row = document.createElement('div');
     row.className = 'chrow';
-    const primary = ch.status === 'not_started'
-      ? '<button class="small primary" data-icon="download" data-ic-size="13"><span>Download</span></button>'
-      : '<button class="small" data-icon="crop" data-ic-size="13"><span>Open editor</span></button>';
+    const primaryLabel = ch.status === 'not_started' ? 'Download' : (ch.status === 'complete' ? 'Re-open editor' : 'Open editor');
+    const primaryIcon = ch.status === 'not_started' ? 'download' : 'crop';
+    const primary = `<button class="small ${ch.status === 'not_started' ? 'primary' : ''}" data-icon="${primaryIcon}" data-ic-size="13"><span>${primaryLabel}</span></button>`;
     const markBtn = ch.status === 'complete'
       ? '<button class="small ghost" data-icon="refresh" data-ic-size="13" title="Reset to rendered"><span>Reset</span></button>'
-      : '<button class="small ghost" data-icon="check" data-ic-size="13" title="Mark complete"><span>Complete</span></button>';
+      : '<button class="small ghost" data-icon="check" data-ic-size="13" title="Mark complete"><span>Mark complete</span></button>';
+    const previewBtn = ch.status === 'complete'
+      ? '<button class="small ghost" data-icon="play" data-ic-size="13" title="Play the rendered recap"><span>Preview</span></button>' : '';
     const checkbox = ch.status === 'complete'
       ? `<input type="checkbox" class="mergeCk" title="Select for merging" ${MERGE_SELECTION.has(ch.n) ? 'checked' : ''} />`
       : `<span class="chck-spacer"></span>`;
-    row.innerHTML = `${checkbox}<span class="chno">#${ch.n}</span><span class="chtitle"></span>` +
-      `<span class="stpill st-${ch.status}"></span><div class="chacts"></div>`;
+    row.innerHTML = `${checkbox}<span class="chno">#${ch.n}</span>` +
+      `<span class="chtexts"><span class="chtitle"></span><span class="chmeta"></span></span>` +
+      `<div class="chstatuswrap"><span class="stpill st-${ch.status}"></span>` +
+      `<div class="chsteps"><span class="${rank >= 1 ? 'on' : ''}"></span><span class="${rank >= 2 ? 'on' : ''}"></span><span class="${rank >= 4 ? 'on' : ''}"></span></div></div>` +
+      `<div class="chacts">${primary}${markBtn}${previewBtn}</div>`;
     row.querySelector('.chtitle').textContent = ch.title;
+    row.querySelector('.chmeta').textContent = ch.updated_at ? `Updated ${timeAgo(ch.updated_at)}` : 'Not downloaded';
     row.querySelector('.stpill').textContent = ch.status.replace('_', ' ');
     const acts = row.querySelector('.chacts');
-    acts.insertAdjacentHTML('beforeend', primary);
-    acts.insertAdjacentHTML('beforeend', markBtn);
     paintIcons(acts);
     acts.children[0].onclick = () => {
       if (ch.status === 'not_started') openChapterEditor(CURRENT_PROJECT.slug, ch.n, { autoDownload:true, url: CURRENT_PROJECT.url });
       else navTo({ project: CURRENT_PROJECT.slug, chapter: ch.n });
     };
     acts.children[1].onclick = () => toggleComplete(ch);
+    if (ch.status === 'complete') {
+      acts.children[2].onclick = () => {
+        const chapterId = `${CURRENT_PROJECT.slug}_ch${ch.n}`;
+        window.open(`/output/${encodeURIComponent(chapterId)}/recap.mp4?project=${encodeURIComponent(CURRENT_PROJECT.slug)}&ch_no=${ch.n}`, '_blank');
+      };
+    }
     const ck = row.querySelector('.mergeCk');
     if (ck) ck.onchange = () => {
       if (ck.checked) MERGE_SELECTION.add(ch.n); else MERGE_SELECTION.delete(ch.n);
@@ -2577,7 +2951,26 @@ function renderChapterList() {
     };
     list.appendChild(row);
   });
+  const counts = { not_started: 0, in_progress: 0, complete: 0 };
+  chapters.forEach(c => {
+    if (c.status === 'not_started') counts.not_started++;
+    else if (c.status === 'complete') counts.complete++;
+    else counts.in_progress++;
+  });
+  if ($('stNotStarted')) $('stNotStarted').textContent = String(counts.not_started);
+  if ($('stInProgress')) $('stInProgress').textContent = String(counts.in_progress);
+  if ($('stComplete')) $('stComplete').textContent = String(counts.complete);
+  paintProjectChrome();
   updateMergeBar();
+}
+
+function selectAllComplete() {
+  const chapters = CURRENT_PROJECT.chapters || [];
+  const completeNs = chapters.filter(c => c.status === 'complete').map(c => c.n);
+  const allSelected = completeNs.length > 0 && completeNs.every(n => MERGE_SELECTION.has(n));
+  if (allSelected) MERGE_SELECTION.clear();
+  else completeNs.forEach(n => MERGE_SELECTION.add(n));
+  renderChapterList();
 }
 
 function updateMergeBar() {
@@ -3083,12 +3476,21 @@ $('npCreateBtn').onclick = createProject;
 $('npManualBtn').onclick = useManualRange;
 $('checkUpdateBtn').onclick = checkForUpdate;
 $('themeBtnP').onclick = toggleTheme;
+$('npToggleBtn').onclick = () => $('npComposer').classList.toggle('on');
+$('npCloseBtn').onclick = () => $('npComposer').classList.remove('on');
 $('backToProjectsBtn').onclick = () => navTo({});
 $('backToProjectBtn').onclick = backToProject;
 $('pjRefetchBtn').onclick = refetchChapters;
 $('mergeBtn').onclick = startMerge;
 $('mergeCancelBtn').onclick = cancelMerge;
-$('pjSettingsBtn').onclick = () => $('pjSettings').classList.toggle('on');
+$('selectAllBtn').onclick = selectAllComplete;
+$('pjCrumbProjects').onclick = () => navTo({});
+$('pjSettingsBtn').onclick = () => navTo({ project: CURRENT_PROJECT.slug, view: 'settings' });
+$('pjChaptersNav').onclick = () => navTo({ project: CURRENT_PROJECT.slug });
+$('stAllProjectsBtn').onclick = () => navTo({});
+$('stCrumbProjects').onclick = () => navTo({});
+$('stCrumbProject').onclick = () => navTo({ project: CURRENT_PROJECT.slug });
+$('stChaptersNav').onclick = () => navTo({ project: CURRENT_PROJECT.slug });
 ['musicMode', 'voiceMode', 'wmType', 'bgMode', 'animStyle'].forEach(name => {
   document.querySelectorAll(`input[name=${name}]`).forEach(el => el.onchange = saveSettingsDebounced);
 });
