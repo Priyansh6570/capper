@@ -47,6 +47,15 @@ AppPublisher={#MyAppPublisher}
 DefaultDirName={localappdata}\ReCapper
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
+; DisableDirPage's own default is "auto" (Inno Setup's, not ours) - it skips
+; the "Select Destination Location" page whenever it finds AppId already
+; registered as installed (any prior install, at ANY location, including a
+; leftover uninstall entry from testing this exact installer) - confirmed
+; this is exactly why the page was disappearing: this dev machine had a
+; previous ReCapper install registered at HKCU\...\Uninstall\{app-guid}_is1
+; from earlier testing. Explicit "no" always shows the page, with
+; DefaultDirName above pre-filled as the suggested location either way.
+DisableDirPage=no
 ; No admin required: everything installs per-user (venv, ffmpeg, Python via
 ; "winget install --scope user") so a non-technical user never sees a UAC
 ; prompt. This also means the default install location is per-user, though

@@ -58,6 +58,12 @@ to redo step 2 unless you want to update the bundled ffmpeg itself.
 ### Install time (inside the installer wizard)
 1. **Welcome / license-free intro**, then **Select Destination Location** -
    the user picks (or accepts the default per-user) install folder.
+   `installer.iss` sets `DisableDirPage=no` explicitly for this - Inno
+   Setup's OWN default for that directive is `auto` (skip the page if AppId
+   is already registered as installed ANYWHERE, e.g. a leftover uninstall
+   entry from testing this exact installer on a dev machine), which silently
+   skipped this page during earlier testing. Leave `DisableDirPage=no` in
+   place; don't just delete it and rely on the default.
 2. **Disk space check** (our own, on top of Inno's normal check): computes
    free space on whichever drive was picked and refuses to continue (with a
    plain-language explanation - the app itself, plus ~2.5GB for the Python/

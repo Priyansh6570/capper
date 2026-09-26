@@ -587,7 +587,7 @@
           <div class="row2">
             <input id="npUrl" type="text" placeholder="webtoons.com series or chapter URL" />
             <button id="npOpenBtn" class="small ghost icon" data-icon="link" data-ic-size="14"
-                    title="Open this URL in your browser" onclick="openUrlField('npUrl')"></button>
+                    title="Open webtoons.com to find a series" onclick="openWebtoonsHome()"></button>
           </div>
         </div>
       </div>
@@ -796,7 +796,7 @@
             <div class="row2">
               <input id="dlUrl" type="text" placeholder="webtoon chapter URL" />
               <button id="dlOpenBtn" class="small ghost icon" data-icon="link" data-ic-size="14"
-                      title="Open this URL in your browser" onclick="openUrlField('dlUrl')"></button>
+                      title="Open webtoons.com to find a chapter" onclick="openWebtoonsHome()"></button>
             </div>
           </div>
           <div class="sidefield">
@@ -1202,16 +1202,12 @@ function showToast(msg, actionLabel, actionFn, kind) {
 function hideToast() { const s = $('toast'); if (s && s.lastChild) s.lastChild.remove(); }
 
 // ---------------------------------------------------------------------------
-// "Open website" buttons next to a pasted webtoon/series URL field - just
-// opens it in a new tab so the user can check/re-copy the URL without leaving
-// the app. Adds https:// if the field has no scheme (users often paste a bare
-// "www.webtoons.com/..." without one).
-function openUrlField(id) {
-  const el = $(id);
-  const raw = (el && el.value || '').trim();
-  if (!raw) { showToast('Paste a URL first.', null, null, 'err'); return; }
-  const url = /^https?:\/\//i.test(raw) ? raw : 'https://' + raw;
-  window.open(url, '_blank', 'noopener');
+// "Open webtoons.com" buttons next to a webtoon/series URL field - opens the
+// site itself in a new tab so you can browse/search for a series there
+// instead of leaving the app to search for it yourself, then copy its URL
+// back into the field.
+function openWebtoonsHome() {
+  window.open('https://www.webtoons.com/', '_blank', 'noopener');
 }
 
 // download a chapter (webtoon-downloader) -> PDF, then ALWAYS split+compress it
