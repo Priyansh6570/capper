@@ -22,8 +22,8 @@ import socket
 import time
 from pathlib import Path
 
-W, H = 480, 300
-RADIUS = 26
+W, H = 560, 350
+RADIUS = 30
 
 BG_TOP = (11, 11, 13)
 BG_BOTTOM = (7, 7, 8)
@@ -35,11 +35,11 @@ TEXT_STATUS = (142, 138, 133)
 TRACK_BG = (21, 21, 26)
 TRANSPARENT_KEY = "#ff00fe"  # arbitrary key color, not used anywhere else in the design
 
-CENTER = (W // 2, 128)
-GLOW_DIAMETER = 190
-RING_R = 62
-RING_R2 = 48
-LOGO_SIZE = 74
+CENTER = (W // 2, 149)
+GLOW_DIAMETER = 222
+RING_R = 72
+RING_R2 = 56
+LOGO_SIZE = 86
 
 MESSAGES = ["Waking the cat", "Loading panel reader", "Warming up narrator",
             "Preparing timeline", "Ready"]
@@ -182,9 +182,9 @@ def _run(host: str, port: int, logo_path: Path, min_s: float, max_s: float) -> N
     except Exception:  # noqa: BLE001
         logo_img = None
 
-    title_font = _load_font(["segoeuisl.ttf", "segoeui.ttf", "arial.ttf"], 22)
-    mono_font = _load_font(["consola.ttf", "cour.ttf", "arial.ttf"], 9)
-    tag_font = _load_font(["consola.ttf", "cour.ttf", "arial.ttf"], 9)
+    title_font = _load_font(["segoeuisl.ttf", "segoeui.ttf", "arial.ttf"], 26)
+    mono_font = _load_font(["consola.ttf", "cour.ttf", "arial.ttf"], 10)
+    tag_font = _load_font(["consola.ttf", "cour.ttf", "arial.ttf"], 10)
 
     start = time.monotonic()
 
@@ -225,7 +225,7 @@ def _run(host: str, port: int, logo_path: Path, min_s: float, max_s: float) -> N
 
         logo_p = _entrance(t, 0.35, 1.0)
         if logo_img is not None and logo_p > 0:
-            off = int((1 - _ease_out(logo_p)) * 9)
+            off = int((1 - _ease_out(logo_p)) * 11)
             li = logo_img
             if logo_p < 1.0:
                 li = li.copy()
@@ -234,24 +234,24 @@ def _run(host: str, port: int, logo_path: Path, min_s: float, max_s: float) -> N
 
         title_p = _entrance(t, 0.7, 0.9)
         if title_p > 0:
-            off = int((1 - _ease_out(title_p)) * 10)
-            _tracked_text(draw, (W // 2, 210 + off), "RECAPPER", title_font,
-                          _fade_color(TEXT_BRIGHT, title_p), tracking=4)
+            off = int((1 - _ease_out(title_p)) * 12)
+            _tracked_text(draw, (W // 2, 245 + off), "RECAPPER", title_font,
+                          _fade_color(TEXT_BRIGHT, title_p), tracking=5)
 
         tag_p = _entrance(t, 1.1, 0.9)
         if tag_p > 0:
-            _tracked_text(draw, (W // 2, 238), "EVERY CHAPTER, RECAPPED.", tag_font,
+            _tracked_text(draw, (W // 2, 278), "EVERY CHAPTER, RECAPPED.", tag_font,
                           _fade_color(TEXT_DIM, tag_p), tracking=2)
 
         meta_p = _entrance(t, 1.4, 1.0)
         if meta_p > 0:
-            draw.text((16, H - 22), "RECAPPER \u00b7 v1.0.0", font=mono_font,
+            draw.text((19, H - 26), "RECAPPER \u00b7 v1.0.0", font=mono_font,
                       fill=_fade_color(TEXT_FAINT, meta_p))
             sw_ = draw.textlength(message, font=mono_font)
-            sx = W - 16 - sw_ - 10
-            draw.text((sx, H - 22), message, font=mono_font, fill=_fade_color(TEXT_STATUS, meta_p))
+            sx = W - 19 - sw_ - 11
+            draw.text((sx, H - 26), message, font=mono_font, fill=_fade_color(TEXT_STATUS, meta_p))
             if cursor_on:
-                draw.text((W - 16 - 8, H - 22), "\u2588", font=mono_font, fill=_fade_color(ACCENT, meta_p))
+                draw.text((W - 19 - 9, H - 26), "\u2588", font=mono_font, fill=_fade_color(ACCENT, meta_p))
 
         draw.rectangle([0, H - 2, W, H], fill=TRACK_BG)
         fw = int(W * max(0.0, min(1.0, progress)))
