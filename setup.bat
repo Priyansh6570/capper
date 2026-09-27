@@ -368,6 +368,12 @@ echo   Next: double-click start.bat any time you want to use the app.
 echo ============================================================
 if "%SETUP_UNATTENDED%"=="1" (
     >"%DONE_FILE%" echo 0
+    REM Second line: whether the voice-model pre-download (step 5) actually
+    REM finished - see RunEnvSetup/ModelOK in installer.iss, which otherwise
+    REM has no way to know this and would silently say nothing about it on
+    REM an unattended (installer-driven) run, where none of this console
+    REM output above is ever shown to the user.
+    >>"%DONE_FILE%" echo !MODEL_OK!
 )
 call :maybe_pause
 exit /b 0

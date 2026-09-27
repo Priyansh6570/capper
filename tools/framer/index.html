@@ -896,8 +896,10 @@
       </div>
       <div class="settingsbody">
         <nav class="settingsnav">
-          <span class="navlabel">Output</span>
-          <a href="#s-music" class="on">Background music</a>
+          <span class="navlabel">Script</span>
+          <a href="#s-gemini" class="on">Script generation</a>
+          <span class="navlabel" style="margin-top:14px">Output</span>
+          <a href="#s-music">Background music</a>
           <a href="#s-voice">Narration voice</a>
           <a href="#s-watermark">Watermark</a>
           <span class="navlabel" style="margin-top:14px">Visuals</span>
@@ -906,6 +908,48 @@
           <div class="settingsnote">Changes apply to every chapter rendered in this project. Already-rendered chapters need a re-render.</div>
         </nav>
         <div class="settingscontent">
+
+          <div class="setcard" id="s-gemini">
+            <div class="setlabel"><b>Script generation (Gemini)</b><span>Auto-generate the narration script from the chapter PDF with Google's Gemini API, instead of copy-pasting to Gemini by hand. Tone/style below are per-project; the API key is shared across all projects.</span></div>
+            <div class="setbody">
+              <div class="filerow">
+                <input id="geminiKeyInput" type="password" placeholder="Paste your Gemini API key" style="flex:1;min-width:220px" autocomplete="off" />
+                <button type="button" id="geminiKeySaveBtn" class="small ghost" data-icon="check" data-ic-size="14"><span>Save key</span></button>
+                <button type="button" id="geminiKeyClearBtn" class="small ghost icon" data-icon="x" data-ic-size="12" title="Remove the saved key"></button>
+              </div>
+              <div class="hint" id="geminiKeyStatus"></div>
+              <div class="setnote"><span class="tag">NOTE</span><span>Get a free key at <a href="javascript:void(0)" id="geminiKeyLinkBtn">aistudio.google.com/apikey</a>. Stored in this app's <b>.env</b> file - never committed, never sent anywhere but Google's API.</span></div>
+
+              <div class="setgridpair" style="margin-top:10px">
+                <label class="field" style="margin:0"><span class="lbl" style="text-transform:none;letter-spacing:0;font-weight:400;color:var(--muted)">Tone</span>
+                  <select id="geminiTone">
+                    <option value="serious">Serious</option>
+                    <option value="comedy">Comedy</option>
+                    <option value="dramatic">Dramatic</option>
+                    <option value="epic">Epic</option>
+                  </select>
+                </label>
+                <label class="field" style="margin:0"><span class="lbl" style="text-transform:none;letter-spacing:0;font-weight:400;color:var(--muted)">Narration type</span>
+                  <select id="geminiNarrationType">
+                    <option value="first_person">First-person hero POV</option>
+                    <option value="third_person">Third-person recap</option>
+                  </select>
+                </label>
+              </div>
+
+              <label class="field" style="margin:10px 0 0"><span class="lbl" style="text-transform:none;letter-spacing:0;font-weight:400;color:var(--muted)">Model</span>
+                <select id="geminiModel">
+                  <option value="gemini-3.1-pro-preview">Gemini 3.1 Pro - highest quality (slower, lower rate limit)</option>
+                  <option value="gemini-3.8-flash">Gemini 3.8 Flash - faster (higher rate limit)</option>
+                </select>
+              </label>
+
+              <label class="field" style="margin:10px 0 0">
+                <span class="lbl" style="text-transform:none;letter-spacing:0;font-weight:400;color:var(--muted)">Style reference (optional)</span>
+                <textarea id="geminiStyleRef" placeholder="Paste an example script whose language/tone/humor Gemini should imitate…" style="width:100%;height:110px"></textarea>
+              </label>
+            </div>
+          </div>
 
           <div class="setcard" id="s-music">
             <div class="setlabel"><b>Background music</b><span>Plays under the narration for the whole video.</span></div>
@@ -1185,6 +1229,11 @@
           <span class="pill" id="lineCountBadge">0 lines</span>
           <button id="scriptOnlyBtn" class="small ghost" data-icon="layout" data-ic-size="13" title="Show just the script, without the strip" style="margin-left:auto"><span>Script only</span></button>
           <span id="saveState" class="hint"></span></div>
+        <div class="rmeta" style="margin:0 0 8px">
+          <button id="genScriptBtn" class="small primary" data-icon="text" data-ic-size="13" title="Send each Gemini part (see Chapter Source) to the Gemini API in order and stitch the result in here"><span>Generate script with Gemini</span></button>
+          <span class="hint" id="genScriptStatus"></span>
+        </div>
+        <div id="genScriptResult"></div>
         <textarea id="scriptText" placeholder="Paste the narration script - long paragraphs are auto-split into short segments at sentence boundaries"></textarea>
         <div class="rmeta">
           <input id="txtPath" type="text" placeholder="or a .txt path" style="flex:1; min-width:120px" />
@@ -1594,6 +1643,60 @@ function handleGeminiPartsEvent(ev, chapterId, pageCount) {
 function finishGeminiParts() {
   if (gpES) { gpES.close(); gpES = null; }
   clearGlobalProg();
+}
+
+// ---------------------------------------------------------------------------
+// Generate the narration script with the Gemini API (see /gemini_script_stream
+// in app.py) - reads the SAME gemini_parts/*.pdf this panel already prepared,
+// sends each to Gemini in order, and stitches the result. Mirrors the
+// gpES/handleGeminiPartsEvent pattern above; the final script is dropped into
+// #scriptText and run through the EXISTING loadScript() splitter, exactly as
+// if it had been pasted in by hand.
+// ---------------------------------------------------------------------------
+let ggES = null;
+
+function startGeminiScript() {
+  if (!S.chapter_id) { setStatus('Load/Export a chapter first.', true); return; }
+  if (ggES) { ggES.close(); ggES = null; }
+  btnBusy($('genScriptBtn'), true);
+  $('genScriptStatus').textContent = 'Starting…';
+  $('genScriptResult').innerHTML = '';
+
+  const url = `/gemini_script_stream?chapter_id=${encodeURIComponent(S.chapter_id)}${scopeQS()}`;
+  ggES = new EventSource(url);
+  ggES.onmessage = e => { try { handleGeminiScriptEvent(JSON.parse(e.data)); } catch (_) {} };
+  ggES.onerror = () => {
+    if (!ggES) return;   // already closed on a clean done/error
+    $('genScriptStatus').textContent = 'Gemini-script stream disconnected.';
+    setStatus('Gemini-script stream disconnected.', true);
+    finishGeminiScript();
+  };
+}
+
+function handleGeminiScriptEvent(ev) {
+  if (ev.type === 'start') {
+    $('genScriptStatus').textContent = ev.message || 'Generating…';
+  } else if (ev.type === 'log') {
+    $('genScriptStatus').textContent = ev.line || '';
+  } else if (ev.type === 'progress') {
+    $('genScriptStatus').textContent = `Generating part ${ev.part} of ${ev.of_parts}…`;
+  } else if (ev.type === 'done') {
+    $('scriptText').value = ev.script || '';
+    showToast('Gemini script generated.', null, null, 'ok');
+    finishGeminiScript();
+    $('genScriptStatus').textContent = 'Script generated - boxing into lines…';
+    loadScript();   // same paragraph -> line splitting as a manual paste
+  } else if (ev.type === 'error') {
+    $('genScriptStatus').innerHTML = escHtml(ev.message || 'Script generation failed.') +
+      ' <button type="button" class="small ghost" onclick="startGeminiScript()">Retry</button>';
+    setStatus(ev.message || 'Script generation failed.', true);
+    finishGeminiScript();
+  }
+}
+
+function finishGeminiScript() {
+  if (ggES) { ggES.close(); ggES = null; }
+  btnBusy($('genScriptBtn'), false);
 }
 
 function showGeminiPartsResult(dir, parts) {
@@ -2339,6 +2442,11 @@ function syncEditorJobUI() {
     setGenLog(active.log);
     const etaTxt = active.eta_s != null ? ' - ' + fmtEta(active.eta_s) : '';
     if (active.status === 'queued') setGenBar(0, true, 'Queued' + etaTxt);
+    // A not-yet-cached voice model is downloading (see stages/s6_tts.py) -
+    // audio/video counters can't move yet, so a determinate bar would just
+    // sit at a misleading 0%. Show the live message + a pulsing bar instead,
+    // same as "Queued", so this never reads as frozen.
+    else if (active.downloading_model) setGenBar(0, true, active.message || 'Downloading voice model…');
     else setGenBar(active.progress || 0, false, (GEN_LABELS[active.what] || GEN_LABELS.both) + etaTxt);
     return;
   }
@@ -2404,7 +2512,11 @@ function renderJobWidget() {
   widget.classList.add('on');
   const running = active.filter(j => j.status === 'running');
   const queued = active.filter(j => j.status === 'queued');
-  let html = running.map(j => `
+  let html = running.map(j => j.downloading_model ? `
+    <div class="jwjob running">
+      <div class="jwrow"><span class="jwname">${escHtml(jobLabel(j))}</span></div>
+      <div class="jwrow"><span class="jwname" style="font-weight:400">${escHtml(j.message || 'Downloading voice model…')}</span></div>
+    </div>` : `
     <div class="jwjob running">
       <div class="jwrow"><span class="jwname">${escHtml(jobLabel(j))}</span><span class="jweta">${fmtEta(j.eta_s)}</span></div>
       <div class="jwtrack"><div class="jwfill" style="width:${Math.round((j.progress || 0) * 100)}%"></div></div>
@@ -2886,9 +2998,42 @@ async function openSettingsScreen(slug) {
     $('stCrumbProject').textContent = CURRENT_PROJECT.name;
     paintProjectChrome();
     fillSettingsForm();
+    loadGeminiKeyStatus();
   } catch (e) {
     setStatus('Open settings error: ' + e.message, true);
   }
+}
+
+// --- Gemini API key (global, .env-only - see api_gemini_key_status in app.py) ---
+async function loadGeminiKeyStatus() {
+  try {
+    const d = await (await fetch('/api/gemini/key_status')).json();
+    $('geminiKeyStatus').textContent = d.set
+      ? `Key saved (ends in ${d.hint || '…'}).` : 'No key saved yet.';
+    $('geminiKeyInput').placeholder = d.set ? 'Paste a new key to replace it' : 'Paste your Gemini API key';
+  } catch (e) { $('geminiKeyStatus').textContent = ''; }
+}
+async function saveGeminiKey() {
+  const key = $('geminiKeyInput').value.trim();
+  if (!key) { setStatus('Paste a Gemini API key first.', true); return; }
+  btnBusy($('geminiKeySaveBtn'), true);
+  try {
+    const res = await fetch('/api/gemini/key', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key }) });
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.error || 'save failed');
+    $('geminiKeyInput').value = '';
+    showToast('Gemini API key saved.', null, null, 'ok');
+    loadGeminiKeyStatus();
+  } catch (e) { setStatus('Save key error: ' + e.message, true); }
+  finally { btnBusy($('geminiKeySaveBtn'), false); }
+}
+async function clearGeminiKey() {
+  try {
+    await fetch('/api/gemini/key', { method: 'DELETE' });
+    showToast('Gemini API key removed.', null, null, 'warn');
+    loadGeminiKeyStatus();
+  } catch (e) { setStatus('Remove key error: ' + e.message, true); }
 }
 
 let MERGE_SELECTION = new Set();   // chapter numbers currently checked for merging
@@ -3159,6 +3304,12 @@ function fillSettingsForm() {
   $('animDuration').value = Math.round(s.animation.duration * 100);
   $('animKenBurns').checked = !!s.animation.ken_burns;
 
+  const gm = s.gemini || {};
+  $('geminiTone').value = gm.tone || 'serious';
+  $('geminiNarrationType').value = gm.narration_type || 'first_person';
+  $('geminiModel').value = gm.model || 'gemini-3.1-pro-preview';
+  $('geminiStyleRef').value = gm.style_reference || '';
+
   updateSliderLabels();
   refreshWatermarkPreview();
   refreshBackgroundPreview();
@@ -3228,6 +3379,12 @@ function currentSettingsFromForm() {
       direction: $('animDirection').value,
       duration: (+$('animDuration').value) / 100,
       ken_burns: $('animKenBurns').checked,
+    },
+    gemini: {
+      tone: $('geminiTone').value,
+      narration_type: $('geminiNarrationType').value,
+      model: $('geminiModel').value,
+      style_reference: $('geminiStyleRef').value,
     },
   };
 }
@@ -3499,6 +3656,13 @@ $('wmText').oninput = saveSettingsDebounced;
 $('animDirection').onchange = saveSettingsDebounced;
 $('animKenBurns').onchange = saveSettingsDebounced;
 ['wmOpacity', 'wmSize', 'wmSpacing', 'wmAngle', 'bgDim', 'animDuration'].forEach(id => { $(id).oninput = saveSettingsDebounced; });
+$('geminiTone').onchange = saveSettingsDebounced;
+$('geminiNarrationType').onchange = saveSettingsDebounced;
+$('geminiModel').onchange = saveSettingsDebounced;
+$('geminiStyleRef').oninput = saveSettingsDebounced;
+$('geminiKeySaveBtn').onclick = saveGeminiKey;
+$('geminiKeyClearBtn').onclick = clearGeminiKey;
+$('geminiKeyLinkBtn').onclick = () => window.open('https://aistudio.google.com/apikey', '_blank');
 $('musicFile').onchange = e => uploadAsset('music', e.target.files[0]);
 $('voiceFile').onchange = e => uploadAsset('voice', e.target.files[0]);
 $('wmFile').onchange = e => uploadAsset('watermark', e.target.files[0]);
@@ -3511,6 +3675,7 @@ $('bgBrowseBtn').onclick = () => $('bgFile').click();
 $('dlBtn').onclick = doDownload;
 $('loadPdfBtn').onclick = loadPdf;
 $('loadScriptBtn').onclick = loadScript;
+$('genScriptBtn').onclick = startGeminiScript;
 $('addLineBtn').onclick = addLine;
 $('exportBtn').onclick = doExport;
 $('genAVBtn').onclick = () => startGenerate('both');

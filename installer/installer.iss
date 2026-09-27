@@ -119,6 +119,7 @@ var
   CloneOK: Boolean;      // did `git clone` (+ the robocopy merge) succeed?
   EnvSetupOK: Boolean;   // did setup.bat's env-setup steps (Python/venv/packages/ffmpeg) succeed?
   CudaOK: Boolean;       // independent post-check: is torch.cuda.is_available() actually True?
+  ModelOK: Boolean;      // did setup.bat's step 5 voice-model pre-download actually finish?
 
 // ----------------------------------------------------------------------------
 // Disk space check - Inno only knows about the bundled [Files]; the real
@@ -414,6 +415,7 @@ begin
   MaxWaitMs := 90 * 60 * 1000; // 90 min safety cap - never hang forever
   EnvSetupOK := False;
   CudaOK := False;
+  ModelOK := True;   // assume fine unless DoneFile's 2nd line says otherwise (see below)
   if not CloneOK then Exit;   // no setup.bat to run if the clone itself failed
   SetupBat := ExpandConstant('{app}\setup.bat');
   LogFile := ExpandConstant('{app}\setup_log.txt');
@@ -463,6 +465,11 @@ begin
       DoneLines.LoadFromFile(DoneFile);
       if DoneLines.Count > 0 then
         EnvSetupOK := (Trim(DoneLines[0]) = '0');
+      // 2nd line (added alongside setup.bat's MODEL_OK) - absent on an older
+      // setup.bat or a run that failed before writing it, in which case
+      // ModelOK stays at its True default set above (nothing to warn about).
+      if DoneLines.Count > 1 then
+        ModelOK := (Trim(DoneLines[1]) = '1');
     finally
       DoneLines.Free;
     end;
@@ -530,20 +537,38 @@ begin
         'See install_log.txt in the install folder for what went wrong, fix ' +
         'it, then double-click setup.bat there - it is safe to run again and ' +
         'will pick up where it left off.'
-    else if not CudaOK then
-      WizardForm.FinishedLabel.Caption :=
-        WizardForm.FinishedLabel.Caption + #13#10#13#10 +
-        'Note: GPU acceleration is NOT active on this PC - narration will ' +
-        'generate correctly but much more slowly, on your CPU. See ' +
-        'SETUP_GUIDE.md in the install folder if you have an NVIDIA GPU and ' +
-        'expected this to be faster.'
     else
-      WizardForm.FinishedLabel.Caption :=
-        WizardForm.FinishedLabel.Caption + #13#10#13#10 +
-        'GPU acceleration is active and ready.' + #13#10 +
-        'Reminder: the first time you click "Generate audio + video" in the ' +
-        'app, it downloads the AI voice model (~4 GB, one time only, needs ' +
-        'internet) - watch the app for its own progress message during that.';
+    begin
+      if CudaOK then
+        WizardForm.FinishedLabel.Caption :=
+          WizardForm.FinishedLabel.Caption + #13#10#13#10 +
+          'GPU acceleration is active and ready.'
+      else
+        WizardForm.FinishedLabel.Caption :=
+          WizardForm.FinishedLabel.Caption + #13#10#13#10 +
+          'Note: GPU acceleration is NOT active on this PC - narration will ' +
+          'generate correctly but much more slowly, on your CPU. See ' +
+          'SETUP_GUIDE.md in the install folder if you have an NVIDIA GPU and ' +
+          'expected this to be faster.';
+      // Independent of GPU status: did the voice-model pre-download (step 5)
+      // actually finish? It's the single most common thing to silently not
+      // finish (heavy anonymous-IP rate limiting on a multi-GB download), and
+      // this unattended run never showed its own [WARN] for that - this is
+      // the only place it's surfaced to the user at all.
+      if ModelOK then
+        WizardForm.FinishedLabel.Caption :=
+          WizardForm.FinishedLabel.Caption + #13#10 +
+          'The AI voice model is already downloaded and ready - nothing else ' +
+          'to fetch before your first render.'
+      else
+        WizardForm.FinishedLabel.Caption :=
+          WizardForm.FinishedLabel.Caption + #13#10 +
+          'Note: the AI voice model (~4 GB) did NOT finish pre-downloading ' +
+          '(see install_log.txt) - likely a slow/rate-limited connection, ' +
+          'not a real problem. The app will finish fetching it, with its own ' +
+          'visible/resumable progress, the first time you generate narration - ' +
+          'this needs internet and can take a while, but only once.';
+    end;
   end;
 end;
 

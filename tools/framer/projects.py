@@ -127,6 +127,13 @@ def _default_settings() -> dict:
         # independent of the transition style above; see s7_assemble.
         "animation": {"style": "fade", "direction": "left", "duration": 0.35,
                      "ken_burns": False},
+        # Gemini-driven script generation (tools/framer/app.py's
+        # /gemini_script_stream) - the API key itself is NEVER stored here
+        # (like every other key in this app, it's .env-only, see
+        # _gemini_env_key_* in app.py); this is just the per-project prompt
+        # knobs so different projects can want a different voice.
+        "gemini": {"tone": "serious", "narration_type": "first_person",
+                   "style_reference": "", "model": "gemini-3.1-pro-preview"},
     }
 
 
@@ -337,6 +344,14 @@ def update_settings(slug: str, settings: dict) -> dict:
             anim["direction"] = "left"
         anim["duration"] = max(0.05, min(1.0, float(anim.get("duration", 0.35))))
         anim["ken_burns"] = bool(anim.get("ken_burns"))
+        gm = project["settings"]["gemini"]
+        if gm.get("tone") not in ("serious", "comedy", "dramatic", "epic"):
+            gm["tone"] = "serious"
+        if gm.get("narration_type") not in ("first_person", "third_person"):
+            gm["narration_type"] = "first_person"
+        if gm.get("model") not in ("gemini-3.1-pro-preview", "gemini-3.8-flash"):
+            gm["model"] = "gemini-3.1-pro-preview"
+        gm["style_reference"] = str(gm.get("style_reference") or "")[:12000]
         save(project)
     write_all_media_snapshots(slug)
     return project

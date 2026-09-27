@@ -145,6 +145,26 @@ with a working connection:
 3. Run `setup.bat` again (or just `start.bat` and generate audio) — the app
    finds the cached model and never touches the network for it.
 
+**Setting up Gemini script generation**
+The chapter editor's "Generate script with Gemini" button (in the narration
+script panel) calls Google's Gemini API directly, instead of you copy-pasting
+chapter pages to Gemini by hand:
+
+1. Get a free API key at <https://aistudio.google.com/apikey>.
+2. Open a project's **Settings → Script generation**, paste it in, and click
+   "Save key". It's saved to the same `.env` file as `HF_TOKEN` above (never
+   committed, never sent anywhere but Google's API) — every project shares
+   this one key. Tone, narration type, style reference, and which Gemini
+   model to use are per-project, in that same settings section.
+3. Already have a key saved and need to replace or remove it? Paste a new one
+   and save again, or click the small "×" button to clear it — or edit/delete
+   the `GEMINI_API_KEY=...` line in `.env` by hand.
+
+This is entirely optional — the manual "Chapter Source" panel's Gemini-parts
+prep (splitting/compressing the PDF for upload) still works without a key;
+without one, `Generate script with Gemini` just shows a clear error telling
+you to add one, instead of failing silently.
+
 **Setup got partway through and failed**
 Just double-click `setup.bat` again. It checks what's already done (Python,
 the app's private environment, the AI packages, ffmpeg) and skips anything

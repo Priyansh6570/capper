@@ -43,16 +43,19 @@ from pathlib import Path
 MAX_ATTEMPTS = 6
 STALL_TIMEOUT_S = 120         # kill + retry an attempt with no on-disk growth for this long
 STALL_POLL_S = 5
+HEARTBEAT_S = 10              # print a "still downloading" line at least this often while healthy
 BACKOFF_S = [5, 15, 30, 60, 90]   # between attempts; the last value repeats
 
-# (repo_id, allow_patterns) - mirrors exactly what stages/s6_tts.py's two
-# Chatterbox loaders request via chatterbox.tts_turbo/tts .from_pretrained().
-MODELS: list[tuple[str, list[str]]] = [
-    ("ResembleAI/chatterbox-turbo",
-     ["*.safetensors", "*.json", "*.txt", "*.pt", "*.model"]),
-    ("ResembleAI/chatterbox",
-     ["ve.safetensors", "t3_cfg.safetensors", "s3gen.safetensors", "tokenizer.json", "conds.pt"]),
-]
+# kind -> (repo_id, allow_patterns) - mirrors exactly what stages/s6_tts.py's two
+# Chatterbox loaders request via chatterbox.tts_turbo/tts .from_pretrained(), and
+# is imported directly from there (see s6_tts._ensure_model_cached) so the two
+# can never drift apart - keyed by the same "turbo"/"full" names s6_tts.py uses.
+MODELS: dict[str, tuple[str, list[str]]] = {
+    "turbo": ("ResembleAI/chatterbox-turbo",
+              ["*.safetensors", "*.json", "*.txt", "*.pt", "*.model"]),
+    "full": ("ResembleAI/chatterbox",
+             ["ve.safetensors", "t3_cfg.safetensors", "s3gen.safetensors", "tokenizer.json", "conds.pt"]),
+}
 
 
 def _hf_cache_dir() -> Path:
@@ -91,6 +94,7 @@ def download_with_retry(repo_id: str, allow_patterns: list[str]) -> bool:
         proc = _spawn_attempt(repo_id, allow_patterns)
         last_growth = time.monotonic()
         last_size = before
+        last_heartbeat = time.monotonic()
         stalled = False
         while True:
             try:
@@ -99,10 +103,20 @@ def download_with_retry(repo_id: str, allow_patterns: list[str]) -> bool:
             except subprocess.TimeoutExpired:
                 pass
             size = _repo_folder_bytes(repo_id)
+            now = time.monotonic()
             if size > last_size:
                 last_size = size
-                last_growth = time.monotonic()
-            elif time.monotonic() - last_growth > STALL_TIMEOUT_S:
+                last_growth = now
+            # A heartbeat while healthy: a multi-GB file can go several minutes
+            # between "attempt started" and "done" with nothing else printed,
+            # which looks identical to a stall from the outside (e.g. in a
+            # render job's log). Print real, growing byte counts periodically
+            # so it's visibly still moving, not just eventually detected as OK.
+            if now - last_heartbeat >= HEARTBEAT_S:
+                print(f"    ...{size / 1e6:.0f}MB so far, still downloading "
+                      f"(this can take a while on a slow connection)")
+                last_heartbeat = now
+            if now - last_growth > STALL_TIMEOUT_S:
                 stalled = True
                 break
         if stalled:
@@ -134,7 +148,7 @@ def main() -> int:
               "the voice model download' - for how to add one (free, ~1 minute).")
 
     ok = True
-    for repo_id, patterns in MODELS:
+    for repo_id, patterns in MODELS.values():
         ok = download_with_retry(repo_id, patterns) and ok
 
     if not ok:

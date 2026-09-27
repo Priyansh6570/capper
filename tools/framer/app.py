@@ -28,6 +28,7 @@ stitch (imported, not reimplemented) and the Manifest schema for the export.
 """
 from __future__ import annotations
 
+import difflib
 import io
 import json
 import math
@@ -643,6 +644,332 @@ def gemini_parts_stream():
                              "Connection": "keep-alive"})
 
 
+# --------------------------------------------------------------------------- #
+# Gemini script generation - reads the SAME gemini_parts/*.pdf files the panel
+# above produces (never re-splits anything), sends each part to the Gemini
+# API in order, and stitches the results into one script - replacing the old
+# manual "upload each part to Gemini yourself, paste the answer back" step.
+# --------------------------------------------------------------------------- #
+GEMINI_TONES = {
+    "serious": "a serious, grounded tone",
+    "comedy": "a comedic, lighthearted tone with playful humor",
+    "dramatic": "a dramatic, emotionally intense tone",
+    "epic": "an epic, larger-than-life tone with sweeping stakes",
+}
+GEMINI_NARRATION_TYPES = {
+    "first_person": 'first-person, as the hero living through these events ("I", "me")',
+    "third_person": 'third-person recap narration ("he", "she", "they")',
+}
+# Pro is the default: this app cares more about faithful dialogue extraction
+# and prose quality than speed. Flash is offered as a same-quality-tier
+# fallback for when Pro's (lower) free-tier rate limit is the bottleneck -
+# see GEMINI_MIN_INTERVAL_S below, which paces requests generously for
+# either, and _gemini_generate_part's own 429 retry/backoff on top of that.
+GEMINI_MODELS = {
+    "gemini-3.1-pro-preview": "Gemini 3.1 Pro - highest quality (slower, lower rate limit)",
+    "gemini-3.8-flash": "Gemini 3.8 Flash - faster (higher rate limit)",
+}
+GEMINI_DEFAULT_MODEL = "gemini-3.1-pro-preview"
+
+
+def _gemini_min_interval(model: str) -> float:
+    return 8.0 if "pro" in model else 3.0
+
+
+def _gemini_client():
+    """Never raises anything but a plain RuntimeError with a fix-it message -
+    this reaches the SSE stream as a single clear {type:"error"} frame."""
+    try:
+        from dotenv import load_dotenv
+        load_dotenv()
+    except Exception:  # noqa: BLE001
+        pass
+    key = os.environ.get("GEMINI_API_KEY")
+    if not key:
+        raise RuntimeError("GEMINI_API_KEY not set. Add it in Settings (Script "
+                            "generation) or to a .env file in the project root.")
+    from google import genai
+    return genai.Client(api_key=key)
+
+
+def _gemini_system_prompt(tone: str, narration_type: str, style_reference: str,
+                           is_first_part: bool, is_last_part: bool) -> str:
+    tone_desc = GEMINI_TONES.get(tone, GEMINI_TONES["serious"])
+    narr_desc = GEMINI_NARRATION_TYPES.get(narration_type, GEMINI_NARRATION_TYPES["first_person"])
+    parts = [
+        "You are writing a recap narration script for one part of a manhwa/webtoon "
+        "chapter, from the attached PDF (its pages are the comic's panels, in "
+        "reading order, including all dialogue and sound effects as they appear).",
+        f"Narrate {narr_desc}, in {tone_desc}.",
+        "Extract EVERY piece of dialogue and every story beat faithfully - miss "
+        "nothing important - but tell it as flowing narration prose, not a "
+        "transcript: weave dialogue and description together naturally, the way "
+        "a narrator retelling the chapter out loud would.",
+        "Output ONLY the narration prose itself, in reading order - no scene/part "
+        "headings, no markdown, no bullet points, no meta-commentary about the "
+        "images or the task.",
+    ]
+    if style_reference.strip():
+        parts.append(
+            "Match the LANGUAGE, TONE, and HUMOR of this example script as closely "
+            "as you can - imitate its voice and style, not its plot or content:\n\n"
+            + style_reference.strip()
+        )
+    if not is_first_part:
+        parts.append(
+            "This PDF starts by repeating the last few pages of the previous part "
+            "(included only so you have context for continuity). Do NOT re-narrate "
+            "that repeated part - continue the story smoothly from where the new "
+            "content begins, as if this were one uninterrupted chapter."
+        )
+    if not is_last_part:
+        parts.append(
+            "This is not the final part of the chapter - do not write an ending, "
+            "conclusion, or wrap-up; the story continues in the next part."
+        )
+    return "\n\n".join(parts)
+
+
+def _gemini_generate_part(client, model: str, system_prompt: str, pdf_bytes: bytes,
+                           max_attempts: int = 5):
+    """Generates the narration for one PDF part. A generator so a rate-limit
+    retry can surface a live log line instead of the connection going quiet
+    for up to a minute; yields {type:"log"} frames along the way and exactly
+    one final {type:"part_done", text} or {type:"part_error", message}."""
+    from google.genai import types
+    from google.genai import errors as genai_errors
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            resp = client.models.generate_content(
+                model=model,
+                contents=[types.Part.from_bytes(data=pdf_bytes, mime_type="application/pdf")],
+                config=types.GenerateContentConfig(
+                    system_instruction=system_prompt, temperature=0.7,
+                    max_output_tokens=8192),
+            )
+            text = (resp.text or "").strip()
+            if not text:
+                raise RuntimeError("Gemini returned an empty response")
+            yield {"type": "part_done", "text": text}
+            return
+        except genai_errors.APIError as e:
+            code = getattr(e, "code", None)
+            msg = getattr(e, "message", None) or str(e)
+            if code == 429 and attempt < max_attempts:
+                wait = min(60, 5 * (2 ** (attempt - 1)))
+                yield {"type": "log", "line": f"  rate-limited - retrying in {wait}s "
+                                              f"(attempt {attempt}/{max_attempts})…"}
+                time.sleep(wait)
+                continue
+            yield {"type": "part_error", "message": f"Gemini API error {code}: {msg}"}
+            return
+        except Exception as e:  # noqa: BLE001 - network hiccups etc: retry a few times too
+            if attempt < max_attempts:
+                wait = 3 * attempt
+                yield {"type": "log", "line": f"  {type(e).__name__} - retrying in {wait}s…"}
+                time.sleep(wait)
+                continue
+            yield {"type": "part_error", "message": f"{type(e).__name__}: {e}"}
+            return
+
+
+def _dedupe_overlap(prev_text: str, next_text: str, window: int = 700, min_match: int = 30) -> str:
+    """The PDF parts share a few overlap pages for continuity (see PART_OVERLAP)
+    - the prompt asks Gemini not to re-narrate them, but models don't always
+    comply. Finds the longest matching block between the tail of `prev_text`
+    and the head of `next_text`; if it's substantial, drops everything in
+    `next_text` up to the end of that match (extended to the next whitespace
+    so it doesn't cut mid-sentence). A no-op when there's no real duplication
+    - the common case when the model followed the instruction."""
+    a = prev_text[-window:]
+    b = next_text[:window]
+    match = difflib.SequenceMatcher(None, a, b, autojunk=False).find_longest_match(0, len(a), 0, len(b))
+    if match.size < min_match:
+        return next_text
+    cut = match.b + match.size
+    rest = next_text[cut:]
+    return rest.lstrip()
+
+
+def _stitch_script_parts(texts: list[str]) -> str:
+    if not texts:
+        return ""
+    out = [texts[0].strip()]
+    for t in texts[1:]:
+        out.append(_dedupe_overlap(out[-1], t.strip()))
+    return "\n\n".join(p for p in out if p)
+
+
+def _build_gemini_script_stream(chapter_id: str, gemini_settings: dict):
+    parts_dir = _gemini_parts_dir(chapter_id)
+    part_files = sorted(parts_dir.glob("*.pdf"))
+    if not part_files:
+        yield {"type": "error", "message": "No Gemini parts found for this chapter - "
+                                            "download the chapter first (parts are "
+                                            "created automatically)."}
+        return
+    try:
+        client = _gemini_client()
+    except Exception as e:  # noqa: BLE001
+        yield {"type": "error", "message": str(e)}
+        return
+
+    model = gemini_settings.get("model") or GEMINI_DEFAULT_MODEL
+    if model not in GEMINI_MODELS:
+        model = GEMINI_DEFAULT_MODEL
+    tone = gemini_settings.get("tone") or "serious"
+    narration_type = gemini_settings.get("narration_type") or "first_person"
+    style_reference = gemini_settings.get("style_reference") or ""
+
+    n = len(part_files)
+    min_interval = _gemini_min_interval(model)
+    texts: list[str] = []
+    last_call = 0.0
+    yield {"type": "start", "of_parts": n, "message": f"Generating script with {model} - "
+                                                       f"{n} part(s)…"}
+    for i, path in enumerate(part_files, start=1):
+        yield {"type": "log", "line": f"Generating part {i} of {n}…"}
+        yield {"type": "progress", "part": i, "of_parts": n}
+        if i > 1:
+            wait = min_interval - (time.monotonic() - last_call)
+            if wait > 0:
+                time.sleep(wait)
+        system_prompt = _gemini_system_prompt(tone, narration_type, style_reference,
+                                               i == 1, i == n)
+        pdf_bytes = path.read_bytes()
+        text = None
+        for ev in _gemini_generate_part(client, model, system_prompt, pdf_bytes):
+            if ev["type"] == "part_done":
+                text = ev["text"]
+            elif ev["type"] == "part_error":
+                yield {"type": "error", "part": i, "of_parts": n,
+                       "message": f"Part {i} of {n} failed: {ev['message']} - fix the "
+                                  f"issue above and click Generate again to retry."}
+                return
+            else:
+                yield ev
+        last_call = time.monotonic()
+        texts.append(text or "")
+        yield {"type": "log", "line": f"  part {i} of {n} done ({len(text or '')} chars)."}
+
+    script = _stitch_script_parts(texts)
+    yield {"type": "result", "script": script}
+
+
+@app.get("/gemini_script_stream")
+def gemini_script_stream():
+    """Generate the narration script with the Gemini API from a chapter's
+    already-prepared gemini_parts/*.pdf files (see /gemini_parts_stream -
+    this route never creates or re-splits them, only reads what's there).
+
+    EventSource (GET) only, params: ?chapter_id=...&project=<slug>&ch_no=<n>.
+    Tone/narration-type/style-reference/model come from that PROJECT's saved
+    settings (Settings screen), not query params - keeps the pasted style
+    reference out of a URL entirely. Emits {type:start|log|progress|done|error}
+    exactly like /gemini_parts_stream; `done` carries {script: "<full text>"}."""
+    chapter_id = _sanitize_chapter(request.args.get("chapter_id", ""))
+    slug, ch_no = _scope_params()
+    work_dir = projects.chapter_work_dir(slug, ch_no) if slug and ch_no else chapter_work_dir(chapter_id)
+    output_dir = projects.chapter_output_dir(slug, ch_no) if slug and ch_no else chapter_output_dir(chapter_id)
+
+    gemini_settings: dict = {}
+    if slug and projects.exists(slug):
+        gemini_settings = projects.load(slug).get("settings", {}).get("gemini", {})
+
+    def stream():
+        try:
+            with config.chapter_scope(work_dir, output_dir):
+                if not chapter_id:
+                    yield _sse({"type": "error", "message": "chapter_id required."})
+                    return
+                for item in _build_gemini_script_stream(chapter_id, gemini_settings):
+                    if item["type"] == "result":
+                        yield _sse({"type": "done", "ok": True, "script": item["script"]})
+                    else:
+                        yield _sse(item)
+        except GeneratorExit:
+            raise
+        except Exception as e:  # noqa: BLE001 - last-resort: still report, don't crash the stream
+            yield _sse({"type": "error", "message": f"{type(e).__name__}: {e}"})
+
+    return Response(stream(), mimetype="text/event-stream",
+                    headers={"Cache-Control": "no-cache",
+                             "X-Accel-Buffering": "no",
+                             "Connection": "keep-alive"})
+
+
+# --------------------------------------------------------------------------- #
+# Gemini API key - the ONE credential in this app that is genuinely global
+# (not per-project, unlike tone/style/model above): stored in .env at the
+# project root, same convention as GROQ_API_KEY/HF_TOKEN elsewhere in this
+# codebase, and NEVER in project.json. Read back only as a set/unset flag +
+# a last-4-chars hint - the raw key itself is never sent back to the browser
+# once saved.
+# --------------------------------------------------------------------------- #
+def _env_file_path() -> Path:
+    return ROOT / ".env"
+
+
+def _read_env_dict() -> dict:
+    path = _env_file_path()
+    out: dict[str, str] = {}
+    if not path.exists():
+        return out
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        k, _, v = stripped.partition("=")
+        out[k.strip()] = v.strip()
+    return out
+
+
+def _set_env_value(key: str, value: str | None) -> None:
+    """Set (or, when `value` is falsy, remove) one KEY=value line in the
+    project-root .env file, preserving every other line untouched - a
+    read-modify-write version of what setup.bat does with a one-shot
+    append for HF_TOKEN, since this can also be called to update/clear an
+    already-set key from the running app, not just write it once."""
+    path = _env_file_path()
+    lines = path.read_text(encoding="utf-8", errors="replace").splitlines() if path.exists() else []
+    out, found = [], False
+    for line in lines:
+        if line.strip().startswith(f"{key}="):
+            found = True
+            if value:
+                out.append(f"{key}={value}")
+            continue  # drop the line entirely when clearing
+        out.append(line)
+    if value and not found:
+        out.append(f"{key}={value}")
+    path.write_text("\n".join(out) + ("\n" if out else ""), encoding="utf-8")
+
+
+@app.get("/api/gemini/key_status")
+def api_gemini_key_status():
+    key = _read_env_dict().get("GEMINI_API_KEY") or os.environ.get("GEMINI_API_KEY", "")
+    return jsonify(set=bool(key), hint=(f"…{key[-4:]}" if len(key) >= 4 else ""))
+
+
+@app.post("/api/gemini/key")
+def api_set_gemini_key():
+    data = request.get_json(silent=True) or {}
+    key = (data.get("key") or "").strip()
+    if not key:
+        return jsonify(error="Key required."), 400
+    _set_env_value("GEMINI_API_KEY", key)
+    os.environ["GEMINI_API_KEY"] = key  # effective immediately, no restart needed
+    return jsonify(ok=True)
+
+
+@app.delete("/api/gemini/key")
+def api_clear_gemini_key():
+    _set_env_value("GEMINI_API_KEY", None)
+    os.environ.pop("GEMINI_API_KEY", None)
+    return jsonify(ok=True)
+
+
 @app.post("/load_pdf")
 def load_pdf():
     """Stitch a PDF (path in JSON, or an uploaded file) into one strip.
@@ -1116,6 +1443,12 @@ class Job:
         self.audio = 0
         self.video = 0
         self.message = ""
+        # True while stages/s6_tts.py is fetching a not-yet-cached Chatterbox
+        # model (see its _ensure_model_cached) - lets the UI show real, live
+        # status instead of a progress bar stuck at 0% (audio/video counters
+        # can't move yet since synthesis hasn't started). See "[voice-model]"
+        # handling below.
+        self.downloading_model = False
         self.video_url: str | None = None
         self.ok: bool | None = None
         self.log: list[str] = []
@@ -1167,6 +1500,7 @@ class Job:
             "progress": round(self.progress_fraction(), 4) if self.status == "running" else
                         (1.0 if self.status == "done" else 0.0),
             "message": self.message, "video_url": self.video_url, "ok": self.ok,
+            "downloading_model": self.downloading_model,
             "log": list(self.log), "created_at": self.created_at,
             "started_at": self.started_at, "finished_at": self.finished_at,
         }
@@ -1278,8 +1612,17 @@ def _run_job(job: "Job") -> None:
                 job.append_log(line)
                 if re.match(r"^\s*\[\d{1,4}\]", line):
                     job.audio += 1
+                    job.downloading_model = False
                 elif re.match(r"^\s*line \d+:", line):
                     job.video += 1
+                    job.downloading_model = False
+                elif "[voice-model]" in line:
+                    # see stages/s6_tts.py._ensure_model_cached - surfaces a
+                    # not-yet-cached model download with a live message instead
+                    # of a progress bar stuck at 0% (audio/video haven't moved
+                    # yet since synthesis hasn't started).
+                    job.message = line.strip()
+                    job.downloading_model = "ready" not in line
             proc.wait()
 
             if job.cancel_requested:

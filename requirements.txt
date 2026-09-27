@@ -1,12 +1,16 @@
 # Runtime dependencies for the CURRENT workflow: Framer (manual PDF stitch +
-# manual frame boxing) -> Generate audio+video. That flow only ever executes
-# stage 1 (pages, called directly by tools/framer/app.py) and stages 6+7
-# (audio, video - the only stages orchestrator.py --from audio ever runs).
+# manual frame boxing, Gemini-generated or pasted script) -> Generate
+# audio+video. That flow only ever executes stage 1 (pages, called directly
+# by tools/framer/app.py) and stages 6+7 (audio, video - the only stages
+# orchestrator.py --from audio ever runs).
 # Stages 2/2a/2b/3/4/5 (auto panel detection, vision tagging, frame matching,
-# Groq context/emotion, inpainting, auto script) are dead in this workflow -
-# orchestrator.py now imports stage modules lazily, so their dependencies
-# (groq, ultralytics, opencv-python, pytesseract/easyocr/paddleocr,
-# python-dotenv, google-genai) are no longer required at all. See work_log.md.
+# Groq context/emotion, inpainting, auto script) are STILL dead in this
+# workflow - orchestrator.py imports stage modules lazily, so their
+# dependencies (groq, ultralytics, opencv-python, pytesseract/easyocr/
+# paddleocr) are not required. python-dotenv and google-genai, however, ARE
+# required again: the Framer app itself now uses them directly (Gemini script
+# generation, .env-based API keys - see tools/framer/app.py), not just the
+# dead stages. See work_log.md.
 
 # --- Framer app: serving the UI, stitching a PDF, project metadata --------
 flask>=3.0
@@ -17,6 +21,8 @@ beautifulsoup4>=4.12 # webtoon_meta.py
 pystray>=0.19        # tools/framer/tray_launcher.py: system tray icon + Quit,
                      # the only way to stop the app now that start.bat launches
                      # it with no console window (see tray_launcher.py)
+python-dotenv>=1.0   # reads GEMINI_API_KEY (and GROQ_API_KEY/HF_TOKEN) from .env
+google-genai>=1.0    # tools/framer/app.py: Gemini API script generation
 
 # --- Stage 6: Chatterbox TTS, runs locally (GPU with CPU fallback) --------
 # IMPORTANT (Windows): the default PyPI torch wheel is CPU-only. To use an

@@ -48,6 +48,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import sys
 from pathlib import Path
 
 from config import ROOT, chapter_work_dir, TTS_VOICE
@@ -55,6 +56,58 @@ from manifest import Manifest
 
 # Reference clip for voice cloning. If absent, the default voice is used.
 VOICE_REF = ROOT / "assets" / "voice_ref.wav"
+
+
+# --------------------------------------------------------------------------- #
+# Render-time safety net for a missing/incomplete model cache
+# --------------------------------------------------------------------------- #
+# setup.bat pre-downloads both Chatterbox repos at install time (see
+# tools/predownload_tts_models.py) specifically so this never has to happen
+# here - but that step is best-effort (it can exhaust its retries on a bad
+# connection, and on an installer-driven unattended install its own warning
+# never reaches the user). If a repo genuinely isn't cached yet, falling
+# straight through to from_pretrained() means an un-tracked huggingface_hub
+# download with no visible progress (its tqdm output isn't byte-based per
+# line the way this app's job log expects, so it just looks stuck at
+# "Fetching N files: 0%" until an entire multi-GB file finishes) and no
+# retry if the connection stalls. Reuse the exact same retry/stall/resume
+# logic here instead, but only when the cache actually needs it - a fully
+# cached model (the normal case, post-setup) hits the local_files_only check
+# below and returns immediately, no network touched.
+def _ensure_model_cached(kind: str) -> None:
+    try:
+        tools_dir = str(ROOT / "tools")
+        if tools_dir not in sys.path:
+            sys.path.insert(0, tools_dir)
+        import predownload_tts_models as _pm
+
+        repo_id, patterns = _pm.MODELS[kind]
+        try:
+            from huggingface_hub import snapshot_download
+            snapshot_download(repo_id=repo_id, allow_patterns=patterns, local_files_only=True)
+            return  # already fully cached - no network touched
+        except Exception:  # noqa: BLE001 - not (fully) cached; fetch it below
+            pass
+        # A saved HF_TOKEN (see setup.bat step 5 / SETUP_GUIDE.md) avoids
+        # anonymous-IP throttling, but nothing else in this process necessarily
+        # loaded .env yet - a render started with --from audio never touches
+        # llm.py (which is what normally does this). load_dotenv() never
+        # overwrites an already-set env var, so this is a no-op if it did.
+        try:
+            from dotenv import load_dotenv
+            load_dotenv()
+        except Exception:  # noqa: BLE001
+            pass
+        print(f"  [voice-model] downloading {repo_id} (one-time, needs internet - "
+              f"can be several GB; the app will do this only once)...")
+        ok = _pm.download_with_retry(repo_id, patterns)
+        if ok:
+            print(f"  [voice-model] ready: {repo_id}")
+        else:
+            print(f"  [voice-model] still incomplete after retries - the model "
+                  f"loader will attempt its own download next: {repo_id}")
+    except Exception as e:  # noqa: BLE001 - best-effort only; never block the actual load
+        print(f"  [voice-model] pre-fetch check skipped ({type(e).__name__}: {e})")
 
 
 def _load_media_settings(chapter_id: str) -> dict:
@@ -197,6 +250,7 @@ def _load_model(kind: str, device: str):
     """Construct one Chatterbox model on `device` in its native fp32. On cuda we
     do NOT half-cast the submodules (that left internal tensors fp32 and broke
     matmuls); fp16 is applied at generation time via torch.autocast instead."""
+    _ensure_model_cached(kind)
     if kind == "turbo":
         from chatterbox.tts_turbo import ChatterboxTurboTTS
         model = ChatterboxTurboTTS.from_pretrained(device=device)
