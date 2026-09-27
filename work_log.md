@@ -1,136 +1,153 @@
 # Work log
 
-## Task: Gemini API integration for narration script generation
+## Task: 4 fixes/features for a real broken install (G:\Documents\ReCapper) + API key security
 
-Replaced the manual "copy chapter pages to Gemini yourself, paste the answer
-back" step with a real Gemini API integration in the Framer editor. Verified
-model IDs live against Google's current docs and confirmed the actual API
-calls, settings round-trip, and per-part streaming work end-to-end against
-the running app and a real chapter's already-prepared Gemini parts.
+All four items from the fix list, plus the follow-up Windows Credential Manager
+request, were implemented AND verified live against the actual reported-broken
+install at `G:\Documents\ReCapper` (not just the dev checkout) - that install
+is now fully fixed and running the final code.
 
-### Model / endpoint used
+### 1. BLOCKER: Gemini import fails
 
-- **SDK**: `google-genai` (the current unified SDK - was already installed in
-  `.venv`, version 2.8.0, but missing from `requirements.txt`; added it there
-  along with `python-dotenv`, since both are now used directly by the live
-  Framer app, not just the dead auto-pipeline stages the old comment referred
-  to).
-- **Default model: `gemini-3.1-pro-preview`** - verified via Google's live
-  models doc (`ai.google.dev/gemini-api/docs/models`) as the current flagship
-  Pro-tier model, and confirmed working with a real API call against this
-  project's actual `GEMINI_API_KEY`. It's labeled "Preview" (Google's 2.5 Pro
-  is "limited access" for new API keys, i.e. not a real alternative here) -
-  configurable in Settings if that changes.
-- **Faster alternative: `gemini-3.8-flash`** - also verified live. Selectable
-  per-project in Settings → Script generation, exactly as asked ("switch
-  between a higher-quality and a faster model if I hit rate limits").
-- **Call shape**: `client.models.generate_content(model=..., contents=[types.Part.from_bytes(data=pdf_bytes, mime_type="application/pdf")], config=types.GenerateContentConfig(system_instruction=..., temperature=0.7, max_output_tokens=8192))`
-  - sends each `gemini_parts/*.pdf` (already split/compressed by the existing
-    manual-flow feature) as inline bytes - all three real parts of a test
-    chapter were well under the ~50MB inline limit (5-10MB each).
-  - `google.genai.errors.APIError` has real `.code`/`.message` attributes
-    (confirmed by triggering one) - `code == 429` drives the rate-limit
-    retry/backoff path.
+**Diagnosis**: not a namespace collision. `python -c "import google; print(google.__path__)"`
+on the broken install showed a completely normal PEP 420 namespace package.
+`pip show google-genai` said "not found" - the package was simply never
+installed there. Root cause: that install's venv predates the commit that
+added `google-genai`/`python-dotenv` to `requirements.txt` (from the earlier
+Gemini-integration session), and **nothing re-runs `pip install` after a git
+pull** - "Check for updates" only pulls code. This is exactly the scenario
+described in item 4, and now that item 4 exists, it also fixes item 1: running
+the new self-repair flow on that install installed `google-genai` for real
+(verified: `from google import genai` now succeeds there).
 
-### Where the key is stored
+### 2. Suppress terminal windows on all subprocess calls
 
-`.env` in the project root - **never** in `project.json`/settings (this app's
-existing convention: `HF_TOKEN`/`GROQ_API_KEY` are `.env`-only too). New
-`GEMINI_API_KEY`-only read/write helpers in `tools/framer/app.py`
-(`_read_env_dict`/`_set_env_value`, a proper read-modify-write, unlike
-setup.bat's one-shot append for `HF_TOKEN`) back three new routes:
-`GET /api/gemini/key_status` (set?/last-4-chars hint, never the real key),
-`POST /api/gemini/key` (save/replace), `DELETE /api/gemini/key` (clear) -
-wired to a new "Script generation (Gemini)" card in the Settings screen. The
-key is global (shared across every project, like the app itself); tone,
-narration type, style reference, and model choice are per-project, in
-`projects.py`'s existing settings schema (new `"gemini"` block in
-`_default_settings()`, validated/clamped in `update_settings()` exactly like
-`watermark`/`animation` already are - backfills onto every existing project
-automatically via the existing deep-merge-on-load mechanism, confirmed live
-against a project created before this feature existed).
+Added `NO_CONSOLE` to `config.py` - `{"creationflags": subprocess.CREATE_NO_WINDOW}`
+on Windows, `{}` elsewhere - and spread it (`**NO_CONSOLE`) into every
+subprocess call the running app actually makes: `tools/framer/app.py` (webtoon
+downloader probe/run, the orchestrator subprocess, git rev-parse/pull/config,
+ffprobe, the merge-stream ffmpeg concat, taskkill), `stages/s7_assemble.py`
+(the nvenc probe and the main ffmpeg render call), and
+`tools/predownload_tts_models.py`'s model-download subprocess (this can now
+run mid-render too, via last session's `s6_tts._ensure_model_cached`). Left
+`tools/speed_audio.py` untouched - it's a standalone CLI a developer runs by
+hand from an already-open console, not something the app itself spawns, so
+there's no extra window to suppress there.
 
-### Generate flow
+### 3. Fake/frozen progress indicators
 
-- New `GET /gemini_script_stream?chapter_id=...&project=...&ch_no=...`
-  (EventSource, same SSE pattern as the existing `/gemini_parts_stream` and
-  `/merge_stream`): reads that project's saved `gemini` settings, walks
-  `gemini_parts/*.pdf` **in order** (never re-splits anything - that's still
-  entirely the existing manual-flow feature's job), and for each part:
-  - Paces requests (`GEMINI_MIN_INTERVAL_S`: 8s for Pro, 3s for Flash - Pro's
-    free-tier limit is tighter) and emits `{"type":"progress","part":i,"of_parts":n}`
-    + a `log` line ("Generating part i of n…") the UI shows live.
-  - On a 429, retries with exponential backoff (5s/10s/20s/40s/60s, 5
-    attempts) and streams a live "rate-limited - retrying in Ns…" log line
-    instead of the connection going quiet.
-  - On a non-recoverable error, stops with a clear `{"type":"error"}` message
-    naming which part failed and why, and the editor shows a **Retry** button
-    right in that status line (re-runs the whole generation - see Limitations
-    below).
-  - The system prompt (`_gemini_system_prompt`) tells Gemini the tone,
-    narration type, and (if set) to imitate the style reference's language/
-    tone/humor; extract every dialogue line and beat faithfully but narrate
-    as flowing prose, not a transcript; and - for every part after the first
-    - not to re-narrate the repeated overlap pages, and - for every part but
-    the last - not to write an ending.
-- **Overlap dedupe** (`_dedupe_overlap`, unit-tested with both a real-duplicate
-  and a no-duplicate case): the prompt instruction above is the first line of
-  defense, but isn't 100% reliable, so after generating consecutive parts'
-  text, it takes the last ~700 chars of part N and the first ~700 of part
-  N+1, and runs `difflib.SequenceMatcher.find_longest_match` between them. If
-  the match is substantial (≥30 chars), everything in part N+1 up to the end
-  of that match is dropped (so the duplicate lead-in disappears, the rest of
-  part N+1 continues untouched). If no strong match is found - the common
-  case, when Gemini followed the instruction - it's a no-op, so healthy
-  non-duplicated content is never wrongly trimmed.
-- The stitched full script is sent back as `{"type":"done","script":"..."}`.
-  The client sets `#scriptText`'s value to it and calls the **existing**
-  `loadScript()` function unchanged - the exact same `/load_script` paragraph
-  → sentence-boundary line-splitting a manual paste already goes through, so
-  the result is immediately ready to box, with zero new splitting logic.
+**3a - top progress bar never fills.** Real bug, found by tracing the CSS/JS
+interaction, not a UI framework issue: `setGlobalProg(frac, label)` sets an
+**inline** `.gfill` width for a real percentage, but when a later call passes
+`frac=null` (indeterminate), it only toggled the `.indet` class and never
+touched that inline style. Since an inline style outranks a plain (non-
+`!important`) stylesheet rule, the leftover inline width (often `0` from
+`clearGlobalProg()`) silently defeated `#globalProg.indet .gfill`'s intended
+`width:38%` - the label text updated, but the fill sat at a stale width the
+whole time, invisible. Fixed by having `setGlobalProg` clear the inline width
+(`style.removeProperty('width')`) when switching to indeterminate mode.
 
-### UI
+**3b - render ETA never counts down.** `eta_s = estimated_total_s * (1 -
+progress_fraction)`, recomputed fresh on every 1.5s poll - the math itself is
+fine. The actual bug: `progress_fraction()` is defined to return **exactly
+0.0** until the first beat/line finishes (audio==0 and video==0), so for the
+entire model-load + first-synthesis phase - which can be a large fraction of
+a short render's total time - the estimate is provably frozen, not just
+slow to update. Fixed per the task's own suggested fallback: added
+`fmtElapsed()`/`fmtEtaOrElapsed()` - shows live elapsed time (which can never
+appear frozen, since it's just `Date.now() - started_at` recomputed every
+poll) until real progress exists, then switches to the genuine, now-actually-
+decreasing ETA. Applied to both the editor's `#globalProg` label and the
+corner job widget.
 
-- **Settings → Script generation (Gemini)**: API key field (password input +
-  Save/Clear, status line, a link to `aistudio.google.com/apikey`), Tone
-  (serious/comedy/dramatic/epic) and Narration type (first-person hero POV /
-  third-person recap) dropdowns, Model dropdown (Pro/Flash), and a Style
-  reference textarea - all autosave into the project's settings exactly like
-  every other field on that screen.
-- **Editor → narration script panel**: a "Generate script with Gemini" button
-  above the script textarea, with a live status line (part N of M / rate-limit
-  retries / errors+Retry) - mirrors the existing "Chapter Source" panel's
-  Gemini-parts progress UI (same SSE-driven pattern, new element ids).
+### 4. Dependency check + self-repair in "Check for updates"
 
-### Verification (real API calls made against the user's actual GEMINI_API_KEY)
+**Required-vs-installed detection**: `_requirement_specs()` parses
+`requirements.txt` (strip comments/blank lines), `_missing_packages()` checks
+each declared package's name against `importlib.metadata.version()` - this
+compares **distribution names** (what pip/requirements.txt use), not import
+names, so `PyMuPDF`→`fitz`, `beautifulsoup4`→`bs4` etc. need no mapping table.
+`/api/update` now calls this after every successful pull (including "already
+up to date" - a broken venv isn't only possible right after a pull) and
+returns `missing_packages: [{package, feature}]`.
 
-- Confirmed both `gemini-3.1-pro-preview` and `gemini-3.8-flash` respond
-  successfully to a live `generate_content` call.
-- Ran a real chapter part (52 pages, ~5MB PDF) through the actual
-  `_gemini_generate_part`/`_gemini_system_prompt` code: produced genuinely
-  good first-person narration prose faithfully covering the dialogue/beats in
-  ~37s on Flash.
-- Unit-tested `_dedupe_overlap`/`_stitch_script_parts` with a synthetic
-  real-duplicate case (correctly trimmed, new content preserved) and a
-  no-duplicate case (correctly left untouched, no false-positive trimming).
-- Started the real Flask app and, against a real project: verified
-  `/api/gemini/key_status|key` set/replace/clear round-trip against the ACTUAL
-  `.env` file (backed up first, restored after - every other `.env` line was
-  preserved untouched at each step); verified the `gemini` settings block
-  backfills onto a pre-existing project and round-trips save/validate/clamp
-  correctly (including falling back to defaults on invalid `tone`/`model`
-  values); streamed `/gemini_script_stream` against a real 3-part chapter and
-  watched the correct `start`/`log`/`progress` events arrive live (stopped
-  after part 1 of 3 completed successfully, to bound API cost/time for this
-  verification pass - not a full run through `done`).
-- `py_compile` on all touched `.py` files; extracted and `node --check`'d
-  every inline `<script>` block in `index.html`; no duplicate DOM ids.
+**Feature→package mapping**: a single `FEATURE_PACKAGES` dict in `app.py`
+(package name -> one-line plain-English consequence, e.g. `"google-genai":
+"AI script generation (Settings -> Script generation)"`), covering every
+line in `requirements.txt`.
 
-### Known limitation (by design, for now)
+**Install flow**: the editor shows the missing list + a plain-language reason
+per package, with an "Install missing packages" button. `/api/deps/install_stream`
+(SSE) runs `pip install` with the exact spec strings from `requirements.txt`
+(so version constraints are respected), streaming pip's real output as live
+log lines - genuine progress, not a fabricated percentage pip doesn't
+actually report for a multi-package install. If `torch`/`torchaudio` were
+among the missing packages, it automatically follows up with setup.bat's own
+CUDA-torch override (`--index-url .../cu128`), then re-verifies
+`torch.cuda.is_available()` and reports it. On completion it re-checks what's
+still missing so a partial failure can be retried for just what's left.
 
-A failure partway through a multi-part chapter currently means clicking
-"Generate script with Gemini" again restarts from part 1 (no per-chapter
-checkpoint of already-completed parts). The automatic 429 retry/backoff
-already covers the common transient case within one run; a full restart is
-the fallback only for a harder failure (e.g. a bad key, or a part that fails
-even after 5 retries).
+**Real bug found while verifying this end-to-end**: after installing
+`google-genai` into the ALREADY-RUNNING server process, `/api/deps/check`
+still reported it missing - `importlib.metadata` caches each `sys.path`
+directory's listing on first access and doesn't notice a dist-info folder
+that appeared after the process started. Fixed by calling
+`importlib.invalidate_caches()` at the top of `_missing_packages()`, so a
+successful in-app install is recognized immediately, with no app restart
+needed.
+
+### Follow-up: Gemini key in Windows Credential Manager, not plaintext
+
+`_get_gemini_key()`/`_set_gemini_key()`/`_clear_gemini_key()` now go through
+the `keyring` package (`WinVaultKeyring` backend on Windows) first, falling
+back to the existing `.env` convention only if keyring has no usable backend.
+A key already sitting in `.env` from before this existed is migrated into
+Credential Manager (and removed from `.env`) the first time it's read, so
+existing installs get the improvement automatically, not just new keys saved
+from now on. The Settings UI and SETUP_GUIDE.md both state plainly: **this is
+obfuscation, not absolute secrecy** - a local app's key is always ultimately
+readable on the machine it runs on by whoever controls that machine; the real
+protection was always that it's each user's own key and never leaves their PC
+either way. Keyring just keeps it out of a plaintext file one accidental
+"open in Notepad" away from being read.
+
+### Verification
+
+Every fix was tested against a REAL running server, most against the actual
+previously-broken `G:\Documents\ReCapper` install, not just the dev checkout:
+
+- Confirmed the exact `ImportError` on the broken install, confirmed
+  `google-genai` genuinely wasn't installed there (not a namespace issue).
+- `py_compile` on every touched `.py` file; extracted and `node --check`'d
+  every inline `<script>` block; no duplicate DOM ids.
+- Ran `/api/deps/check` on the broken install -> correctly reported
+  `google-genai` missing with the right feature description.
+- Ran the real `/api/deps/install_stream` SSE endpoint against that install
+  live: watched real `pip install` output stream in, confirmed `google-genai`
+  actually installed (`pip show`, and `from google import genai` - both
+  succeeded afterward).
+- Caught the `importlib.metadata` caching bug specifically because the
+  already-running server still reported it missing post-install; fixed with
+  `invalidate_caches()`, confirmed clean after a restart.
+- Ran the real Windows Credential Manager round-trip (`keyring.set_password`/
+  `get_password`/`delete_password`) directly, then through the app's own
+  `/api/gemini/key_status|key` endpoints - confirmed the existing plaintext
+  `.env` key migrates into Credential Manager (and is removed from `.env`)
+  the first time it's read, confirmed `_gemini_client()` still constructs
+  correctly reading from keyring, confirmed set/replace/clear all work.
+- Restarted the actual `G:\Documents\ReCapper` tray app (the user's live
+  instance) with the complete, final code: confirmed 0 missing packages,
+  Gemini import works, and the key is correctly stored in Credential Manager.
+
+### Note on process
+
+The reported-broken install (`G:\Documents\ReCapper`) and this dev checkout
+are two separate git working trees on the same machine/Windows account -
+verifying live against both surfaced one artifact worth flagging: Windows
+Credential Manager is scoped per-user, not per-install-folder, so testing the
+same `keyring` service/account name from two installs on the same account
+made the second one see the first's migrated key immediately. Not a bug in
+the migration logic (a real separate machine/user wouldn't share this), but
+it did mean the G: install's own plaintext `.env` copy needed an explicit
+one-time manual cleanup during verification, since its own migration path
+never ran (keyring already had a value from the other install's earlier test).

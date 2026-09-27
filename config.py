@@ -1,10 +1,19 @@
 """Central configuration. Everything is local and file-based by design."""
 import os
+import subprocess
+import sys
 from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
+
+# Extra subprocess.Popen/run kwargs that suppress the console window a
+# console-subsystem child (python/ffmpeg/git/...) would otherwise get on
+# Windows whenever the parent has none of its own - true for this whole app
+# once launched via tray_launcher.py's pythonw.exe. Spread into every
+# subprocess call the app makes: `subprocess.run(cmd, **NO_CONSOLE)`.
+NO_CONSOLE = {"creationflags": subprocess.CREATE_NO_WINDOW} if sys.platform == "win32" else {}
 INPUTS_DIR = ROOT / "inputs"     # source PDFs go here
 WORK_DIR = ROOT / "work"         # per-chapter intermediate files
 OUTPUT_DIR = ROOT / "output"     # final artifacts (storyboard / video)

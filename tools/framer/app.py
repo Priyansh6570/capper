@@ -59,7 +59,7 @@ from PIL import Image, ImageFilter  # noqa: E402
 # gives us the exact stitch used by the real pipeline.
 from stages import s1_pdf_to_pages as s1  # noqa: E402
 import config  # noqa: E402 - module import so chapter_scope()/set_/clear_ are reachable
-from config import chapter_work_dir, chapter_output_dir, WORK_DIR, OUTPUT_DIR, PROJECTS_DIR  # noqa: E402
+from config import chapter_work_dir, chapter_output_dir, WORK_DIR, OUTPUT_DIR, PROJECTS_DIR, NO_CONSOLE  # noqa: E402
 from manifest import Manifest, Page, Panel  # noqa: E402
 from atomic_io import atomic_write_json, read_json_with_backup_fallback  # noqa: E402
 
@@ -300,7 +300,7 @@ def _webtoon_out_flag(base: list[str]) -> str:
         _WEBTOON_OUT_FLAG = "--out"
         try:
             h = subprocess.run(base + ["--help"], capture_output=True, text=True,
-                               timeout=30)
+                               timeout=30, **NO_CONSOLE)
             text = (h.stdout or "") + (h.stderr or "")
             if "--out" not in text and "--dest" in text:
                 _WEBTOON_OUT_FLAG = "--dest"
@@ -325,7 +325,7 @@ def _run_webtoon_downloader(url: str, chapter_no: str, dest: Path
     if chapter_no:
         cmd += ["--start", str(chapter_no), "--end", str(chapter_no)]
     proc = subprocess.run(cmd, capture_output=True, text=True,
-                          timeout=WEBTOON_TIMEOUT_S)
+                          timeout=WEBTOON_TIMEOUT_S, **NO_CONSOLE)
     return cmd, proc
 
 
@@ -684,7 +684,7 @@ def _gemini_client():
         load_dotenv()
     except Exception:  # noqa: BLE001
         pass
-    key = os.environ.get("GEMINI_API_KEY")
+    key, _source = _get_gemini_key()
     if not key:
         raise RuntimeError("GEMINI_API_KEY not set. Add it in Settings (Script "
                             "generation) or to a .env file in the project root.")
@@ -901,12 +901,36 @@ def gemini_script_stream():
 
 # --------------------------------------------------------------------------- #
 # Gemini API key - the ONE credential in this app that is genuinely global
-# (not per-project, unlike tone/style/model above): stored in .env at the
-# project root, same convention as GROQ_API_KEY/HF_TOKEN elsewhere in this
-# codebase, and NEVER in project.json. Read back only as a set/unset flag +
-# a last-4-chars hint - the raw key itself is never sent back to the browser
-# once saved.
+# (not per-project, unlike tone/style/model above), and NEVER in project.json.
+#
+# Preferred storage is the OS credential store (Windows Credential Manager,
+# via the `keyring` package) instead of a plaintext .env line - this is
+# obfuscation, not absolute secrecy: a local app's key is always ultimately
+# readable on the machine it runs on, one way or another, by whoever controls
+# that machine. The real protection was always that it's each user's OWN key
+# and never leaves their machine - keyring just keeps it out of a plaintext
+# file that's one accidental "open in Notepad" or careless screen-share away
+# from being read. Falls back to the existing .env convention (same as
+# GROQ_API_KEY/HF_TOKEN elsewhere in this codebase) when keyring has no usable
+# backend - still local-only, just plaintext again.
+#
+# A key already sitting in .env from before this existed is migrated into
+# keyring (and removed from .env) the first time it's read, so installs that
+# predate this also get the improvement, not just new keys saved from now on.
 # --------------------------------------------------------------------------- #
+_KEYRING_SERVICE = "ReCapper"
+_KEYRING_ACCOUNT = "GEMINI_API_KEY"
+
+
+def _keyring_backend():
+    try:
+        import keyring
+        keyring.get_keyring()  # raises/returns a no-op fail backend if none is usable
+        return keyring
+    except Exception:  # noqa: BLE001 - keyring missing or no OS backend -> caller falls back to .env
+        return None
+
+
 def _env_file_path() -> Path:
     return ROOT / ".env"
 
@@ -946,10 +970,58 @@ def _set_env_value(key: str, value: str | None) -> None:
     path.write_text("\n".join(out) + ("\n" if out else ""), encoding="utf-8")
 
 
+def _get_gemini_key() -> tuple[str, str]:
+    """Returns (key, source); source is "keyring", "env", or "" (unset)."""
+    kr = _keyring_backend()
+    env_key = _read_env_dict().get("GEMINI_API_KEY") or os.environ.get("GEMINI_API_KEY", "")
+    if not kr:
+        return env_key, ("env" if env_key else "")
+    try:
+        key = kr.get_password(_KEYRING_SERVICE, _KEYRING_ACCOUNT)
+    except Exception:  # noqa: BLE001
+        key = None
+    if key:
+        return key, "keyring"
+    if env_key:  # one-time migration off plaintext storage
+        try:
+            kr.set_password(_KEYRING_SERVICE, _KEYRING_ACCOUNT, env_key)
+            _set_env_value("GEMINI_API_KEY", None)
+            return env_key, "keyring"
+        except Exception:  # noqa: BLE001 - migration failed; .env still has it
+            pass
+    return env_key, ("env" if env_key else "")
+
+
+def _set_gemini_key(key: str) -> str:
+    """Saves `key` and returns where it ended up: "keyring" or "env"."""
+    os.environ["GEMINI_API_KEY"] = key  # effective immediately, no restart needed
+    kr = _keyring_backend()
+    if kr:
+        try:
+            kr.set_password(_KEYRING_SERVICE, _KEYRING_ACCOUNT, key)
+            _set_env_value("GEMINI_API_KEY", None)  # don't leave a stale plaintext copy
+            return "keyring"
+        except Exception:  # noqa: BLE001
+            pass
+    _set_env_value("GEMINI_API_KEY", key)
+    return "env"
+
+
+def _clear_gemini_key() -> None:
+    os.environ.pop("GEMINI_API_KEY", None)
+    kr = _keyring_backend()
+    if kr:
+        try:
+            kr.delete_password(_KEYRING_SERVICE, _KEYRING_ACCOUNT)
+        except Exception:  # noqa: BLE001
+            pass
+    _set_env_value("GEMINI_API_KEY", None)
+
+
 @app.get("/api/gemini/key_status")
 def api_gemini_key_status():
-    key = _read_env_dict().get("GEMINI_API_KEY") or os.environ.get("GEMINI_API_KEY", "")
-    return jsonify(set=bool(key), hint=(f"…{key[-4:]}" if len(key) >= 4 else ""))
+    key, source = _get_gemini_key()
+    return jsonify(set=bool(key), hint=(f"…{key[-4:]}" if len(key) >= 4 else ""), source=source)
 
 
 @app.post("/api/gemini/key")
@@ -958,15 +1030,13 @@ def api_set_gemini_key():
     key = (data.get("key") or "").strip()
     if not key:
         return jsonify(error="Key required."), 400
-    _set_env_value("GEMINI_API_KEY", key)
-    os.environ["GEMINI_API_KEY"] = key  # effective immediately, no restart needed
-    return jsonify(ok=True)
+    source = _set_gemini_key(key)
+    return jsonify(ok=True, source=source)
 
 
 @app.delete("/api/gemini/key")
 def api_clear_gemini_key():
-    _set_env_value("GEMINI_API_KEY", None)
-    os.environ.pop("GEMINI_API_KEY", None)
+    _clear_gemini_key()
     return jsonify(ok=True)
 
 
@@ -1604,7 +1674,7 @@ def _run_job(job: "Job") -> None:
                 cmd, cwd=str(ROOT), env=env,
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 stdin=subprocess.DEVNULL, text=True, bufsize=1,
-                encoding="utf-8", errors="replace")
+                encoding="utf-8", errors="replace", **NO_CONSOLE)
             job.proc = proc
 
             for line in proc.stdout:                       # streams as it arrives
@@ -1918,12 +1988,167 @@ def set_settings():
 
 
 # --------------------------------------------------------------------------- #
+# Dependency self-repair - pulling new CODE (below) can't install a new
+# PACKAGE that code needs (e.g. google-genai, added for Gemini script
+# generation, after most installs already existed) - .venv is deliberately
+# untouched by git. Compares requirements.txt's declared packages against
+# what's actually importable in THIS venv via importlib.metadata (checking
+# installed *distributions*, not import names - PyMuPDF installs as `fitz`,
+# beautifulsoup4 as `bs4`, etc., but pip/importlib.metadata both key on the
+# distribution name either way, so this needs no import-name mapping).
+# --------------------------------------------------------------------------- #
+FEATURE_PACKAGES = {
+    "flask": "the app itself",
+    "PyMuPDF": "PDF page rendering",
+    "Pillow": "image processing (compositing, previews, thumbnails)",
+    "requests": "chapter metadata lookup",
+    "beautifulsoup4": "chapter metadata lookup",
+    "pystray": "the system tray icon",
+    "python-dotenv": "reading saved API keys from .env",
+    "google-genai": "AI script generation (Settings -> Script generation)",
+    "keyring": "storing the Gemini API key in Windows Credential Manager instead of a plaintext file",
+    "torch": "AI narration + GPU acceleration",
+    "torchaudio": "AI narration + GPU acceleration",
+    "chatterbox-tts": "AI narration (voice generation)",
+    "soundfile": "voice reference processing",
+    "numpy": "audio processing",
+    "edge-tts": "the draft (fast, no-GPU) narration mode",
+    "mutagen": "the draft narration mode's clip-length reading",
+    "moviepy": "video rendering (fallback path)",
+}
+
+
+def _requirement_specs() -> list[str]:
+    path = ROOT / "requirements.txt"
+    if not path.exists():
+        return []
+    specs = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.split("#", 1)[0].strip()
+        if line:
+            specs.append(line)
+    return specs
+
+
+def _requirement_name(spec: str) -> str:
+    return re.split(r"[<>=!~\s]", spec, 1)[0].strip()
+
+
+def _missing_packages() -> list[dict]:
+    import importlib
+    from importlib import metadata
+    # A package pip-installed after this process started (e.g. by the install
+    # flow below, in-process for the rest of the app's lifetime) isn't found
+    # without this - Python caches each sys.path directory's listing on first
+    # import-system access and won't otherwise notice new dist-info folders.
+    importlib.invalidate_caches()
+    missing = []
+    for spec in _requirement_specs():
+        name = _requirement_name(spec)
+        try:
+            metadata.version(name)
+        except metadata.PackageNotFoundError:
+            missing.append({"package": name,
+                             "feature": FEATURE_PACKAGES.get(name, "part of the app")})
+    return missing
+
+
+@app.get("/api/deps/check")
+def api_deps_check():
+    return jsonify(missing=_missing_packages())
+
+
+def _install_deps_stream(packages: list[str]):
+    """pip install every currently-missing package (as its full requirements.txt
+    spec, so version constraints are respected) in one call, then - only if
+    torch/torchaudio were among them - re-run setup.bat's own CUDA-torch
+    override: a plain `pip install` pulls a CPU-only torch as a side effect of
+    resolving chatterbox-tts's dependencies, same as setup.bat's step 4a/4b."""
+    specs = [s for s in _requirement_specs() if _requirement_name(s) in packages]
+    if not specs:
+        yield {"type": "error", "message": "Nothing to install."}
+        return
+
+    yield {"type": "log", "line": f"Installing {len(specs)} package(s): {', '.join(specs)}"}
+    cmd = [sys.executable, "-m", "pip", "install"] + specs
+    yield {"type": "log", "line": "$ " + " ".join(cmd)}
+    proc = subprocess.Popen(cmd, cwd=str(ROOT), stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                            text=True, bufsize=1, encoding="utf-8", errors="replace",
+                            **NO_CONSOLE)
+    for line in proc.stdout:
+        yield {"type": "log", "line": line.rstrip("\n")}
+    proc.wait()
+    if proc.returncode != 0:
+        yield {"type": "error", "message": f"pip install failed (exit code {proc.returncode})."}
+        return
+
+    needs_cuda_torch = "torch" in packages or "torchaudio" in packages
+    if needs_cuda_torch:
+        yield {"type": "log", "line": "Switching PyTorch to the CUDA build "
+                                       "(a plain install pulls a CPU-only one)…"}
+        cmd2 = [sys.executable, "-m", "pip", "install", "--upgrade",
+                "--index-url", "https://download.pytorch.org/whl/cu128",
+                "torch", "torchaudio"]
+        yield {"type": "log", "line": "$ " + " ".join(cmd2)}
+        proc2 = subprocess.Popen(cmd2, cwd=str(ROOT), stdout=subprocess.PIPE,
+                                 stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                                 text=True, bufsize=1, encoding="utf-8", errors="replace",
+                                 **NO_CONSOLE)
+        for line in proc2.stdout:
+            yield {"type": "log", "line": line.rstrip("\n")}
+        proc2.wait()
+        if proc2.returncode != 0:
+            yield {"type": "error", "message": f"CUDA PyTorch install failed "
+                                                f"(exit code {proc2.returncode})."}
+            return
+
+    cuda_ok = None
+    if needs_cuda_torch:
+        try:
+            check = subprocess.run(
+                [sys.executable, "-c",
+                 "import torch, sys; sys.exit(0 if torch.cuda.is_available() else 1)"],
+                timeout=30, **NO_CONSOLE)
+            cuda_ok = check.returncode == 0
+        except Exception:  # noqa: BLE001 - report as unknown, not fatal
+            cuda_ok = None
+    yield {"type": "result", "missing": _missing_packages(), "cuda_ok": cuda_ok}
+
+
+@app.get("/api/deps/install_stream")
+def api_deps_install_stream():
+    packages = [p for p in (request.args.get("packages") or "").split(",") if p]
+
+    def stream():
+        try:
+            for item in _install_deps_stream(packages):
+                if item["type"] == "result":
+                    yield _sse({"type": "done", "ok": not item["missing"],
+                                "missing": item["missing"], "cuda_ok": item["cuda_ok"]})
+                else:
+                    yield _sse(item)
+        except GeneratorExit:
+            raise
+        except Exception as e:  # noqa: BLE001 - last-resort: still report, don't crash the stream
+            yield _sse({"type": "error", "message": f"{type(e).__name__}: {e}"})
+
+    return Response(stream(), mimetype="text/event-stream",
+                    headers={"Cache-Control": "no-cache",
+                             "X-Accel-Buffering": "no",
+                             "Connection": "keep-alive"})
+
+
+# --------------------------------------------------------------------------- #
 # in-app update - "Check for updates" pulls the app's own CODE from git.
 # Deliberately just `git pull --ff-only` in ROOT: nothing here touches .venv,
 # installed packages, or the Hugging Face model cache - those all live
 # outside what git tracks (see .gitignore), so a pull can never reach them.
 # GIT_TERMINAL_PROMPT=0 makes a missing/expired credential fail fast with a
 # clear error instead of hanging the request on an invisible auth prompt.
+# Every success path also reports currently-missing packages (see
+# _missing_packages above) - a pull can leave the CODE ahead of the venv's
+# installed packages, and this is the only place that would ever notice.
 # --------------------------------------------------------------------------- #
 @app.post("/api/update")
 def api_update():
@@ -1936,7 +2161,7 @@ def api_update():
     def run_git(*args):
         env = dict(os.environ, GIT_TERMINAL_PROMPT="0")
         return subprocess.run(["git", *args], cwd=str(ROOT), env=env,
-                               capture_output=True, text=True, timeout=120)
+                               capture_output=True, text=True, timeout=120, **NO_CONSOLE)
 
     try:
         old = run_git("rev-parse", "HEAD")
@@ -1949,7 +2174,7 @@ def api_update():
             subprocess.run(["git", "config", "--global", "--add", "safe.directory",
                              str(ROOT).replace("\\", "/")],
                             env=dict(os.environ, GIT_TERMINAL_PROMPT="0"),
-                            capture_output=True, text=True, timeout=30)
+                            capture_output=True, text=True, timeout=30, **NO_CONSOLE)
             old = run_git("rev-parse", "HEAD")
         if old.returncode != 0:
             return jsonify(ok=False, message="Could not read the current version: "
@@ -1966,20 +2191,23 @@ def api_update():
 
         if new_hash == old_hash:
             return jsonify(ok=True, already_up_to_date=True, files_changed=0,
-                            requirements_changed=False, message="Already up to date.")
+                            requirements_changed=False, message="Already up to date.",
+                            missing_packages=_missing_packages())
 
         diff = run_git("diff", "--name-only", old_hash, new_hash)
         changed = [ln for ln in (diff.stdout or "").splitlines() if ln.strip()]
         requirements_changed = "requirements.txt" in changed
+        missing = _missing_packages()
 
-        if requirements_changed:
-            message = (f"Updated {len(changed)} file(s). Dependencies changed - "
-                       f"please re-run setup.bat, then restart the app.")
+        if missing:
+            message = (f"Updated {len(changed)} file(s). {len(missing)} required "
+                       f"package(s) aren't installed yet - see below.")
         else:
             message = f"Updated {len(changed)} file(s). Restart the app to apply."
 
         return jsonify(ok=True, already_up_to_date=False, files_changed=len(changed),
-                        requirements_changed=requirements_changed, message=message)
+                        requirements_changed=requirements_changed, message=message,
+                        missing_packages=missing)
     except subprocess.TimeoutExpired:
         return jsonify(ok=False, message="Update timed out - check your internet "
                                           "connection and try again.")
@@ -2304,7 +2532,7 @@ def _ffprobe_info(path: Path) -> dict | None:
             [ffprobe, "-v", "error",
              "-show_entries", "stream=index,codec_type,width,height,codec_name,sample_rate",
              "-of", "json", str(path)],
-            capture_output=True, text=True, timeout=30)
+            capture_output=True, text=True, timeout=30, **NO_CONSOLE)
         streams = json.loads(out.stdout or "{}").get("streams") or []
     except Exception:  # noqa: BLE001 - a bad probe must not crash the merge
         return None
@@ -2464,7 +2692,8 @@ def merge_stream(slug):
             yield _sse({"type": "log", "line": "$ " + " ".join(cmd)})
             proc = subprocess.Popen(cmd, cwd=str(ROOT), stdout=subprocess.PIPE,
                                     stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
-                                    text=True, bufsize=1, encoding="utf-8", errors="replace")
+                                    text=True, bufsize=1, encoding="utf-8", errors="replace",
+                                    **NO_CONSOLE)
             with _MERGE_LOCK:
                 _MERGE_JOBS[slug] = proc
             for line in proc.stdout:
@@ -2587,7 +2816,7 @@ def _resolve_port(host: str, port: int) -> int | None:
         if choice == "c" and pid:
             try:
                 subprocess.run(["taskkill", "/F", "/PID", str(pid)],
-                                capture_output=True, timeout=10)
+                                capture_output=True, timeout=10, **NO_CONSOLE)
                 print(f"  Closed the previous instance (PID {pid}).")
                 for _ in range(20):
                     if not _port_open(host, port):

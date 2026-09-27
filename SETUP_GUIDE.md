@@ -152,13 +152,17 @@ chapter pages to Gemini by hand:
 
 1. Get a free API key at <https://aistudio.google.com/apikey>.
 2. Open a project's **Settings → Script generation**, paste it in, and click
-   "Save key". It's saved to the same `.env` file as `HF_TOKEN` above (never
-   committed, never sent anywhere but Google's API) — every project shares
-   this one key. Tone, narration type, style reference, and which Gemini
-   model to use are per-project, in that same settings section.
+   "Save key". It's saved in Windows Credential Manager when available (a
+   plain `.env` line, like `HF_TOKEN` above, otherwise) — never committed,
+   never sent anywhere but Google's API — and shared across every project.
+   Tone, narration type, style reference, and which Gemini model to use are
+   per-project, in that same settings section. This keeps the key out of a
+   plaintext file, not absolutely secret: it's still readable on this
+   machine by whoever controls it, same as any local app's saved credential.
 3. Already have a key saved and need to replace or remove it? Paste a new one
-   and save again, or click the small "×" button to clear it — or edit/delete
-   the `GEMINI_API_KEY=...` line in `.env` by hand.
+   and save again, or click the small "×" button to clear it — the app
+   updates Credential Manager (or `.env`) either way, so there's nothing to
+   edit by hand unless you want to.
 
 This is entirely optional — the manual "Chapter Source" panel's Gemini-parts
 prep (splitting/compressing the PDF for upload) still works without a key;

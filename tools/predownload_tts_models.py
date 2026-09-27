@@ -40,6 +40,8 @@ import sys
 import time
 from pathlib import Path
 
+NO_CONSOLE = {"creationflags": subprocess.CREATE_NO_WINDOW} if sys.platform == "win32" else {}
+
 MAX_ATTEMPTS = 6
 STALL_TIMEOUT_S = 120         # kill + retry an attempt with no on-disk growth for this long
 STALL_POLL_S = 5
@@ -82,6 +84,7 @@ def _spawn_attempt(repo_id: str, allow_patterns: list[str]) -> subprocess.Popen:
     return subprocess.Popen(
         [sys.executable, "-c", code],
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
+        **NO_CONSOLE,
     )
 
 

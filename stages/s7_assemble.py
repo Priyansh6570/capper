@@ -52,7 +52,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from config import ROOT, chapter_output_dir, chapter_work_dir
+from config import ROOT, chapter_output_dir, chapter_work_dir, NO_CONSOLE
 from manifest import Manifest, Panel
 from atomic_io import read_json_with_backup_fallback
 
@@ -603,7 +603,7 @@ def _ffmpeg() -> str:
 def _has_nvenc(ffmpeg: str) -> bool:
     try:
         out = subprocess.run([ffmpeg, "-hide_banner", "-encoders"],
-                             capture_output=True, text=True, timeout=20)
+                             capture_output=True, text=True, timeout=20, **NO_CONSOLE)
         return "h264_nvenc" in (out.stdout or "")
     except Exception:  # noqa: BLE001
         return False
@@ -774,7 +774,7 @@ def _assemble_ffmpeg(items: list[dict], music_path: Path | None, total: float, o
     for codec in codecs:
         cmd = _build_cmd(ffmpeg, items, music_path, total, out, codec, transition, crossfade,
                          ken_burns, video_bg, bg_dim)
-        proc = subprocess.run(cmd)
+        proc = subprocess.run(cmd, **NO_CONSOLE)
         if proc.returncode == 0:
             return codec
         last = f"ffmpeg exited {proc.returncode} ({codec})"

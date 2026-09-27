@@ -23,6 +23,7 @@ pystray>=0.19        # tools/framer/tray_launcher.py: system tray icon + Quit,
                      # it with no console window (see tray_launcher.py)
 python-dotenv>=1.0   # reads GEMINI_API_KEY (and GROQ_API_KEY/HF_TOKEN) from .env
 google-genai>=1.0    # tools/framer/app.py: Gemini API script generation
+keyring>=25.0        # stores GEMINI_API_KEY in Windows Credential Manager, not plaintext
 
 # --- Stage 6: Chatterbox TTS, runs locally (GPU with CPU fallback) --------
 # IMPORTANT (Windows): the default PyPI torch wheel is CPU-only. To use an

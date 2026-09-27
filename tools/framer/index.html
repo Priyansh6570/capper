@@ -749,6 +749,7 @@
       </div>
       <div class="screenbody">
         <div class="fetchresult" id="updateResult"></div>
+        <div id="depsResult"></div>
 
         <div class="composer" id="npComposer">
           <div class="composerhead">
@@ -918,7 +919,7 @@
                 <button type="button" id="geminiKeyClearBtn" class="small ghost icon" data-icon="x" data-ic-size="12" title="Remove the saved key"></button>
               </div>
               <div class="hint" id="geminiKeyStatus"></div>
-              <div class="setnote"><span class="tag">NOTE</span><span>Get a free key at <a href="javascript:void(0)" id="geminiKeyLinkBtn">aistudio.google.com/apikey</a>. Stored in this app's <b>.env</b> file - never committed, never sent anywhere but Google's API.</span></div>
+              <div class="setnote"><span class="tag">NOTE</span><span>Get a free key at <a href="javascript:void(0)" id="geminiKeyLinkBtn">aistudio.google.com/apikey</a>. Saved in Windows Credential Manager when available (plain <b>.env</b> otherwise) - never committed, never sent anywhere but Google's API. This keeps it out of a plaintext file, not absolutely secret: it's still readable on this machine by whoever controls it, same as any local app's saved credential - the real protection is that it's yours alone and never leaves this PC.</span></div>
 
               <div class="setgridpair" style="margin-top:10px">
                 <label class="field" style="margin:0"><span class="lbl" style="text-transform:none;letter-spacing:0;font-weight:400;color:var(--muted)">Tone</span>
@@ -1347,7 +1348,13 @@ function setGlobalProg(frac, label) {
   w.classList.add('on');
   w.classList.toggle('indet', frac == null);
   if (label) w.querySelector('.glbl').textContent = label;
-  if (frac != null) w.querySelector('.gfill').style.width = Math.round(frac * 100) + '%';
+  const fill = w.querySelector('.gfill');
+  // A leftover inline width from a prior determinate call outranks the
+  // .indet rule's own width (inline beats a plain stylesheet rule) - clear
+  // it going indeterminate, or the sliding chunk silently renders at
+  // whatever % (often 0) was last set, instead of its intended 38%.
+  if (frac != null) fill.style.width = Math.round(frac * 100) + '%';
+  else fill.style.removeProperty('width');
 }
 function clearGlobalProg() {
   const w = document.getElementById('globalProg');
@@ -2440,7 +2447,8 @@ function syncEditorJobUI() {
     gen.what = active.what; gen.total = active.total_beats;
     setGenBusy(true);
     setGenLog(active.log);
-    const etaTxt = active.eta_s != null ? ' - ' + fmtEta(active.eta_s) : '';
+    const etaTxt = active.status === 'running' ? ' - ' + fmtEtaOrElapsed(active)
+      : (active.eta_s != null ? ' - ' + fmtEta(active.eta_s) : '');
     if (active.status === 'queued') setGenBar(0, true, 'Queued' + etaTxt);
     // A not-yet-cached voice model is downloading (see stages/s6_tts.py) -
     // audio/video counters can't move yet, so a determinate bar would just
@@ -2492,6 +2500,21 @@ function fmtEta(s) {
   if (m < 60) return `~${m}m ${s % 60}s left`;
   return `~${Math.floor(m / 60)}h ${m % 60}m left`;
 }
+function fmtElapsed(startedAtIso) {
+  const s = Math.max(0, Math.round((Date.now() - new Date(startedAtIso).getTime()) / 1000));
+  if (s < 60) return `${s}s elapsed`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ${s % 60}s elapsed`;
+  return `${Math.floor(m / 60)}h ${m % 60}m elapsed`;
+}
+// eta_s is a fixed estimate * (1 - progress) - before the first beat finishes,
+// progress is exactly 0, so it reads as a frozen number no matter how long
+// model loading takes. Elapsed time always ticks, so it never looks stuck;
+// once real progress exists, the estimate below it is genuinely decreasing.
+function fmtEtaOrElapsed(j) {
+  if (j.progress > 0 && j.eta_s != null) return fmtEta(j.eta_s);
+  return j.started_at ? fmtElapsed(j.started_at) : '';
+}
 function escHtml(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
 
 // ---------------------------------------------------------------------------
@@ -2518,7 +2541,7 @@ function renderJobWidget() {
       <div class="jwrow"><span class="jwname" style="font-weight:400">${escHtml(j.message || 'Downloading voice model…')}</span></div>
     </div>` : `
     <div class="jwjob running">
-      <div class="jwrow"><span class="jwname">${escHtml(jobLabel(j))}</span><span class="jweta">${fmtEta(j.eta_s)}</span></div>
+      <div class="jwrow"><span class="jwname">${escHtml(jobLabel(j))}</span><span class="jweta">${fmtEtaOrElapsed(j)}</span></div>
       <div class="jwtrack"><div class="jwfill" style="width:${Math.round((j.progress || 0) * 100)}%"></div></div>
     </div>`).join('');
   if (queued.length) {
@@ -3008,8 +3031,9 @@ async function openSettingsScreen(slug) {
 async function loadGeminiKeyStatus() {
   try {
     const d = await (await fetch('/api/gemini/key_status')).json();
+    const where = d.source === 'keyring' ? 'Windows Credential Manager' : '.env (plaintext)';
     $('geminiKeyStatus').textContent = d.set
-      ? `Key saved (ends in ${d.hint || '…'}).` : 'No key saved yet.';
+      ? `Key saved in ${where}, ends in ${d.hint || '…'}.` : 'No key saved yet.';
     $('geminiKeyInput').placeholder = d.set ? 'Paste a new key to replace it' : 'Paste your Gemini API key';
   } catch (e) { $('geminiKeyStatus').textContent = ''; }
 }
@@ -3556,25 +3580,92 @@ function backToProject() { navTo(S.project ? { project: S.project } : {}); }
 async function checkForUpdate() {
   const box = $('updateResult');
   box.classList.remove('on', 'ok', 'warn');
+  $('depsResult').innerHTML = '';
   btnBusy($('checkUpdateBtn'), true);
   try {
     const res = await fetch('/api/update', { method: 'POST' });
     const d = await res.json();
-    const kind = (d.ok && !d.requirements_changed) ? 'ok' : 'warn';
+    const missing = d.missing_packages || [];
+    const kind = (d.ok && !missing.length) ? 'ok' : 'warn';
     // An update was actually pulled (not "already up to date", not a
     // failure) - offer to apply it right now instead of leaving the user to
     // close and reopen start.bat themselves.
     setFetchResult(box, d.message || (d.ok ? 'Updated.' : 'Update check failed.'), kind,
-                   d.ok && !d.already_up_to_date ? restartApp : null);
+                   d.ok && !d.already_up_to_date && !missing.length ? restartApp : null);
     if (!d.ok) showToast('Update check failed.', null, null, 'err');
+    else if (missing.length) showMissingPackagesPrompt(missing);
     else if (d.already_up_to_date) showToast('Already up to date.', null, null, 'ok');
-    else showToast(d.message, null, null, d.requirements_changed ? 'warn' : 'ok');
+    else showToast(d.message, null, null, 'ok');
   } catch (e) {
     setFetchResult(box, 'Update check failed: ' + e.message, 'warn');
     showToast('Update check failed.', null, null, 'err');
   } finally {
     btnBusy($('checkUpdateBtn'), false);
   }
+}
+
+// --- dependency self-repair: missing packages after a pull (see api_deps_check
+// / api_deps_install_stream in app.py) --------------------------------------
+function showMissingPackagesPrompt(missing) {
+  const rows = missing.map(m =>
+    `<div class="gprow"><span class="gpname">${escHtml(m.package)}</span>` +
+    `<span class="gpmeta">needed for: ${escHtml(m.feature)}</span></div>`).join('');
+  $('depsResult').innerHTML =
+    `<div class="jobcard">
+       <div class="jobhead">${ic('alert',15)}<b>${missing.length} package(s) not installed</b></div>
+       <div class="gplist">${rows}</div>
+       <div class="jobacts">
+         <button class="small primary" type="button" id="depsInstallBtn">${ic('download',13)}<span>Install missing packages</span></button>
+       </div>
+       <div class="progress" id="depsProgress"><div class="bar" id="depsBar"></div></div>
+       <div class="genlog" id="depsLog"></div>
+     </div>`;
+  $('depsInstallBtn').onclick = () => installMissingPackages(missing.map(m => m.package));
+}
+
+let depsES = null;
+function installMissingPackages(packages) {
+  if (depsES) { depsES.close(); depsES = null; }
+  const btn = $('depsInstallBtn');
+  btnBusy(btn, true);
+  const log = $('depsLog');
+  log.textContent = '';
+  setGlobalProg(null, 'Installing packages');
+  $('depsProgress').classList.remove('err');
+  $('depsProgress').classList.add('indet');
+
+  const url = `/api/deps/install_stream?packages=${encodeURIComponent(packages.join(','))}`;
+  depsES = new EventSource(url);
+  depsES.onmessage = e => { try { handleDepsInstallEvent(JSON.parse(e.data)); } catch (_) {} };
+  depsES.onerror = () => {
+    if (!depsES) return;
+    log.textContent += '\n[connection lost]';
+    finishDepsInstall(false, 'Install stream disconnected.');
+  };
+}
+function handleDepsInstallEvent(ev) {
+  if (ev.type === 'log') {
+    const log = $('depsLog');
+    log.textContent += (log.textContent ? '\n' : '') + ev.line;
+    log.scrollTop = log.scrollHeight;
+  } else if (ev.type === 'done') {
+    const cudaNote = ev.cuda_ok === false ? ' GPU acceleration did not come back - see SETUP_GUIDE.md.' : '';
+    finishDepsInstall(ev.ok, ev.ok
+      ? 'All packages installed.' + cudaNote
+      : `${ev.missing.length} package(s) still missing - see the log above.`);
+    if (ev.ok) $('depsInstallBtn').disabled = true;   // nothing left to install
+  } else if (ev.type === 'error') {
+    finishDepsInstall(false, ev.message || 'Install failed.');
+  }
+}
+function finishDepsInstall(ok, message) {
+  if (depsES) { depsES.close(); depsES = null; }
+  clearGlobalProg();
+  $('depsProgress').classList.remove('indet');
+  $('depsProgress').classList.toggle('err', !ok);
+  btnBusy($('depsInstallBtn'), false);
+  showToast(message, null, null, ok ? 'ok' : 'err');
+  setStatus(message, !ok);
 }
 
 // Fills a .fetchresult box with a message and, optionally, an action button -
