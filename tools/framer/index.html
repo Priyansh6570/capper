@@ -764,9 +764,11 @@
             <div class="field">
               <label>Manhwa URL</label>
               <div class="row2">
-                <input id="npUrl" type="text" placeholder="webtoons.com series or chapter URL" />
-                <button id="npOpenBtn" class="small ghost icon" data-icon="link" data-ic-size="14"
-                        title="Open webtoons.com to find a series" onclick="openWebtoonsHome()"></button>
+                <input id="npUrl" type="text" placeholder="webtoons.com or kingofshojo.com series/chapter URL" />
+                <button type="button" class="small ghost icon" data-icon="link" data-ic-size="14"
+                        title="Open webtoons.com" onclick="openSiteHome('webtoons')"></button>
+                <button type="button" class="small ghost icon" data-icon="link" data-ic-size="14"
+                        title="Open kingofshojo.com" onclick="openSiteHome('kingofshojo')"></button>
               </div>
             </div>
             <div class="field" style="flex:none">
@@ -1116,11 +1118,13 @@
         <div class="sidecard">
           <h2 data-icon="download" data-ic-size="14">Chapter Source</h2>
           <div class="sidefield">
-            <label class="lbl">Webtoon URL</label>
+            <label class="lbl">Chapter URL</label>
             <div class="row2">
-              <input id="dlUrl" type="text" placeholder="webtoon chapter URL" />
-              <button id="dlOpenBtn" class="small ghost icon" data-icon="link" data-ic-size="14"
-                      title="Open webtoons.com to find a chapter" onclick="openWebtoonsHome()"></button>
+              <input id="dlUrl" type="text" placeholder="webtoons.com or kingofshojo.com chapter URL" />
+              <button type="button" class="small ghost icon" data-icon="link" data-ic-size="14"
+                      title="Open webtoons.com" onclick="openSiteHome('webtoons')"></button>
+              <button type="button" class="small ghost icon" data-icon="link" data-ic-size="14"
+                      title="Open kingofshojo.com" onclick="openSiteHome('kingofshojo')"></button>
             </div>
           </div>
           <div class="sidefield">
@@ -1131,6 +1135,7 @@
             </div>
           </div>
           <span class="hint" id="dlHint">Fetches the chapter PDF, then ALWAYS splits it into ≤100-page parts (5p overlap between parts) and compresses each for Gemini. Then stitch the full PDF.</span>
+          <div class="hint" id="dlStatus" hidden></div>
           <div id="gpRow" hidden><span class="hint" id="gpStatus"></span></div>
           <div id="gpResult"></div>
         </div>
@@ -1146,6 +1151,7 @@
             <input id="pdfFile" type="file" accept="application/pdf" class="filehidden" tabindex="-1" />
           </div>
           <button id="loadPdfBtn" class="wide" data-icon="layers" data-ic-size="15"><span>Stitch PDF</span></button>
+          <div class="hint" id="stitchStatus" hidden></div>
         </div>
       </div>
 
@@ -1537,27 +1543,33 @@ function showToast(msg, actionLabel, actionFn, kind) {
 function hideToast() { const s = $('toast'); if (s && s.lastChild) s.lastChild.remove(); }
 
 // ---------------------------------------------------------------------------
-// "Open webtoons.com" buttons next to a webtoon/series URL field - opens the
-// site itself in a new tab so you can browse/search for a series there
-// instead of leaving the app to search for it yourself, then copy its URL
-// back into the field.
-function openWebtoonsHome() {
-  window.open('https://www.webtoons.com/', '_blank', 'noopener');
+// "Open <site>" buttons next to a series/chapter URL field - opens the site
+// itself in a new tab so you can browse/search for a series there instead of
+// leaving the app to search for it yourself, then copy its URL back into the
+// field. These are convenience links only - the source site used for an
+// actual fetch/download is always auto-detected from the pasted URL.
+const SITE_HOME_URLS = {
+  webtoons: 'https://www.webtoons.com/',
+  kingofshojo: 'https://kingofshojo.com/',
+};
+function openSiteHome(site) {
+  window.open(SITE_HOME_URLS[site], '_blank', 'noopener');
 }
 
-// download a chapter (webtoon-downloader) -> PDF, then ALWAYS split+compress it
-// into Gemini-ready parts (streamed over SSE so a long chapter shows progress).
-// The full-res PDF still feeds the existing "Stitch PDF" flow unchanged: we drop
-// its path into the PDF-path field and the chapter id into its field.
+// download a chapter -> PDF (auto-detecting webtoons.com vs kingofshojo.com
+// from the URL), then ALWAYS split+compress it into Gemini-ready parts
+// (streamed over SSE so a long chapter shows progress). The full-res PDF
+// still feeds the existing "Stitch PDF" flow unchanged: we drop its path
+// into the PDF-path field and the chapter id into its field.
 // ---------------------------------------------------------------------------
 async function doDownload() {
   const url = $('dlUrl').value.trim();
   const no = $('dlNo').value.trim();
-  if (!url) { setStatus('Paste a webtoon.com chapter URL.', true); return; }
+  if (!url) { setStatus('Paste a webtoons.com or kingofshojo.com chapter URL.', true); return; }
   const chap = $('chapId').value.trim() || no;   // reuse the chapter-id field; default to the number
   showOverlay('Downloading chapter');
   setGlobalProg(null, 'Downloading chapter');
-  setStatus(`Downloading chapter ${no || ''} with webtoon-downloader…\n` +
+  setStatus(`Downloading chapter ${no || ''}…\n` +
             `This can take a while for image-heavy chapters - leave it running.`);
   btnBusy($('dlBtn'), true);
   try {
@@ -1588,6 +1600,7 @@ async function doDownload() {
   } finally {
     btnBusy($('dlBtn'), false);
     clearGlobalProg();
+    refreshChapterSourceStatus();   // re-derive from disk - disables Download if it now exists
   }
 }
 
@@ -1807,7 +1820,10 @@ async function loadPdf() {
     // for this chapter, and reopening it errors "No saved editor state".
     saveEditorState(false, { silent: true });
   } catch (e) { setStatus('PDF load error: ' + e.message, true); }
-  finally { btnBusy($('loadPdfBtn'), false); clearGlobalProg(); hideOverlay(); }
+  finally {
+    btnBusy($('loadPdfBtn'), false); clearGlobalProg(); hideOverlay();
+    refreshChapterSourceStatus();   // re-derive from disk - disables Stitch now that a strip exists
+  }
 }
 
 function buildTiles() {
@@ -2607,17 +2623,21 @@ async function saveEditorState(recovery, opts) {
   }
 }
 
+function applyStripPreview(preview) {
+  S.chapter_id = preview.chapter_id;
+  S.preview_scale = preview.preview_scale;
+  S.strip_w = preview.strip_w; S.strip_h = preview.strip_h;
+  S.preview_w = preview.preview_w; S.preview_h = preview.preview_h;
+  S.tiles = preview.tiles;
+  $('chapId').value = preview.chapter_id;
+  buildTiles(); computeZoomRange(); setZoom(S.fitZoom); stage.scrollTop = 0;
+  $('stripInfo').textContent =
+    `strip ${preview.strip_w}×${preview.strip_h}px · preview ${preview.preview_w}×${preview.preview_h} (${preview.tiles.length} tiles)`;
+}
+
 function applyProject(project, preview) {
   if (preview) {
-    S.chapter_id = preview.chapter_id;
-    S.preview_scale = preview.preview_scale;
-    S.strip_w = preview.strip_w; S.strip_h = preview.strip_h;
-    S.preview_w = preview.preview_w; S.preview_h = preview.preview_h;
-    S.tiles = preview.tiles;
-    $('chapId').value = preview.chapter_id;
-    buildTiles(); computeZoomRange(); setZoom(S.fitZoom); stage.scrollTop = 0;
-    $('stripInfo').textContent =
-      `strip ${preview.strip_w}×${preview.strip_h}px · preview ${preview.preview_w}×${preview.preview_h} (${preview.tiles.length} tiles)`;
+    applyStripPreview(preview);
   } else {
     S.chapter_id = project.chapter_id;
     setStatus('Project loaded, but no stitched strip found - re-stitch the PDF to box frames.', true);
@@ -2628,6 +2648,57 @@ function applyProject(project, preview) {
   S.activeFrame = (S.active >= 0 && S.lines[S.active].frames.length) ? 0 : -1;
   undoStack = []; redoStack = []; updateUndoUI();
   renderLines(); redrawBoxes();
+}
+
+// Chapter Source / Stitch Strip panels' TRUE state, re-derived from disk (see
+// /chapter_source_status) every time a chapter is opened AND right after a
+// download/stitch finishes - never trusted to editor_state.json, which only
+// ever held boxing data (lines/frames) and silently looked stale for this.
+async function refreshChapterSourceStatus() {
+  if (!S.chapter_id) return;
+  try {
+    const res = await fetch(`/chapter_source_status?chapter=${encodeURIComponent(S.chapter_id)}${scopeQS()}`);
+    if (!res.ok) return;
+    applyChapterSourceStatus(await res.json());
+  } catch (_) { /* best-effort - buttons just keep their current state */ }
+}
+
+function applyChapterSourceStatus(d) {
+  const dlBtn = $('dlBtn'), dlStatus = $('dlStatus');
+  if (d.pdf) {
+    $('pdfPath').value = d.pdf.path;
+    S.source_pdf = d.pdf.path;
+    dlBtn.disabled = true;
+    dlStatus.hidden = false;
+    dlStatus.innerHTML =
+      `Downloaded: ${escHtml(d.pdf.name)} (${d.pdf.page_count}p)<br>` +
+      `<span class="jobpath">${escHtml(d.pdf.path)}</span> ` +
+      `<button type="button" class="btnlink" id="dlRedoBtn">${ic('refresh', 12)}<span>Re-download</span></button>`;
+    $('dlRedoBtn').onclick = () => { dlBtn.disabled = false; dlStatus.hidden = true; };
+  } else {
+    dlBtn.disabled = false;
+    dlStatus.hidden = true;
+  }
+
+  if (d.gemini_parts && d.gemini_parts.parts.length) {
+    $('gpRow').removeAttribute('hidden');
+    $('gpStatus').textContent = `${d.gemini_parts.parts.length} Gemini part(s) already prepared.`;
+    showGeminiPartsResult(d.gemini_parts.dir, d.gemini_parts.parts);
+  }
+
+  const stitchBtn = $('loadPdfBtn'), stitchStatus = $('stitchStatus');
+  if (d.strip) {
+    applyStripPreview(d.strip);
+    stitchBtn.disabled = true;
+    stitchStatus.hidden = false;
+    stitchStatus.innerHTML =
+      `Already stitched - ${d.strip.strip_w}×${d.strip.strip_h}px ` +
+      `<button type="button" class="btnlink" id="stitchRedoBtn">${ic('refresh', 12)}<span>Re-stitch</span></button>`;
+    $('stitchRedoBtn').onclick = () => { stitchBtn.disabled = false; stitchStatus.hidden = true; };
+  } else {
+    stitchBtn.disabled = false;
+    stitchStatus.hidden = true;
+  }
 }
 
 async function loadEditorState(recovery) {
@@ -3527,6 +3598,8 @@ function resetEditorState() {
   $('genStatus').textContent = ''; $('genResult').innerHTML = '';
   $('gpResult').innerHTML = ''; $('gpRow').setAttribute('hidden', '');
   $('stripInfo').textContent = 'No strip loaded.';
+  $('dlBtn').disabled = false; $('dlStatus').hidden = true; $('dlStatus').innerHTML = '';
+  $('loadPdfBtn').disabled = false; $('stitchStatus').hidden = true; $('stitchStatus').innerHTML = '';
   setSaveState('');
   renderLines();
   if (document.body.classList.contains('stripFullscreen')) setFullscreen(false);
@@ -3548,6 +3621,11 @@ async function openChapterEditor(slug, chNo, opts) {
     await doDownload();
     return;
   }
+
+  // ALWAYS re-derive Download/Stitch panel state from disk, independent of
+  // whether editor_state.json below has anything saved - see bug notes on
+  // refreshChapterSourceStatus().
+  await refreshChapterSourceStatus();
   try {
     const res = await fetch(`/editor_state/status?chapter=${encodeURIComponent(S.chapter_id)}${scopeQS()}`);
     const d = await res.json();
@@ -3779,7 +3857,12 @@ $('blurStyle').onchange = e => { S.blurStyle = e.target.value; };
 $('undoBtn').onclick = undo;
 $('redoBtn').onclick = redo;
 $('saveProjBtn').onclick = async () => { btnBusy($('saveProjBtn'), true); await saveEditorState(false); btnBusy($('saveProjBtn'), false); };
-$('loadProjBtn').onclick = async () => { btnBusy($('loadProjBtn'), true); await loadEditorState(false); btnBusy($('loadProjBtn'), false); };
+$('loadProjBtn').onclick = async () => {
+  btnBusy($('loadProjBtn'), true);
+  await loadEditorState(false);
+  await refreshChapterSourceStatus();
+  btnBusy($('loadProjBtn'), false);
+};
 $('themeBtn').onclick = toggleTheme;
 $('srcToggle').onclick = toggleSrc;
 $('fullscreenBtn').onclick = () => setFullscreen(!document.body.classList.contains('stripFullscreen'));

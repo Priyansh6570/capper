@@ -64,7 +64,7 @@ from manifest import Manifest, Page, Panel  # noqa: E402
 from atomic_io import atomic_write_json, read_json_with_backup_fallback  # noqa: E402
 
 import projects  # noqa: E402 - the project system (this package: tools/framer/projects.py)
-import webtoon_meta  # noqa: E402 - best-effort series-metadata scraper
+import sites  # noqa: E402 - per-site adapters (tools/framer/sites/): metadata + chapter download
 from stages import s7_assemble as s7  # noqa: E402 - reused by the settings live-preview routes
 
 # Belt-and-suspenders: ensure the bomb guard stays off even if import order shifts.
@@ -97,7 +97,6 @@ PART_PAGES = 100            # max pages per Gemini part
 PART_OVERLAP = 5            # pages repeated at the start of each part after the first
 GEMINI_MAX_DIM = 1600       # downscale target, px (longest side)
 GEMINI_JPEG_QUALITY = 75    # JPEG quality for the re-encoded page images
-WEBTOON_TIMEOUT_S = 1800  # hard cap on a single webtoon-downloader run (30 min)
 
 HERE = Path(__file__).resolve().parent
 app = Flask(__name__)
@@ -258,7 +257,7 @@ def _stitch_pdf(pdf_path: Path, chapter_id: str) -> Image.Image:
 
 
 # --------------------------------------------------------------------------- #
-# download a chapter (webtoon-downloader) + split for Gemini
+# download a chapter (site adapter, see tools/framer/sites/) + split for Gemini
 # --------------------------------------------------------------------------- #
 def _download_dir(chapter_id: str) -> Path:
     d = chapter_work_dir(chapter_id) / "download"
@@ -266,73 +265,11 @@ def _download_dir(chapter_id: str) -> Path:
     return d
 
 
-def _webtoon_cmd() -> list[str] | None:
-    """Locate the webtoon-downloader CLI. `pip install webtoon-downloader` only
-    ever installs a console-script entry point - the package has no
-    `__main__.py`, so `python -m webtoon_downloader` ALWAYS fails with
-    "'webtoon_downloader' is a package and cannot be directly executed",
-    regardless of how it was installed. So look for the entry-point script
-    next to the running interpreter first (that's where `pip install` puts it
-    when run inside this app's own .venv, which is how the README says to
-    install it - and start.bat launches app.py with the bare venv python, not
-    an activated venv, so .venv\\Scripts is NOT on PATH for this process),
-    then fall back to PATH for a global/other-env install.
-    Returns the command prefix, or None if the tool isn't installed."""
-    venv_script = Path(sys.executable).parent / (
-        "webtoon-downloader.exe" if os.name == "nt" else "webtoon-downloader")
-    if venv_script.exists():
-        return [str(venv_script)]
-    exe = shutil.which("webtoon-downloader")
-    if exe:
-        return [exe]
-    return None
-
-
-_WEBTOON_OUT_FLAG: str | None = None
-
-
-def _webtoon_out_flag(base: list[str]) -> str:
-    """The output-directory flag for the installed webtoon-downloader: newer builds
-    use `--out` (older `--dest` is rejected/deprecated). Probed once from --help and
-    cached; defaults to `--out`."""
-    global _WEBTOON_OUT_FLAG
-    if _WEBTOON_OUT_FLAG is None:
-        _WEBTOON_OUT_FLAG = "--out"
-        try:
-            h = subprocess.run(base + ["--help"], capture_output=True, text=True,
-                               timeout=30, **NO_CONSOLE)
-            text = (h.stdout or "") + (h.stderr or "")
-            if "--out" not in text and "--dest" in text:
-                _WEBTOON_OUT_FLAG = "--dest"
-        except Exception:  # noqa: BLE001 - probe failure -> keep the modern default
-            pass
-    return _WEBTOON_OUT_FLAG
-
-
-def _run_webtoon_downloader(url: str, chapter_no: str, dest: Path
-                            ) -> tuple[list[str], subprocess.CompletedProcess]:
-    """Fetch ONE chapter to `dest` as a PDF with webtoon-downloader. When a chapter
-    number is given we pin --start/--end to it so exactly that chapter is pulled."""
-    base = _webtoon_cmd()
-    if base is None:
-        raise RuntimeError(
-            "webtoon-downloader is not installed into this app's .venv. "
-            "Install it with:\n"
-            "    .venv\\Scripts\\pip install webtoon-downloader\n"
-            "(run from the project root) - a plain `pip install` may land in "
-            "a different Python and won't be found by this app.")
-    cmd = base + [url, _webtoon_out_flag(base), str(dest), "--save-as", "pdf"]
-    if chapter_no:
-        cmd += ["--start", str(chapter_no), "--end", str(chapter_no)]
-    proc = subprocess.run(cmd, capture_output=True, text=True,
-                          timeout=WEBTOON_TIMEOUT_S, **NO_CONSOLE)
-    return cmd, proc
-
-
-def _newest_pdf(dest: Path) -> Path | None:
-    """The most recently written PDF anywhere under `dest` (webtoon-downloader may
-    nest it under a series/chapter subfolder)."""
-    pdfs = sorted(dest.rglob("*.pdf"), key=lambda p: p.stat().st_mtime, reverse=True)
+def _downloaded_pdf(chapter_id: str) -> Path | None:
+    """The chapter's already-downloaded PDF (see /download), if any - most
+    recently written, since an adapter may nest it under a subfolder."""
+    pdfs = sorted(_download_dir(chapter_id).rglob("*.pdf"),
+                  key=lambda p: p.stat().st_mtime, reverse=True)
     return pdfs[0] if pdfs else None
 
 
@@ -349,6 +286,18 @@ def _gemini_parts_dir(chapter_id: str) -> Path:
     d = chapter_work_dir(chapter_id) / "gemini_parts"
     d.mkdir(parents=True, exist_ok=True)
     return d
+
+
+def _existing_gemini_parts(chapter_id: str) -> list[dict]:
+    """Parts already on disk for `chapter_id`, in the same shape
+    /gemini_parts_stream's `done` event uses (see _build_gemini_parts_stream)."""
+    parts = []
+    for p in sorted(_gemini_parts_dir(chapter_id).glob("*.pdf")):
+        m = re.search(r"_p(\d+)-(\d+)\.pdf$", p.name)
+        a, b = (int(m.group(1)), int(m.group(2))) if m else (0, 0)
+        parts.append({"path": str(p), "name": p.name, "pages": max(0, b - a + 1),
+                      "from": a, "to": b, "size_bytes": p.stat().st_size})
+    return parts
 
 
 def _fmt_size(n: int) -> str:
@@ -524,11 +473,12 @@ def app_asset(name):
 
 @app.post("/download")
 def download():
-    """Download ONE webtoon.com chapter as a PDF. Gemini-part splitting/compression
-    is a SEPARATE step (see /gemini_parts_stream) so its progress can stream.
+    """Download ONE chapter as a PDF from whichever site adapter (see
+    tools/framer/sites/) matches the pasted URL. Gemini-part splitting/
+    compression is a SEPARATE step (see /gemini_parts_stream) so its progress
+    can stream.
 
-    Body: JSON {url, chapter_no?, chapter_id?}. Runs webtoon-downloader
-    (--save-as pdf) into work/<chapter>/download/. Returns {chapter_id, pdf,
+    Body: JSON {url, chapter_no?, chapter_id?}. Returns {chapter_id, pdf,
     page_count, steps:[...]} - `pdf` is the full chapter PDF that feeds BOTH
     Stitch PDF (unchanged) and Gemini-part prep."""
     data = request.get_json(silent=True) or {}
@@ -537,34 +487,24 @@ def download():
     chapter_no = str(data.get("chapter_no") or "").strip()
 
     if not url:
-        return jsonify(error="Paste a webtoon.com chapter URL."), 400
-    if "webtoon" not in url.lower():
-        return jsonify(error="That doesn't look like a webtoon.com URL."), 400
+        return jsonify(error="Paste a webtoons.com or kingofshojo.com chapter URL."), 400
+    adapter = sites.detect(url)
+    if adapter is None:
+        return jsonify(error="That doesn't look like a webtoons.com or "
+                             "kingofshojo.com URL."), 400
     if not raw_id and not chapter_no:
         return jsonify(error="Enter the chapter number (or a chapter id)."), 400
     chapter_id = _sanitize_chapter(raw_id or chapter_no)
 
     dest = _download_dir(chapter_id)
-    steps = [f"Downloading chapter {chapter_no or '(from URL)'} into {dest} …"]
+    steps = [f"Downloading {adapter.SITE_NAME} chapter {chapter_no or '(from URL)'} "
+             f"into {dest} …"]
     try:
-        cmd, proc = _run_webtoon_downloader(url, chapter_no, dest)
-    except RuntimeError as e:                 # tool not installed
+        pdf = adapter.download_chapter(url, chapter_no, dest, log=steps.append)
+    except sites.DownloadTimeout as e:
+        return jsonify(error=str(e)), 504
+    except Exception as e:  # noqa: BLE001 - surface the adapter's own message to the UI
         return jsonify(error=str(e)), 500
-    except subprocess.TimeoutExpired:
-        return jsonify(error=f"webtoon-downloader timed out after "
-                             f"{WEBTOON_TIMEOUT_S // 60} min."), 504
-
-    steps.append("$ " + " ".join(cmd))
-    if proc.returncode != 0:
-        tail = (proc.stderr or proc.stdout or "").strip()
-        tail = tail[-1000:] if tail else "(no output)"
-        return jsonify(error=f"webtoon-downloader exited {proc.returncode}:\n{tail}"), 500
-
-    pdf = _newest_pdf(dest)
-    if pdf is None:
-        return jsonify(error=f"Download finished but no PDF was found under {dest}. "
-                             f"Check that this webtoon-downloader build supports "
-                             f"--save-as pdf."), 500
 
     pages = _pdf_page_count(pdf)
     steps.append(f"Downloaded {pdf.name} — {pages} page(s):\n    {pdf}")
@@ -1964,6 +1904,30 @@ def editor_state_status():
     return jsonify(**out)
 
 
+@app.get("/chapter_source_status")
+def chapter_source_status():
+    """The Chapter Source / Stitch Strip panels' TRUE state, derived straight
+    from what's actually on disk for `chapter` - NEVER from editor_state.json,
+    which only ever held the framer's own boxing data (lines/frames) and
+    silently dropped download/split/stitch progress on every reopen. Returns
+    {pdf, gemini_parts, strip}, each null if that step hasn't happened yet.
+    `strip` is the same preview payload /editor_state/load returns, so the UI
+    can show an already-stitched strip without re-stitching it."""
+    chapter_id = _sanitize_chapter(request.args.get("chapter", ""))
+    if not chapter_id:
+        return jsonify(error="chapter required"), 400
+
+    pdf_path = _downloaded_pdf(chapter_id)
+    pdf = ({"path": str(pdf_path), "name": pdf_path.name,
+            "page_count": _pdf_page_count(pdf_path)}
+           if pdf_path is not None else None)
+
+    parts = _existing_gemini_parts(chapter_id)
+    gemini_parts = {"dir": str(_gemini_parts_dir(chapter_id)), "parts": parts} if parts else None
+
+    return jsonify(pdf=pdf, gemini_parts=gemini_parts, strip=_preview_payload(chapter_id))
+
+
 @app.get("/settings")
 def get_settings():
     """Current session UI settings (theme + split position), held server-side."""
@@ -2247,10 +2211,10 @@ def api_restart():
 
 # --------------------------------------------------------------------------- #
 # project system - list/create/open projects, chapter status, media settings +
-# live previews. See tools/framer/projects.py (storage) and webtoon_meta.py
-# (the best-effort series scraper). Chapter-scoped routes above are entered via
-# the before_request hook near the top of this file whenever a request carries
-# `project` + `ch_no`.
+# live previews. See tools/framer/projects.py (storage) and tools/framer/sites/
+# (the best-effort per-site series scrapers). Chapter-scoped routes above are
+# entered via the before_request hook near the top of this file whenever a
+# request carries `project` + `ch_no`.
 # --------------------------------------------------------------------------- #
 @app.get("/api/projects")
 def api_list_projects():
@@ -2260,9 +2224,10 @@ def api_list_projects():
 @app.post("/api/projects")
 def api_create_project():
     """Body: JSON {name, url}. Creates the project, then tries to auto-fetch
-    series details from webtoons.com (title, chapter count, chapter list).
-    NEVER blocks on a failed fetch - `fetch.ok` tells the UI whether to fall
-    back to the manual "enter chapter range 1..N" input."""
+    series details (title, chapter count, chapter list) from whichever site
+    adapter (see tools/framer/sites/) matches `url`. NEVER blocks on a failed
+    fetch - `fetch.ok` tells the UI whether to fall back to the manual "enter
+    chapter range 1..N" input."""
     data = request.get_json(silent=True) or {}
     name = (data.get("name") or "").strip()
     url = (data.get("url") or "").strip()
@@ -2270,7 +2235,8 @@ def api_create_project():
         return jsonify(error="Project name required."), 400
     project = projects.create(name, url)
 
-    fetched = webtoon_meta.fetch_series(url) if url else None
+    adapter = sites.detect(url) if url else None
+    fetched = adapter.fetch_series(url) if adapter else None
     if fetched:
         project["series_title"] = fetched["title"]
         project["source"] = "scraped"
@@ -2308,14 +2274,15 @@ def api_delete_project(slug):
 @app.post("/api/projects/<slug>/chapters")
 def api_set_chapters(slug):
     """Body: JSON {from, to} for the manual fallback range, or {refetch:true} to
-    retry the webtoons.com scrape."""
+    retry the source-site scrape."""
     if not projects.exists(slug):
         return jsonify(error=f"No such project: {slug}"), 404
     data = request.get_json(silent=True) or {}
     project = projects.load(slug)
 
     if data.get("refetch"):
-        fetched = webtoon_meta.fetch_series(project["url"])
+        adapter = sites.detect(project["url"])
+        fetched = adapter.fetch_series(project["url"]) if adapter else None
         if not fetched:
             return jsonify(error="Couldn't read the series page.", ok=False), 200
         project["series_title"] = fetched["title"]

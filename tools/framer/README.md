@@ -31,11 +31,13 @@ with a mouse; treat phones/tablets as a review-and-manage surface first.
 ## Projects
 
 - **Projects landing screen** (shown first) — **New Project**: a name + a
-  webtoons.com URL. On create, the backend tries to **auto-fetch** the series'
-  title and chapter count by scraping the series' `/list?title_no=` page
-  (`webtoon_meta.py`, best-effort, `requests`+`bs4`, never blocks/raises). If
-  the fetch fails, a manual **"enter chapter range 1..N"** input appears
-  instead. Existing projects are listed below to reopen.
+  webtoons.com or kingofshojo.com URL (auto-detected, see `tools/framer/sites/`).
+  On create, the backend tries to **auto-fetch** the series' title and chapter
+  count by scraping the series page - webtoons.com's `/list?title_no=` page,
+  kingofshojo.com's `/manga/<slug>/` page (best-effort, `requests`+`bs4`,
+  never blocks/raises). If the fetch fails, a manual **"enter chapter range
+  1..N"** input appears instead. Existing projects are listed below to
+  reopen.
 - **Storage**: `projects/<slug>/project.json` (name, url, chapter list +
   status, media settings) plus `projects/<slug>/assets/` (uploaded music/
   watermark/background) and `projects/<slug>/chapters/<n>/{work,output}/` —
@@ -129,10 +131,14 @@ project already has a work folder for, and generate re-writes it once more
 right before rendering, so a last-minute tweak still lands.
 
 ## The chapter editor
-0. **Download** (optional, top panel) — paste a **webtoon.com chapter URL** and the
-   **chapter number**, click **Download PDF**. The backend runs
+0. **Download** (optional, top panel) — paste a **webtoons.com or
+   kingofshojo.com chapter URL** (auto-detected) and the **chapter number**,
+   click **Download PDF**. For webtoons.com the backend runs
    [`webtoon-downloader`](https://pypi.org/project/webtoon-downloader/)
-   (`--save-as pdf`) into the chapter's `download/` folder while a spinner shows. When the
+   (`--save-as pdf`); for kingofshojo.com it parses the chapter's image list
+   straight off the page and assembles a PDF itself - see
+   `tools/framer/sites/`. Either way the result lands in the chapter's
+   `download/` folder while a spinner shows. When the
    download finishes, the full-res PDF path is dropped into the Stitch-PDF field
    automatically (untouched — this is what **Stitch PDF** / the framer always use),
    and the tool **always** goes on to prepare Gemini-ready parts, live-streaming
@@ -148,10 +154,18 @@ right before rendering, so a last-minute tweak still lands.
      size, with **Copy folder path** / per-part copy buttons and an **Open folder**
      button so you can hand them to Gemini.
 
-   The status panel lists each step (command, page count, per-part compress
-   progress). (Requires `.venv\Scripts\pip install webtoon-downloader` — into
-   this app's own venv, not a global/system Python, so the app can find it. We
-   do NOT touch Gemini; you upload the files.)
+   The status panel lists each step (command/request log, page count,
+   per-part compress progress). webtoons.com downloads need the
+   `webtoon-downloader` CLI, installed by `setup.bat` along with everything
+   else in `requirements.txt`; kingofshojo.com needs nothing extra. We do NOT
+   touch Gemini; you upload the files.)
+
+   **Download and Stitch PDF both disable themselves once already done for a
+   chapter** (see `/chapter_source_status` in `app.py`) - re-derived from
+   what's actually on disk (the PDF, the Gemini parts, the stitched strip)
+   every time you open a chapter, never from a saved-state blob that can go
+   stale. Each shows a small **Re-download** / **Re-stitch** link to force it
+   again.
 1. **Stitch PDF** — enter a PDF path (or choose a file) and optionally a chapter
    id. The strip is built with the SAME code as `stages/s1_pdf_to_pages.py`
    (every page rendered + vertically concatenated). The view is a downscaled

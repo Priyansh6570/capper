@@ -16,8 +16,9 @@
 flask>=3.0
 PyMuPDF>=1.24        # stage 1: render PDF pages -> stitched strip
 Pillow>=10.0         # stage 1 stitching + stage 7 compositing + tray icon image
-requests>=2.31       # webtoon_meta.py: best-effort series-metadata scraping
-beautifulsoup4>=4.12 # webtoon_meta.py
+requests>=2.31       # tools/framer/sites/: best-effort series-metadata scraping + kingofshojo image download
+beautifulsoup4>=4.12 # tools/framer/sites/
+webtoon-downloader>=2.4  # Framer's "Download PDF" button (webtoons.com chapters) - no torch dep, safe here
 pystray>=0.19        # tools/framer/tray_launcher.py: system tray icon + Quit,
                      # the only way to stop the app now that start.bat launches
                      # it with no console window (see tray_launcher.py)
@@ -46,11 +47,3 @@ mutagen>=1.47         # draft: read the real MP3 duration
 # Primary path is a direct ffmpeg call (EXTERNAL tool, not pip-installable -
 # it must be on PATH). Encodes with h264_nvenc when available, else libx264.
 moviepy>=2.0           # fallback ONLY, used if the direct ffmpeg path fails
-
-# Optional, not required by the workflow above: the `webtoon-downloader` CLI
-# powers Framer's "Download PDF" button
-# (`.venv\Scripts\pip install webtoon-downloader` - into THIS app's venv, not
-# a global/system Python, so Framer's subprocess call can find it; it has no
-# `__main__.py`, so `python -m webtoon_downloader` never works either way).
-# Framer detects its absence and reports a clear error instead of crashing, so
-# it's left out of this file - install it only if you use that button.
