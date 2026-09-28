@@ -23,7 +23,11 @@ pystray>=0.19        # tools/framer/tray_launcher.py: system tray icon + Quit,
                      # the only way to stop the app now that start.bat launches
                      # it with no console window (see tray_launcher.py)
 python-dotenv>=1.0   # reads GEMINI_API_KEY (and GROQ_API_KEY/HF_TOKEN) from .env
-google-genai>=1.0    # tools/framer/app.py: Gemini API script generation
+# Pinned exactly: google-genai>=1.0 (its real floor) makes pip's resolver
+# explore a huge, slow range of pydantic/google-auth candidates alongside
+# chatterbox-tts's own heavy tree below - can take 10+ minutes or hit pip's
+# "resolution-too-deep" error. Pinning collapses that search to nothing.
+google-genai==2.25.0  # tools/framer/app.py: Gemini API script generation
 keyring>=25.0        # stores GEMINI_API_KEY in Windows Credential Manager, not plaintext
 
 # --- Stage 6: Chatterbox TTS, runs locally (GPU with CPU fallback) --------
@@ -32,11 +36,38 @@ keyring>=25.0        # stores GEMINI_API_KEY in Windows Credential Manager, not 
 #   pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu128
 # Do NOT pin a +cuXXX wheel URL here (it's machine/CUDA-specific). After any
 # install, re-check `python -c "import torch; print(torch.cuda.is_available())"`.
-torch>=2.1
-torchaudio>=2.1
-chatterbox-tts>=0.1
+# torch/torchaudio pinned exactly to match chatterbox-tts's own exact pin
+# (avoids pip backtracking through dozens of versions to find that match).
+torch==2.6.0
+torchaudio==2.6.0
 soundfile>=0.12      # voice-reference preprocessing (float32/mono/24kHz)
-numpy>=1.24
+numpy>=2.0.0
+
+# chatterbox-tts is installed separately in setup.bat with --no-deps, NOT
+# through this file. Reason: its own metadata hard-requires `gradio==6.8.0`
+# (for a demo UI its own importable code never uses - verified: chatterbox-
+# tts's wheel contains zero references to "gradio" anywhere), and gradio's
+# own `aiofiles<25.0` and pulled-in `rich` versions permanently conflict with
+# webtoon-downloader's `aiofiles>=25.1.0` / `rich<14` above - no version of
+# either package resolves that combination, so a normal `pip install` of
+# both together always fails (or times out hitting pip's resolution-depth
+# limit trying). --no-deps skips gradio entirely; everything chatterbox-tts's
+# CODE actually imports is still installed normally via the lines below
+# (verified: fixes both the version conflict AND another huge resolver-
+# runtime problem it was independently causing across this whole file).
+librosa==0.11.0
+s3tokenizer
+transformers==5.2.0
+diffusers==0.29.0
+resemble-perth>=1.0.0
+conformer==0.3.2
+safetensors==0.5.3
+spacy-pkuseg          # chatterbox-tts>=0.1.7 needs this, not the older
+                      # bare `pkuseg` package - that one has no Windows/
+                      # Python 3.13 wheel and fails to build from source
+pykakasi==2.3.0
+pyloudnorm
+omegaconf
 
 # Stage 6 --draft fast path (MANHWA_TTS_DRAFT=1): edge-tts neural voices, no
 # GPU, seconds per chapter. Remove these two if you never use the draft path.
@@ -46,4 +77,12 @@ mutagen>=1.47         # draft: read the real MP3 duration
 # --- Stage 7: render the 1920x1080 MP4 -------------------------------------
 # Primary path is a direct ffmpeg call (EXTERNAL tool, not pip-installable -
 # it must be on PATH). Encodes with h264_nvenc when available, else libx264.
-moviepy>=2.0           # fallback ONLY, used if the direct ffmpeg path fails
+# moviepy itself is installed separately in setup.bat with --no-deps (fallback
+# ONLY, used if the direct ffmpeg path fails): its latest release pins
+# `pillow<12`, directly conflicting with webtoon-downloader's `pillow>=12`
+# above - tested working fine against the newer Pillow already installed.
+# These are moviepy's own actual runtime deps, otherwise unaffected:
+imageio>=2.38
+imageio-ffmpeg>=0.6
+proglog>=0.1
+decorator>=5.3

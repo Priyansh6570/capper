@@ -189,7 +189,7 @@ call :progress "4" "Downloading AI libraries (about 2.5GB)..."
 
 echo   4a. Installing the app's packages ^(this pulls in a generic,
 echo       non-CUDA PyTorch as a side effect - step 4b fixes that^)...
-powershell -NoProfile -Command "& { & '%VENV_PY%' -m pip install -r '%~dp0requirements.txt' 2>&1 | Tee-Object -FilePath '%LOGFILE%' -Append }"
+powershell -NoProfile -Command "& { & '%VENV_PY%' -m pip install -r '%~dp0requirements.txt' 2>&1 | Tee-Object -FilePath '%LOGFILE%' -Append; exit $LASTEXITCODE }"
 if errorlevel 1 (
     echo   [FAIL] Package install failed. See setup_log.txt for the error.
     call :log "  [FAIL] requirements.txt install failed."
@@ -204,7 +204,7 @@ echo       ^(one of the AI packages above pins a specific plain-CPU
 echo       PyTorch version as ITS OWN dependency; this step deliberately
 echo       overrides that with the matching CUDA build instead - this is
 echo       expected and the app is tested working this way^)...
-powershell -NoProfile -Command "& { & '%VENV_PY%' -m pip install --upgrade --index-url https://download.pytorch.org/whl/cu128 torch torchaudio 2>&1 | Tee-Object -FilePath '%LOGFILE%' -Append }"
+powershell -NoProfile -Command "& { & '%VENV_PY%' -m pip install --upgrade --index-url https://download.pytorch.org/whl/cu128 torch torchaudio 2>&1 | Tee-Object -FilePath '%LOGFILE%' -Append; exit $LASTEXITCODE }"
 if errorlevel 1 (
     echo   [FAIL] Installing the PyTorch CUDA build failed. See setup_log.txt.
     call :log "  [FAIL] torch/torchaudio (cu128) install failed."
@@ -212,6 +212,44 @@ if errorlevel 1 (
 )
 echo   [OK] PyTorch CUDA build installed.
 call :log "  [OK] PyTorch CUDA build installed (step 4b)."
+
+echo   4c. Installing chatterbox-tts ^(the AI voice engine^)...
+echo       ^(its own metadata hard-requires gradio==6.8.0 for a demo UI its
+echo       code never actually uses - verified zero references to gradio
+echo       anywhere in its own package - and gradio permanently conflicts
+echo       with webtoon-downloader above ^(no version of either resolves
+echo       together^), so it's installed with --no-deps here; everything it
+echo       actually imports is already installed via requirements.txt^)...
+powershell -NoProfile -Command "& { & '%VENV_PY%' -m pip install --no-deps chatterbox-tts==0.1.7 2>&1 | Tee-Object -FilePath '%LOGFILE%' -Append; exit $LASTEXITCODE }"
+if errorlevel 1 (
+    echo   [WARN] chatterbox-tts did not install - full-quality AI narration
+    echo          won't be available, but the app still runs and the fast
+    echo          --draft narration mode ^(edge-tts, no GPU needed^) still
+    echo          works. See setup_log.txt.
+    call :log "  [WARN] chatterbox-tts --no-deps install failed."
+) else (
+    echo   [OK] chatterbox-tts installed.
+    call :log "  [OK] chatterbox-tts installed (step 4c)."
+)
+
+echo   4d. Installing moviepy ^(video-render fallback^)...
+echo       ^(moviepy's own latest release pins pillow^<12, which directly
+echo       conflicts with webtoon-downloader's pillow^>=12 above - no
+echo       version of either package resolves that together. moviepy is
+echo       used only as a fallback if the app's primary ffmpeg render path
+echo       fails, tested working fine against the newer Pillow already
+echo       installed, so it's installed with --no-deps here instead of
+echo       through the main requirements.txt install^)...
+powershell -NoProfile -Command "& { & '%VENV_PY%' -m pip install --no-deps moviepy==2.2.1 2>&1 | Tee-Object -FilePath '%LOGFILE%' -Append; exit $LASTEXITCODE }"
+if errorlevel 1 (
+    echo   [WARN] moviepy did not install - the fallback video-render path
+    echo          won't be available, but the app's primary ffmpeg path is
+    echo          unaffected. See setup_log.txt.
+    call :log "  [WARN] moviepy --no-deps install failed."
+) else (
+    echo   [OK] moviepy installed.
+    call :log "  [OK] moviepy installed (step 4d)."
+)
 
 REM ==========================================================================
 REM Step 5: Hugging Face token (optional) + pre-download the voice model
@@ -267,7 +305,7 @@ echo   never has to do this mid-render. This retries automatically on a slow
 echo   or stalled connection - it's normal for it to take a while.
 call :log "  Pre-downloading Chatterbox model weights..."
 set "MODEL_OK=1"
-powershell -NoProfile -Command "& { & '%VENV_PY%' '%~dp0tools\predownload_tts_models.py' 2>&1 | Tee-Object -FilePath '%LOGFILE%' -Append }"
+powershell -NoProfile -Command "& { & '%VENV_PY%' '%~dp0tools\predownload_tts_models.py' 2>&1 | Tee-Object -FilePath '%LOGFILE%' -Append; exit $LASTEXITCODE }"
 if errorlevel 1 (
     set "MODEL_OK=0"
     echo   [WARN] The voice model didn't fully download - see above / setup_log.txt.
@@ -322,6 +360,18 @@ call :log "[7/7] Final verification..."
 call :progress "8" "Finishing..."
 set "PATH=%FFMPEG_BIN%;%PATH%"
 
+REM Step 4a's own errorlevel check catches a pip failure it can actually see,
+REM but a silent partial install (e.g. pip resolving a broken package deep in
+REM some dependency's tree, or an interrupted run) can still leave the venv
+REM missing packages the app itself needs to even start - the app then runs
+REM completely hidden (pythonw.exe, no console) and just never opens, with
+REM zero visible error. This is the one check standing between that and
+REM "SETUP COMPLETE": if the app's own entry point can't be imported, setup
+REM did NOT succeed, full stop.
+set "APP_IMPORT_OK=0"
+"%VENV_PY%" -c "import flask" >>"%LOGFILE%" 2>&1
+if not errorlevel 1 set "APP_IMPORT_OK=1"
+
 set "CUDA_OK=0"
 set "CUDA_RESULT="
 "%VENV_PY%" -c "import torch; print('YES' if torch.cuda.is_available() else 'NO')" >"%TMPFILE%" 2>>"%LOGFILE%"
@@ -335,6 +385,13 @@ if not errorlevel 1 set "FFMPEG_OK=1"
 
 echo.
 echo ============================================================
+if "!APP_IMPORT_OK!"=="1" (
+    echo   [PASS] The app's own packages import correctly
+) else (
+    echo   [FAIL] The app's packages did not install correctly - it would
+    echo          not be able to start. See setup_log.txt for the real pip
+    echo          error, then re-run setup.bat ^(safe to re-run^).
+)
 if "!CUDA_OK!"=="1" (
     echo   [PASS] GPU acceleration ^(torch.cuda.is_available = True^)
 ) else (
@@ -352,6 +409,7 @@ if "!FFMPEG_OK!"=="1" (
 echo ============================================================
 echo.
 
+if "!APP_IMPORT_OK!"=="0" goto :fail
 if "!FFMPEG_OK!"=="0" goto :fail
 
 echo   SETUP COMPLETE.
