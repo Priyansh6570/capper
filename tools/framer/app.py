@@ -2113,6 +2113,18 @@ def api_deps_install_stream():
 # Every success path also reports currently-missing packages (see
 # _missing_packages above) - a pull can leave the CODE ahead of the venv's
 # installed packages, and this is the only place that would ever notice.
+#
+# Tracked code files are never meant to be user-edited, and nothing in this
+# app writes to them - so a local modification to one is always checkout
+# noise (most likely a previous pull that got interrupted mid-checkout, e.g.
+# the PC slept/lost power/was force-closed while git was writing files - a
+# `git pull --ff-only` can't tell that apart from a real edit and refuses
+# with "local changes would be overwritten by merge", which then blocks
+# EVERY future update on that machine forever until someone runs `git reset
+# --hard` by hand. `git reset --hard HEAD` before every pull (below) makes
+# this self-healing: it only touches TRACKED files, matching them back to
+# HEAD - it can't reach projects/, work/, output/, .env, or anything else
+# under this app's folder, all of which are untracked/gitignored.
 # --------------------------------------------------------------------------- #
 @app.post("/api/update")
 def api_update():
@@ -2144,6 +2156,11 @@ def api_update():
             return jsonify(ok=False, message="Could not read the current version: "
                                               + (old.stderr or old.stdout).strip())
         old_hash = old.stdout.strip()
+
+        reset = run_git("reset", "--hard", "HEAD")
+        if reset.returncode != 0:
+            return jsonify(ok=False, message="Could not prepare the update: "
+                                              + (reset.stderr or reset.stdout).strip())
 
         pull = run_git("pull", "--ff-only")
         if pull.returncode != 0:

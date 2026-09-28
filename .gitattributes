@@ -1,0 +1,8 @@
+# No .gitattributes existed before, so checkouts followed whatever the
+# user's own global core.autocrlf happened to be - on Windows (the only
+# supported platform) that's commonly core.autocrlf=true, which converts
+# every tracked text file to CRLF on checkout. Pinning eol=lf here instead
+# makes checkouts consistent across machines regardless of that setting, so
+# line endings alone can never make a freshly-pulled tracked file look
+# locally modified.
+* text=auto eol=lf
