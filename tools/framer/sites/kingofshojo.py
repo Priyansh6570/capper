@@ -11,12 +11,15 @@ from __future__ import annotations
 import io
 import json
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Callable, Optional
 
 import requests
 from bs4 import BeautifulSoup
 from PIL import Image
+
+from config import PAGE_DPI
 
 SITE_NAME = "kingofshojo.com"
 HOME_URL = "https://kingofshojo.com/"
@@ -118,15 +121,39 @@ def download_chapter(url: str, chapter_no: str, dest: Path,
         raise RuntimeError(f"No images found on {chapter_url}.")
     log(f"Found {len(images)} image(s) - downloading…")
 
-    pages = []
-    for i, img_url in enumerate(images, 1):
-        r = requests.get(img_url, headers=_HEADERS, timeout=_TIMEOUT)
-        r.raise_for_status()
-        pages.append(Image.open(io.BytesIO(r.content)).convert("RGB"))
-        if i % 20 == 0 or i == len(images):
-            log(f"  {i}/{len(images)} downloaded")
+    # Downloading one image at a time (a fresh TCP+TLS handshake per request,
+    # since a plain requests.get() never reuses a connection) means wall-clock
+    # time is dominated by per-request round-trip latency, not bandwidth - a
+    # ~150-image chapter could take a minute+ even on a fast connection. A
+    # shared Session (keep-alive) + a small thread pool (I/O-bound, so the GIL
+    # doesn't matter) cuts that to roughly (count / workers) round-trips.
+    pages: list[Optional[Image.Image]] = [None] * len(images)
+    done = 0
+    with requests.Session() as session:
+        session.headers.update(_HEADERS)
+
+        def _fetch(img_url: str) -> Image.Image:
+            r = session.get(img_url, timeout=_TIMEOUT)
+            r.raise_for_status()
+            return Image.open(io.BytesIO(r.content)).convert("RGB")
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            futures = {pool.submit(_fetch, u): i for i, u in enumerate(images)}
+            for future in as_completed(futures):
+                pages[futures[future]] = future.result()
+                done += 1
+                if done % 20 == 0 or done == len(images):
+                    log(f"  {done}/{len(images)} downloaded")
 
     pdf_path = dest / f"{slug}-chapter-{chapter_no}.pdf"
-    pages[0].save(pdf_path, save_all=True, append_images=pages[1:])
+    # Pillow's PDF writer defaults to treating each image's PIXEL dimensions
+    # as the page's POINT dimensions (i.e. an implicit 72 DPI) unless told
+    # otherwise - Stitch PDF (stages/s1_pdf_to_pages.py) then re-renders every
+    # page at config.PAGE_DPI, which on an un-tagged page multiplies an
+    # already full-resolution image by another ~2x. Across a full chapter
+    # that's easily gigabytes held in memory at once -> MemoryError. Passing
+    # the SAME PAGE_DPI here makes that render a 1:1 reconstruction of the
+    # original pixels instead of a further upscale.
+    pages[0].save(pdf_path, save_all=True, append_images=pages[1:], resolution=PAGE_DPI)
     log(f"Wrote {pdf_path.name} ({len(pages)} page(s))")
     return pdf_path

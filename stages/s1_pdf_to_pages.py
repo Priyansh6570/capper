@@ -170,7 +170,12 @@ def _stitch_and_save(m: Manifest, slices, what: str) -> Manifest:
     strip = _trim_solid_edges(strip)
 
     strip_path = pages_dir / "strip_001.png"
-    strip.save(str(strip_path))
+    # A webtoon strip can be 100M+ px; PNG's default compress_level (6) spends
+    # a lot of CPU time squeezing a file that's only ever read back locally
+    # (never distributed) - level 1 cuts save time substantially for a larger
+    # but still zlib-compressed file, a clearly worthwhile trade for a
+    # same-machine intermediate artifact.
+    strip.save(str(strip_path), compress_level=1)
 
     preview = strip
     if strip.height > PREVIEW_HEIGHT:
