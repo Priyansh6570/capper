@@ -1,5 +1,63 @@
 # Work log
 
+## Fixed: kingofshojo strip has real art squeezed into a fraction of the width, rest blank
+
+### Investigation
+
+User pointed at actual tile images (`.../framer/tiles/tile_0000.png`) showing
+the manga content confined to roughly the left third of the strip, the rest
+solid white - and noted the site's own `<img>` src URLs looked like "pure
+high quality strips", correctly suspecting our download was adding something
+extra. Confirmed visually: tile 0 is kingofshojo's own promotional banner
+("READ FIRST AT KINGOFSHOJO.COM... NO ANNOYING ADS") - landscape, far wider
+than any real panel.
+
+Root cause: every kingofshojo chapter is bookended with the SAME two
+promotional images (`i.ibb.co/CPmfdnY/1-2.jpg` before page 1,
+`i.ibb.co/LdNPKBJ/2-2.jpg` after the last page) - confirmed byte-identical
+URLs across two unrelated series (`ultimate-son-in-law`, `13th-prince`), so
+this is site-wide chrome, not series content, and always hosted on i.ibb.co
+rather than kingofshojo's own CDN. `stages/s1_pdf_to_pages.py`'s stitcher
+sizes the whole strip's width to the WIDEST single page and left-pads
+narrower ones - one landscape banner page was enough to set the strip's
+width to ~3x every real (portrait) panel's width, squeezing all real content
+into a corner with a huge blank margin down the right side.
+
+### Fix
+
+`tools/framer/sites/kingofshojo.py` - `_chapter_images()` now drops any
+image not served from `cdn.kingofshojo.com` (falls back to the unfiltered
+list if that would remove everything, so a future CDN change can't zero out
+a chapter). Real content is untouched; only the two known promotional images
+are excluded.
+
+### Verified
+
+- Confirmed the exact same two i.ibb.co URLs bookend chapters across two
+  different, unrelated series - not series content.
+- Re-downloaded chapter 1 of `ultimate-son-in-law` with the fix: image count
+  dropped from 226 to 224 (exactly the 2 promo images gone), and all 224
+  remaining pages now share ONE uniform width (384pt) - no more outlier.
+- Re-ran the real Stitch step: strip is now a clean 800x227044px, uniform
+  width matching the actual art. Cropped and visually inspected the top of
+  the result - full-width artwork, no banner, no blank margin.
+- Verified directly on the actual affected install. Test artifacts cleaned
+  up afterward.
+
+### Files changed
+
+- `tools/framer/sites/kingofshojo.py` - `_drop_promo_images()`, applied in
+  `_chapter_images()`.
+
+### Next steps for the user
+
+Re-download chapter 1 again (one more time) to pick up this fix on top of
+the earlier DPI fix - the copy already re-downloaded after the last fix
+still has the 2 promo images baked in, since this filter didn't exist yet
+at that point. Any chapter downloaded from now on gets both fixes at once.
+
+---
+
 ## Fixed: "Stitch PDF" MemoryError on kingofshojo.com chapters (webtoons.com unaffected)
 
 ### Investigation

@@ -92,12 +92,28 @@ def _chapter_images(html: str) -> list[str]:
             sources = json.loads(m.group(1)).get("sources") or []
             images = sources[0].get("images") if sources else None
             if images:
-                return images
+                return _drop_promo_images(images)
         except (ValueError, IndexError, KeyError, AttributeError):
             pass
     soup = BeautifulSoup(html, "html.parser")
     area = soup.select_one("#readerarea")
-    return [img["src"] for img in area.select("img[src]")] if area else []
+    images = [img["src"] for img in area.select("img[src]")] if area else []
+    return _drop_promo_images(images)
+
+
+def _drop_promo_images(images: list[str]) -> list[str]:
+    """Every chapter on every series is bookended with the SAME two site-wide
+    promotional banner images ("Read first at kingofshojo.com..."), hosted on
+    i.ibb.co rather than kingofshojo's own CDN - confirmed identical across
+    unrelated series/chapters, so this isn't series content, just chrome. They
+    are also landscape (far wider than any real panel), which otherwise makes
+    the stitched strip's width balloon to fit them, squeezing every real
+    portrait panel into a fraction of that width with a wide blank margin.
+    Real pages are always served from kingofshojo's own CDN; keep only those,
+    unless that would drop everything (falls back to the unfiltered list
+    rather than ever producing an empty chapter)."""
+    real = [u for u in images if "cdn.kingofshojo.com" in u]
+    return real if real else images
 
 
 def download_chapter(url: str, chapter_no: str, dest: Path,
