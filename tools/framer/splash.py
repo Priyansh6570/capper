@@ -8,11 +8,18 @@ is re-rendered natively: every frame is composited in Pillow (already a hard
 dependency - see requirements.txt) into one image, blitted onto a single Tk
 label. No new runtime/dependency is introduced for this.
 
-Entry point: show_and_wait(host, port, logo_path, min_s, max_s). Blocks the
-calling thread (runs its own Tk mainloop) until the target port is accepting
-connections AND at least `min_s` has elapsed (so the animation always gets
-to play out), then fades the window out and returns. Never raises - a splash
-that fails must not block the app itself from starting.
+Run as a SEPARATE PROCESS, not imported in-process by tray_launcher.py (see
+its own _show_splash_and_wait): tkinter/Tcl can crash natively (observed in
+the wild - Windows Error Reporting APPCRASH in tcl86t.dll, exception
+0x80000003), which no Python try/except can catch since the whole process
+dies before any exception machinery runs. That used to take the Flask server
+down with it (they shared a process). Isolating this into its own process
+means a splash crash can only kill the splash.
+
+CLI: `python splash.py <host> <port> <logo_path> <min_s> <max_s>` - blocks
+until the target port is accepting connections AND at least `min_s` has
+elapsed, then fades out and exits. Always exits 0, even on its own internal
+error - see show_and_wait().
 """
 from __future__ import annotations
 
@@ -315,3 +322,9 @@ def show_and_wait(host: str, port: int, logo_path: Path, *, min_s: float = 3.0, 
         _run(host, port, logo_path, min_s, max_s)
     except Exception:  # noqa: BLE001 - a broken splash must never block the app from starting
         pass
+
+
+if __name__ == "__main__":
+    import sys
+    _, host, port, logo_path, min_s, max_s = sys.argv
+    show_and_wait(host, int(port), Path(logo_path), min_s=float(min_s), max_s=float(max_s))

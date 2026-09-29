@@ -18,6 +18,7 @@ Run:  pythonw.exe tools/framer/tray_launcher.py   (see start.bat)
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 import threading
 import webbrowser
@@ -62,25 +63,28 @@ def _show_splash_and_wait(host: str, port: int) -> None:
     fills it, the way a desktop app's own splash screen would, instead of
     just opening the browser to a "can't connect" page for a moment.
 
-    Blocks until the server's port is accepting connections AND at least
-    SPLASH_MIN_S has elapsed (a floor, so the animation always gets to play
-    out - it never just flashes on a warm/fast start), with a ceiling
-    (SPLASH_MAX_S) so a slow or wedged server never leaves this on screen
-    forever - the browser still opens either way once this returns.
+    Runs splash.py as a SEPARATE PROCESS, not imported in-process - tkinter/
+    Tcl can crash natively (observed: Windows Error Reporting APPCRASH in
+    tcl86t.dll), which kills the whole process with no Python exception to
+    catch, and this process is also running the Flask server (see main()
+    below) - a splash crash used to take the server down with it. A
+    subprocess crashing only kills that subprocess.
 
-    Runs entirely on the calling (main) thread and returns before anything
-    else touches Tkinter - main() only starts pystray's OWN main-thread loop
-    (icon.run()) after this function has returned, so the two never overlap.
-
-    Never raises: splash.py being unavailable or misbehaving must not block
-    the app itself from starting, only skip the nicety.
+    Blocks until the child exits (it waits out the same
+    SPLASH_MIN_S/SPLASH_MAX_S window internally - see splash.py) or
+    SPLASH_MAX_S+2s at the latest, so a wedged/crashed child can never block
+    the browser from opening. Never raises: splash.py being unavailable,
+    crashing, or misbehaving must not block the app itself from starting,
+    only skip the nicety.
     """
     try:
-        from splash import show_and_wait
-    except Exception:  # noqa: BLE001
-        return
-    show_and_wait(host, port, ROOT / "assets" / "ReCapper.png",
-                   min_s=SPLASH_MIN_S, max_s=SPLASH_MAX_S)
+        subprocess.run(
+            [sys.executable, str(Path(__file__).resolve().parent / "splash.py"),
+             host, str(port), str(ROOT / "assets" / "ReCapper.png"),
+             str(SPLASH_MIN_S), str(SPLASH_MAX_S)],
+            timeout=SPLASH_MAX_S + 2, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:  # noqa: BLE001 - a broken/crashed/hung splash must never block startup
+        pass
 
 
 def _stop_active_processes() -> None:
