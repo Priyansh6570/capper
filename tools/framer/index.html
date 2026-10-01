@@ -609,6 +609,9 @@
   .previewcol { width:190px; flex:none; display:flex; flex-direction:column; gap:6px; }
   .previewcol .plbl { font-family:ui-monospace,Consolas,monospace; font-size:10px; color:var(--muted);
                        letter-spacing:.08em; text-align:center; text-transform:uppercase; }
+  .uploadbar { flex:0 1 140px; height:5px; background:var(--input2); border:1px solid var(--line);
+               border-radius:999px; overflow:hidden; }
+  .uploadbar > span { display:block; height:100%; width:0; background:var(--accent); transition:width .2s ease; }
   .filehidden { position:absolute; width:1px; height:1px; opacity:0; pointer-events:none; }
   .slider { display:flex; flex-direction:column; gap:3px; margin-bottom:0; }
   .slider .slbl { display:flex; justify-content:space-between; font-size:12px; color:var(--muted); }
@@ -960,6 +963,7 @@
               <div class="optionlist">
                 <label class="optbtn"><input type="radio" name="musicMode" value="default" /><span class="otexts"><b>Default track</b><span>assets/music</span></span></label>
                 <label class="optbtn"><input type="radio" name="musicMode" value="file" /><span class="otexts"><b>Custom file</b><span>Upload your own audio</span></span></label>
+                <label class="optbtn"><input type="radio" name="musicMode" value="none" /><span class="otexts"><b>No background audio</b><span>Narration only</span></span></label>
               </div>
               <div class="filerow">
                 <button type="button" id="musicBrowseBtn" class="small ghost" data-icon="folder" data-ic-size="14"><span>Browse…</span></button>
@@ -1582,12 +1586,8 @@ async function doDownload() {
     // feed the Stitch PDF flow with the FULL chapter PDF
     $('chapId').value = d.chapter_id;
     $('pdfPath').value = d.pdf;
-    // Checkpoint the download NOW (chapter_id + source pdf, no strip yet) so
-    // leaving before stitching still lets this chapter reopen later instead
-    // of erroring "No saved editor state" - see openChapterEditor().
     S.chapter_id = d.chapter_id;
     S.source_pdf = d.pdf || null;
-    saveEditorState(false, { silent: true });
 
     setStatus((d.steps || []).join('\n'));
     showToast('Downloaded ' + d.page_count + ' pages. Preparing Gemini parts…', null, null, 'ok');
@@ -1815,10 +1815,6 @@ async function loadPdf() {
     setStatus(`Loaded ${d.chapter_id}. Full-res ${d.strip_w}×${d.strip_h}. Zoom out to navigate, in to see the art.`);
     showToast('Stitched ' + d.tiles.length + ' tiles - strip ' + d.strip_w + 'x' + d.strip_h + 'px.', null, null, 'ok');
     maybeOfferRecovery(d.chapter_id);
-    // Checkpoint the stitch NOW, even with no script/lines yet - otherwise
-    // leaving before adding a script or clicking Save leaves NOTHING on disk
-    // for this chapter, and reopening it errors "No saved editor state".
-    saveEditorState(false, { silent: true });
   } catch (e) { setStatus('PDF load error: ' + e.message, true); }
   finally {
     btnBusy($('loadPdfBtn'), false); clearGlobalProg(); hideOverlay();
@@ -2335,6 +2331,7 @@ async function doExport() {
       `manifest: ${d.manifest_path}\n\n` +
       `Next, run the pipeline's audio + video:\n  ${d.next_command}`);
     $('exportHint').textContent = d.frames_dir;
+    saveEditorState(false, { silent: true });
     showToast('Exported ' + d.frames_written + ' frames across ' + d.lines_written + ' lines.', null, null, 'ok');
   } catch (e) { setStatus('Export error: ' + e.message, true); }
   finally { btnBusy($('exportBtn'), false); clearGlobalProg(); }
@@ -2405,7 +2402,7 @@ async function startGenerate(what) {
     return;
   }
   gen.what = what;
-  $('genResult').innerHTML = ''; $('genProgress').classList.remove('err');
+  clearGenResult(); $('genProgress').classList.remove('err');
   setGenLog([]); setGenBusy(true); setGenBar(0, true);
   try {
     const res = await fetch('/api/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -2432,18 +2429,27 @@ async function cancelGenerate() {
   pollJobs();
 }
 
+// videoUrl carries the file's mtime (see _video_url in app.py), so it only
+// changes on a re-render. Called on every job poll, so an unchanged URL must
+// leave the existing <video> alone - rebuilding it restarts playback (flicker).
 function showGenResult(videoUrl) {
-  const sep = videoUrl.includes('?') ? '&' : '?';
-  const src = videoUrl + sep + 't=' + Date.now();   // cache-bust so a re-render updates
-  $('genResult').innerHTML =
+  const box = $('genResult');
+  if (box.dataset.videoUrl === videoUrl) return;
+  box.dataset.videoUrl = videoUrl;
+  box.innerHTML =
     `<div class="jobcard">
-       <div class="jobhead">${ic('check',15)}<b>Video ready</b><span class="jobpath">${videoUrl}</span></div>
-       <video class="genvideo" src="${src}" controls preload="metadata"></video>
+       <div class="jobhead">${ic('check',15)}<b>Video ready</b></div>
+       <video class="genvideo" src="${videoUrl}" controls preload="metadata"></video>
        <div class="jobacts">
-         <a class="btnlink" href="${src}" target="_blank">${ic('play',14)}<span>Play full size</span></a>
-         <a class="btnlink" href="${src}" download="recap.mp4">${ic('download',14)}<span>Download recap.mp4</span></a>
+         <a class="btnlink" href="${videoUrl}" target="_blank">${ic('play',14)}<span>Play full size</span></a>
+         <a class="btnlink" href="${videoUrl}" download="recap.mp4">${ic('download',14)}<span>Download recap.mp4</span></a>
        </div>
      </div>`;
+}
+function clearGenResult() {
+  const box = $('genResult');
+  box.innerHTML = '';
+  delete box.dataset.videoUrl;
 }
 
 // Reconciles the chapter editor's genbar with the ACTUAL job state for
@@ -2601,8 +2607,15 @@ function setSaveState(msg) { const el = $('saveState'); if (el) el.textContent =
 async function saveEditorState(recovery, opts) {
   const silent = !!(opts && opts.silent);
   if (!S.chapter_id) { if (!recovery && !silent) setStatus('Load a PDF (or a project) first.', true); return; }
+  // Autosave only persists real edits. A freshly opened editor is empty until
+  // its saved state is restored, and writing that empty state would overwrite
+  // the very work being restored.
+  if (recovery) {
+    if (!dirty) return;
+    dirty = false;
+  }
   try {
-    const res = await fetch('/editor_state/save', { method:'POST',
+    const res = await fetch('/editor_state/save', { method:'POST', keepalive: true,
       headers:{'Content-Type':'application/json'},
       body: JSON.stringify(scopeBody({ chapter_id: S.chapter_id, recovery: !!recovery, state: projectObject() })) });
     const d = await res.json();
@@ -2611,14 +2624,10 @@ async function saveEditorState(recovery, opts) {
     if (recovery) setSaveState(`auto-saved ${t}`);
     else {
       setSaveState(`saved ${t}`);
-      // silent = an automatic checkpoint (e.g. right after a download/stitch),
-      // not a user-initiated Save click - still writes the REAL editor_state.json
-      // (so reopening this chapter later restores it, see openChapterEditor()),
-      // just without the "Saved." toast/status line a deliberate save gets.
       if (!silent) { setStatus('Editor state saved to ' + d.path); showToast('Saved.', null, null, 'ok'); }
     }
   } catch (e) {
-    if (recovery) setSaveState('autosave failed');
+    if (recovery) { dirty = true; setSaveState('autosave failed'); }
     else if (!silent) setStatus('Save error: ' + e.message, true);
   }
 }
@@ -2648,6 +2657,7 @@ function applyProject(project, preview) {
   S.activeFrame = (S.active >= 0 && S.lines[S.active].frames.length) ? 0 : -1;
   undoStack = []; redoStack = []; updateUndoUI();
   renderLines(); redrawBoxes();
+  discardPendingAutosave();
 }
 
 // Chapter Source / Stitch Strip panels' TRUE state, re-derived from disk (see
@@ -2686,6 +2696,8 @@ function applyChapterSourceStatus(d) {
     showGeminiPartsResult(d.gemini_parts.dir, d.gemini_parts.parts);
   }
 
+  if (d.video_url) showGenResult(d.video_url);
+
   const stitchBtn = $('loadPdfBtn'), stitchStatus = $('stitchStatus');
   if (d.strip) {
     applyStripPreview(d.strip);
@@ -2701,13 +2713,15 @@ function applyChapterSourceStatus(d) {
   }
 }
 
-async function loadEditorState(recovery) {
+// `optional`: a chapter with nothing saved yet is expected (just opened), not an error.
+async function loadEditorState(recovery, optional) {
   const chap = ($('chapId').value.trim() || S.chapter_id || '');
   if (!chap) { setStatus('Enter a chapter id to load its saved state.', true); return; }
   showOverlay(recovery ? 'Restoring recovery' : 'Loading editor state');
   setGlobalProg(null, recovery ? 'Restoring recovery' : 'Loading editor state');
   try {
     const res = await fetch(`/editor_state/load?chapter=${encodeURIComponent(chap)}${recovery ? '&recovery=1' : ''}${scopeQS()}`);
+    if (res.status === 404 && optional) return;
     const d = await res.json();
     if (!res.ok) throw new Error(d.error || 'load failed');
     applyProject(d.state, d.preview);
@@ -2734,13 +2748,21 @@ async function maybeOfferRecovery(chap) {
 // debounced autosave on every edit + a 30s backstop, both to the recovery file -
 // only while the editor screen is actually open (see showScreen()).
 let autosaveTimer = null;
+let dirty = false;   // edits not yet written to recovery.json
 function markDirty() {
   if (!S.chapter_id) return;
+  dirty = true;
   setSaveState('unsaved…');
   clearTimeout(autosaveTimer);
   autosaveTimer = setTimeout(() => saveEditorState(true), 1500);
 }
+function discardPendingAutosave() {
+  clearTimeout(autosaveTimer);
+  dirty = false;
+}
 setInterval(() => { if (SCREEN === 'editor' && S.chapter_id) saveEditorState(true); }, 30000);
+// closing the app within the debounce window must not lose the last edits
+window.addEventListener('pagehide', () => { if (SCREEN === 'editor') saveEditorState(true); });
 
 // ---------------------------------------------------------------------------
 // theme (light / dark) + split position - both persisted SERVER-SIDE per session
@@ -3559,22 +3581,71 @@ function setPreviewImage(boxId, url) {
   img.src = url;
 }
 
+const ASSET_UI = {
+  music: { name: 'musicName', browse: 'musicBrowseBtn' },
+  voice: { name: 'voiceName', browse: 'voiceBrowseBtn' },
+  watermark: { name: 'wmFileName', browse: 'wmBrowseBtn' },
+  background: { name: 'bgFileName', browse: 'bgBrowseBtn' },
+};
+let uploadsInFlight = 0;
+window.addEventListener('beforeunload', e => { if (uploadsInFlight) e.preventDefault(); });
+
+// fetch() can't report upload progress, XHR can.
+function postWithProgress(url, body, onProgress) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', url);
+    xhr.responseType = 'json';
+    xhr.upload.onprogress = e => { if (e.lengthComputable) onProgress(e.loaded / e.total); };
+    xhr.onload = () => (xhr.status >= 200 && xhr.status < 300)
+      ? resolve(xhr.response)
+      : reject(new Error((xhr.response && xhr.response.error) || 'upload failed'));
+    xhr.onerror = () => reject(new Error('connection lost during upload'));
+    xhr.send(body);
+  });
+}
+
+// The file only counts as set once the server has stored it: until then the
+// name field shows live progress and the old value is kept for a failed upload.
 async function uploadAsset(kind, file) {
   if (!file || !CURRENT_PROJECT) return;
+  const ui = ASSET_UI[kind];
+  const nameEl = $(ui.name), browseBtn = $(ui.browse);
+  const previousName = nameEl.textContent;
+  const bar = document.createElement('span');
+  bar.className = 'uploadbar';
+  bar.innerHTML = '<span></span>';
+  nameEl.after(bar);
+  const setProgress = frac => {
+    bar.firstChild.style.width = Math.round(frac * 100) + '%';
+    const label = frac < 1 ? `Uploading… ${Math.round(frac * 100)}%` : 'Saving…';
+    nameEl.textContent = label;
+    setSettingsSaveState('saving', label);
+  };
+
   const fd = new FormData();
   fd.append('kind', kind);
   fd.append('file', file);
+  uploadsInFlight++;
+  btnBusy(browseBtn, true);
+  setProgress(0);
   try {
-    const res = await fetch(`/api/projects/${encodeURIComponent(CURRENT_PROJECT.slug)}/asset`, { method:'POST', body: fd });
-    const d = await res.json();
-    if (!res.ok) throw new Error(d.error || 'upload failed');
+    const d = await postWithProgress(`/api/projects/${encodeURIComponent(CURRENT_PROJECT.slug)}/asset`, fd, setProgress);
+    nameEl.textContent = d.name;
+    setSettingsSaveState('ok', 'Uploaded ' + new Date().toLocaleTimeString());
     showToast(kind + ' uploaded.', null, null, 'ok');
-    const nameEl = { music:'musicName', voice:'voiceName', watermark:'wmFileName', background:'bgFileName' }[kind];
-    if (nameEl) $(nameEl).textContent = d.name;
     if (kind === 'voice') { CURRENT_PROJECT.settings.voice.file = d.path; refreshVoiceActive(); }
     if (kind === 'watermark') refreshWatermarkPreview();
     if (kind === 'background') refreshBackgroundPreview();
-  } catch (e) { setStatus('Upload error: ' + e.message, true); }
+  } catch (e) {
+    nameEl.textContent = previousName;
+    setSettingsSaveState('err', 'Upload failed');
+    setStatus('Upload error: ' + e.message, true);
+  } finally {
+    uploadsInFlight--;
+    bar.remove();
+    btnBusy(browseBtn, false);
+  }
 }
 
 // --- opening a chapter in the editor ------------------------------------------
@@ -3591,11 +3662,12 @@ function resetEditorState() {
   S.chapter_id = null; S.source_pdf = null; S.strip_w = 0; S.strip_h = 0;
   S.preview_w = 0; S.preview_h = 0; S.tiles = [];
   S.lines = []; S.active = -1; S.activeFrame = -1;
+  discardPendingAutosave();
   undoStack = []; redoStack = []; updateUndoUI();
   tilesDiv.innerHTML = ''; boxesDiv.innerHTML = '';
   $('scriptText').value = ''; $('txtPath').value = '';
   $('pdfPath').value = ''; $('dlUrl').value = ''; $('dlNo').value = '';
-  $('genStatus').textContent = ''; $('genResult').innerHTML = '';
+  $('genStatus').textContent = ''; clearGenResult();
   $('gpResult').innerHTML = ''; $('gpRow').setAttribute('hidden', '');
   $('stripInfo').textContent = 'No strip loaded.';
   $('dlBtn').disabled = false; $('dlStatus').hidden = true; $('dlStatus').innerHTML = '';
@@ -3622,28 +3694,12 @@ async function openChapterEditor(slug, chNo, opts) {
     return;
   }
 
-  // ALWAYS re-derive Download/Stitch panel state from disk, independent of
-  // whether editor_state.json below has anything saved - see bug notes on
-  // refreshChapterSourceStatus().
+  // Everything shown here is re-derived from disk: the source/strip/video
+  // panels, and the script + frames (the newest populated save, else the
+  // exported mapping - see _resolve_editor_state in app.py).
   await refreshChapterSourceStatus();
-  try {
-    const res = await fetch(`/editor_state/status?chapter=${encodeURIComponent(S.chapter_id)}${scopeQS()}`);
-    const d = await res.json();
-    if (d.project && d.project.exists) { await loadEditorState(false); return; }
-    // No EXPLICIT save (editor_state.json), but the periodic autosave
-    // (recovery.json) has one - that's real prior script/box work, not
-    // "nothing here yet". Restore it automatically instead of silently
-    // falling through to "start from scratch", which is exactly what would
-    // make already-done work look gone on reopen if the explicit-save slot
-    // was ever empty for any reason.
-    if (d.recovery && d.recovery.exists) {
-      await loadEditorState(true);
-      showToast('Restored your last autosave (no explicit Save was found) - '
-        + 'click Save to make it permanent.', null, null, 'warn');
-      return;
-    }
-  } catch (_) { /* fall through - nothing saved yet for this chapter */ }
-  setStatus(`Opened ${S.chapter_id}. Download or stitch a PDF to begin.`);
+  await loadEditorState(false, true);
+  if (!S.lines.length) setStatus(`Opened ${S.chapter_id}. Download or stitch a PDF to begin.`);
 }
 
 function backToProject() { navTo(S.project ? { project: S.project } : {}); }

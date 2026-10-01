@@ -1650,10 +1650,7 @@ def _run_job(job: "Job") -> None:
                     if mp4.exists() and slug and ch_no:
                         projects.set_status(slug, ch_no, "rendered")
                     job.ok = mp4.exists()
-                    job.video_url = (
-                        (f"/output/{chapter_id}/recap.mp4?project={slug}&ch_no={ch_no}"
-                         if slug and ch_no else f"/output/{chapter_id}/recap.mp4")
-                        if mp4.exists() else None)
+                    job.video_url = _video_url(chapter_id, mp4, slug, ch_no)
                     job.message = "Done." if mp4.exists() else "Finished, but recap.mp4 was not found."
                 job.status = "done" if job.ok else "failed"
             else:
@@ -1793,6 +1790,15 @@ def api_job_cancel(job_id):
     return jsonify(error=f"Job already {job.status}."), 409
 
 
+def _video_url(chapter_id: str, mp4: Path, slug: str | None, ch_no: str | None) -> str | None:
+    """URL of a rendered video, versioned by its mtime: stable while the file is
+    unchanged (so the player isn't reloaded) and different after a re-render."""
+    if not mp4.exists():
+        return None
+    scope = f"&project={slug}&ch_no={ch_no}" if slug and ch_no else ""
+    return f"/output/{chapter_id}/{mp4.name}?v={int(mp4.stat().st_mtime)}{scope}"
+
+
 @app.get("/output/<chapter_id>/<path:name>")
 def output_file(chapter_id: str, name: str):
     """Serve a finished artifact (e.g. recap.mp4) for in-page play/download. Flask's
@@ -1842,6 +1848,50 @@ def _editor_state_path(chapter_id: str, recovery: bool) -> Path:
     return _framer_dir(chapter_id) / ("recovery.json" if recovery else "editor_state.json")
 
 
+def _read_editor_state(path: Path) -> dict | None:
+    """The saved state at `path`, or None if absent/unreadable. Falls back to the
+    .bak of the same file if the primary is corrupt - see atomic_io.py."""
+    if not path.exists() and not path.with_name(path.name + ".bak").exists():
+        return None
+    try:
+        state = read_json_with_backup_fallback(path)
+    except (OSError, ValueError):
+        return None
+    return state if isinstance(state, dict) else None
+
+
+def _state_from_mapping(chapter_id: str) -> dict | None:
+    """Rebuild editor lines from the exported mapping.json - the on-disk record
+    of finished boxing work, used when neither editor save file has any."""
+    mapping = _read_editor_state(_framer_dir(chapter_id) / "mapping.json")
+    if not mapping or not mapping.get("lines"):
+        return None
+    return {
+        "chapter_id": chapter_id,
+        "lines": [{
+            "text": ln.get("text", ""),
+            "duration_s": ln.get("duration_s", 4),
+            "mode": ln.get("mode", "sequence"),
+            "frames": [{"bbox": f["bbox"], "flip": f.get("flip", False),
+                        "blur": f.get("blur_regions", [])} for f in ln.get("frames", [])],
+        } for ln in mapping["lines"]],
+    }
+
+
+def _resolve_editor_state(chapter_id: str) -> dict | None:
+    """The chapter's editor state, derived from whatever is on disk: the most
+    recently written of editor_state.json / recovery.json that actually holds
+    lines, else the exported mapping.json, else any (empty) save. Never trusts
+    one file just because it exists - an empty or stale one must not shadow
+    real work in another."""
+    saved = [s for s in (_read_editor_state(_editor_state_path(chapter_id, r)) for r in (False, True)) if s]
+    populated = sorted((s for s in saved if s.get("lines")),
+                       key=lambda s: s.get("saved_at", ""), reverse=True)
+    if populated:
+        return populated[0]
+    return _state_from_mapping(chapter_id) or (saved[0] if saved else None)
+
+
 @app.post("/editor_state/save")
 def save_editor_state():
     """Persist the FULL working state (lines, frames, modes, durations, strip ref).
@@ -1880,14 +1930,12 @@ def load_editor_state():
     it is null if the chapter has no stitched strip on disk.
     """
     chapter_id = _sanitize_chapter(request.args.get("chapter", ""))
-    recovery = request.args.get("recovery") in ("1", "true", "yes")
-    path = _editor_state_path(chapter_id, recovery)
-    if not path.exists() and not path.with_name(path.name + ".bak").exists():
-        return jsonify(error=f"No saved {'recovery' if recovery else 'editor'} state "
-                             f"for {chapter_id}."), 404
-    # Falls back to the .bak of this same file if the primary is corrupt -
-    # see atomic_io.py.
-    state = read_json_with_backup_fallback(path)
+    if request.args.get("recovery") in ("1", "true", "yes"):
+        state = _read_editor_state(_editor_state_path(chapter_id, True))
+    else:
+        state = _resolve_editor_state(chapter_id)
+    if state is None:
+        return jsonify(error=f"No saved editor state for {chapter_id}."), 404
     return jsonify(state=state, preview=_preview_payload(chapter_id))
 
 
@@ -1910,7 +1958,7 @@ def chapter_source_status():
     from what's actually on disk for `chapter` - NEVER from editor_state.json,
     which only ever held the framer's own boxing data (lines/frames) and
     silently dropped download/split/stitch progress on every reopen. Returns
-    {pdf, gemini_parts, strip}, each null if that step hasn't happened yet.
+    {pdf, gemini_parts, strip, video_url}, each null if that step hasn't happened yet.
     `strip` is the same preview payload /editor_state/load returns, so the UI
     can show an already-stitched strip without re-stitching it."""
     chapter_id = _sanitize_chapter(request.args.get("chapter", ""))
@@ -1925,7 +1973,10 @@ def chapter_source_status():
     parts = _existing_gemini_parts(chapter_id)
     gemini_parts = {"dir": str(_gemini_parts_dir(chapter_id)), "parts": parts} if parts else None
 
-    return jsonify(pdf=pdf, gemini_parts=gemini_parts, strip=_preview_payload(chapter_id))
+    slug, ch_no = _scope_params()
+    video_url = _video_url(chapter_id, chapter_output_dir(chapter_id) / "recap.mp4", slug, ch_no)
+    return jsonify(pdf=pdf, gemini_parts=gemini_parts, strip=_preview_payload(chapter_id),
+                   video_url=video_url)
 
 
 @app.get("/settings")

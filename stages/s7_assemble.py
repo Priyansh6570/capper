@@ -288,7 +288,10 @@ def _music_file() -> Path | None:
 
 
 def _resolve_music(settings: dict) -> Path | None:
-    """The project's chosen music track, else today's global assets/music scan."""
+    """The project's chosen music track, else today's global assets/music scan;
+    None when the project opted out of a music bed."""
+    if settings.get("music_off"):
+        return None
     raw = settings.get("music")
     if raw and Path(raw).is_file():
         return Path(raw)

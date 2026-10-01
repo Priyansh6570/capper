@@ -333,6 +333,9 @@ def update_settings(slug: str, settings: dict) -> dict:
         wm["size"] = max(0.02, min(0.6, float(wm.get("size", 0.12))))
         wm["spacing"] = max(0.0, min(4.0, float(wm.get("spacing", 1.0))))
         wm["angle"] = max(-90, min(90, float(wm.get("angle", -30))))
+        music = project["settings"]["music"]
+        if music.get("mode") not in ("default", "file", "none"):
+            music["mode"] = "default"
         bg = project["settings"]["background"]
         bg["dim"] = max(0.1, min(1.0, float(bg.get("dim", 0.85))))
         if bg.get("mode") not in ("blur", "image", "video"):
@@ -420,6 +423,7 @@ def media_settings_snapshot(slug: str) -> dict:
     background = s["background"]
     out = {
         "music": _resolved_str(slug, music.get("file")) if music.get("mode") == "file" else None,
+        "music_off": music.get("mode") == "none",
         "voice": _resolved_str(slug, voice.get("file")) if voice.get("mode") == "file" else None,
         "watermark": {
             **watermark,
