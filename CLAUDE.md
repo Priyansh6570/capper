@@ -116,9 +116,14 @@ python -c "import torch; print(torch.cuda.is_available())"
 It must print `True`. If it prints `False`, reinstall:
 
 ```bash
-pip uninstall torch torchvision torchaudio -y
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+pip install --force-reinstall -r requirements-gpu.txt
 ```
+
+torch/torchaudio are pinned (`+cu128`) in `requirements-gpu.txt`, NOT in
+`requirements.txt` - PyPI's Windows wheels are CPU-only, so listing them in
+`requirements.txt` made every `pip install -r` swap the CUDA build out.
+`setup.bat` installs `requirements-gpu.txt` first. `gpu.py` is the shared
+GPU/NVENC probe (stage 6, stage 7, setup, the framer's GPU status card).
 
 - **Laptop / this repo**: Python + `requirements.txt` (PyMuPDF, Pillow). Stages
   1, 2, 5, 3, 7 and the orchestrator run here. Target Windows; use `pathlib`,
@@ -195,6 +200,12 @@ rendered output with `ffprobe`/`ffmpeg` and writes to
 `projects/<slug>/merged/`. It required **no** change to the manifest,
 orchestrator, or any pipeline stage - keep it that way; it has nothing to do
 with a single chapter's render.
+
+The framer's **export/import** feature (`/api/projects/<slug>/export`,
+`/api/projects/import`, `projects.export_archive`/`import_archive`) zips a
+project's whole folder and restores it as a new project, rewriting the absolute
+paths stored in chapter JSON files. Like merge, it needs no change to the
+manifest, orchestrator, or any pipeline stage.
 
 ## Conventions
 

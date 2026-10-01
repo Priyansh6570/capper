@@ -1,0 +1,6 @@
+# CUDA build of PyTorch, installed before requirements.txt (see setup.bat).
+# The +cu128 local version makes pip replace a CPU-only torch instead of
+# treating it as already satisfied. --index-url applies to this file only.
+--index-url https://download.pytorch.org/whl/cu128
+torch==2.11.0+cu128
+torchaudio==2.11.0+cu128

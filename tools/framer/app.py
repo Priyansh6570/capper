@@ -39,6 +39,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.request
@@ -62,6 +63,7 @@ import config  # noqa: E402 - module import so chapter_scope()/set_/clear_ are r
 from config import chapter_work_dir, chapter_output_dir, WORK_DIR, OUTPUT_DIR, PROJECTS_DIR, NO_CONSOLE  # noqa: E402
 from manifest import Manifest, Page, Panel  # noqa: E402
 from atomic_io import atomic_write_json, read_json_with_backup_fallback  # noqa: E402
+import gpu  # noqa: E402
 
 import projects  # noqa: E402 - the project system (this package: tools/framer/projects.py)
 import sites  # noqa: E402 - per-site adapters (tools/framer/sites/): metadata + chapter download
@@ -2033,20 +2035,37 @@ FEATURE_PACKAGES = {
 }
 
 
-def _requirement_specs() -> list[str]:
-    path = ROOT / "requirements.txt"
+def _requirement_specs(filename: str = "requirements.txt") -> list[str]:
+    path = ROOT / filename
     if not path.exists():
         return []
     specs = []
     for line in path.read_text(encoding="utf-8").splitlines():
         line = line.split("#", 1)[0].strip()
-        if line:
+        if line and not line.startswith("-"):
             specs.append(line)
     return specs
 
 
 def _requirement_name(spec: str) -> str:
     return re.split(r"[<>=!~\s]", spec, 1)[0].strip()
+
+
+def _missing_gpu_packages() -> list[str]:
+    """torch/torchaudio that are absent, or - on a PC with an NVIDIA GPU - installed as
+    a CPU-only build (no +cuXXX local version), which silently runs narration on the CPU."""
+    from importlib import metadata
+    missing, cpu_only = [], []
+    for spec in _requirement_specs("requirements-gpu.txt"):
+        name = _requirement_name(spec)
+        try:
+            version = metadata.version(name)
+        except metadata.PackageNotFoundError:
+            missing.append(name)
+            continue
+        if "+cu" not in version:
+            cpu_only.append(name)
+    return missing + (cpu_only if cpu_only and gpu.nvidia_gpu() else [])
 
 
 def _missing_packages() -> list[dict]:
@@ -2057,15 +2076,22 @@ def _missing_packages() -> list[dict]:
     # without this - Python caches each sys.path directory's listing on first
     # import-system access and won't otherwise notice new dist-info folders.
     importlib.invalidate_caches()
-    missing = []
-    for spec in _requirement_specs():
-        name = _requirement_name(spec)
-        try:
-            metadata.version(name)
-        except metadata.PackageNotFoundError:
-            missing.append({"package": name,
-                             "feature": FEATURE_PACKAGES.get(name, "part of the app")})
-    return missing
+    names = [_requirement_name(spec) for spec in _requirement_specs()]
+    names = [n for n in names if not _is_installed(metadata, n)] + _missing_gpu_packages()
+    return [{"package": n, "feature": FEATURE_PACKAGES.get(n, "part of the app")} for n in names]
+
+
+def _is_installed(metadata, name: str) -> bool:
+    try:
+        metadata.version(name)
+        return True
+    except metadata.PackageNotFoundError:
+        return False
+
+
+@app.get("/api/gpu/status")
+def api_gpu_status():
+    return jsonify(gpu.status())
 
 
 @app.get("/api/deps/check")
@@ -2073,19 +2099,9 @@ def api_deps_check():
     return jsonify(missing=_missing_packages())
 
 
-def _install_deps_stream(packages: list[str]):
-    """pip install every currently-missing package (as its full requirements.txt
-    spec, so version constraints are respected) in one call, then - only if
-    torch/torchaudio were among them - re-run setup.bat's own CUDA-torch
-    override: a plain `pip install` pulls a CPU-only torch as a side effect of
-    resolving chatterbox-tts's dependencies, same as setup.bat's step 4a/4b."""
-    specs = [s for s in _requirement_specs() if _requirement_name(s) in packages]
-    if not specs:
-        yield {"type": "error", "message": "Nothing to install."}
-        return
-
-    yield {"type": "log", "line": f"Installing {len(specs)} package(s): {', '.join(specs)}"}
-    cmd = [sys.executable, "-m", "pip", "install"] + specs
+def _pip_install_stream(args: list[str]):
+    """Run `pip install <args>`, yielding its output as log events; returns the exit code."""
+    cmd = [sys.executable, "-m", "pip", "install", *args]
     yield {"type": "log", "line": "$ " + " ".join(cmd)}
     proc = subprocess.Popen(cmd, cwd=str(ROOT), stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
@@ -2093,42 +2109,35 @@ def _install_deps_stream(packages: list[str]):
                             **NO_CONSOLE)
     for line in proc.stdout:
         yield {"type": "log", "line": line.rstrip("\n")}
-    proc.wait()
-    if proc.returncode != 0:
-        yield {"type": "error", "message": f"pip install failed (exit code {proc.returncode})."}
+    return proc.wait()
+
+
+def _install_deps_stream(packages: list[str]):
+    """Install the missing packages: torch/torchaudio from requirements-gpu.txt (the
+    CUDA build, first, so nothing else pulls in PyPI's CPU-only one), the rest as their
+    full requirements.txt spec so version constraints are respected."""
+    gpu_names = {_requirement_name(s) for s in _requirement_specs("requirements-gpu.txt")}
+    gpu_needed = [p for p in packages if p in gpu_names]
+    specs = [s for s in _requirement_specs() if _requirement_name(s) in packages]
+    if not specs and not gpu_needed:
+        yield {"type": "error", "message": "Nothing to install."}
         return
 
-    needs_cuda_torch = "torch" in packages or "torchaudio" in packages
-    if needs_cuda_torch:
-        yield {"type": "log", "line": "Switching PyTorch to the CUDA build "
-                                       "(a plain install pulls a CPU-only one)…"}
-        cmd2 = [sys.executable, "-m", "pip", "install", "--upgrade",
-                "--index-url", "https://download.pytorch.org/whl/cu128",
-                "torch", "torchaudio"]
-        yield {"type": "log", "line": "$ " + " ".join(cmd2)}
-        proc2 = subprocess.Popen(cmd2, cwd=str(ROOT), stdout=subprocess.PIPE,
-                                 stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
-                                 text=True, bufsize=1, encoding="utf-8", errors="replace",
-                                 **NO_CONSOLE)
-        for line in proc2.stdout:
-            yield {"type": "log", "line": line.rstrip("\n")}
-        proc2.wait()
-        if proc2.returncode != 0:
-            yield {"type": "error", "message": f"CUDA PyTorch install failed "
-                                                f"(exit code {proc2.returncode})."}
+    if gpu_needed:
+        yield {"type": "log", "line": "Installing the CUDA build of PyTorch..."}
+        code = yield from _pip_install_stream(["-r", str(ROOT / "requirements-gpu.txt")])
+        if code != 0:
+            yield {"type": "error", "message": f"CUDA PyTorch install failed (exit code {code})."}
+            return
+    if specs:
+        yield {"type": "log", "line": f"Installing {len(specs)} package(s): {', '.join(specs)}"}
+        code = yield from _pip_install_stream(specs)
+        if code != 0:
+            yield {"type": "error", "message": f"pip install failed (exit code {code})."}
             return
 
-    cuda_ok = None
-    if needs_cuda_torch:
-        try:
-            check = subprocess.run(
-                [sys.executable, "-c",
-                 "import torch, sys; sys.exit(0 if torch.cuda.is_available() else 1)"],
-                timeout=30, **NO_CONSOLE)
-            cuda_ok = check.returncode == 0
-        except Exception:  # noqa: BLE001 - report as unknown, not fatal
-            cuda_ok = None
-    yield {"type": "result", "missing": _missing_packages(), "cuda_ok": cuda_ok}
+    yield {"type": "result", "missing": _missing_packages(),
+           "cuda_ok": (gpu.torch_info() or {}).get("available") if gpu_needed else None}
 
 
 @app.get("/api/deps/install_stream")
@@ -2329,6 +2338,44 @@ def api_get_project(slug):
         except Exception:  # noqa: BLE001 - a derive glitch must not break the page
             pass
     return jsonify(project=projects.load(slug))
+
+
+@app.get("/api/projects/<slug>/export")
+def api_export_project(slug):
+    """Zip the whole project folder (downloads, frames, audio, renders, assets,
+    settings) for backup or transfer. `?videos=0` leaves out rendered videos."""
+    if not projects.exists(slug):
+        return jsonify(error=f"No such project: {slug}"), 404
+    fd, tmp = tempfile.mkstemp(suffix=".zip")
+    os.close(fd)
+    try:
+        projects.export_archive(slug, Path(tmp), include_videos=request.args.get("videos") != "0")
+    except Exception:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+    resp = send_file(tmp, as_attachment=True, download_name=f"{slug}.recapper.zip",
+                     mimetype="application/zip")
+    resp.call_on_close(lambda: Path(tmp).unlink(missing_ok=True))
+    return resp
+
+
+@app.post("/api/projects/import")
+def api_import_project():
+    """Multipart: {file} - a zip made by the export route. Always creates a new
+    project (renamed if the slug is taken), never overwrites one."""
+    upload = request.files.get("file")
+    if not upload or not upload.filename:
+        return jsonify(error="file required"), 400
+    fd, tmp = tempfile.mkstemp(suffix=".zip")
+    os.close(fd)
+    try:
+        upload.save(tmp)
+        project = projects.import_archive(Path(tmp))
+    except ValueError as e:
+        return jsonify(error=str(e)), 400
+    finally:
+        Path(tmp).unlink(missing_ok=True)
+    return jsonify(slug=project["slug"], project=project)
 
 
 @app.delete("/api/projects/<slug>")

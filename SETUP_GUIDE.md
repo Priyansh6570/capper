@@ -86,7 +86,7 @@ This usually means one of:
 - PyTorch installed the wrong (CPU-only) build. Open a Command Prompt in this
   folder and run:
   ```
-  .venv\Scripts\python -m pip install --upgrade --index-url https://download.pytorch.org/whl/cu128 torch torchaudio
+  .venv\Scripts\python -m pip install --force-reinstall -r requirements-gpu.txt
   ```
   then run `setup.bat` again to re-verify.
 

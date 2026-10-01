@@ -52,6 +52,7 @@ import sys
 from pathlib import Path
 
 from config import ROOT, chapter_work_dir, TTS_VOICE
+from gpu import nvidia_gpu, record_usage
 from manifest import Manifest
 
 # Reference clip for voice cloning. If absent, the default voice is used.
@@ -265,6 +266,9 @@ def _build_engine():
     actually produce audio on this machine. Returns (model, device, sr, label)."""
     import torch
 
+    if not torch.cuda.is_available() and nvidia_gpu():
+        print(f"  [s6] WARNING: torch {torch.__version__} cannot use the NVIDIA GPU - narration "
+              f"will run on the CPU. See Settings -> GPU acceleration.")
     last_err: Exception | None = None
     for kind, device in _candidates():
         if device == "cuda" and not torch.cuda.is_available():
@@ -463,6 +467,7 @@ def _run_draft(m: Manifest, audio_dir: Path) -> Manifest:
     total = sum(p.duration_s or 0 for p in panels)
     print(f"  [draft] voiced {spoken}/{len(panels)} panels with edge-tts "
           f"({TTS_VOICE}), ~{total:.1f}s total -> {audio_dir}")
+    record_usage("audio", "edge-tts draft", False)
     m.stage = "audio"
     return m
 
@@ -519,5 +524,6 @@ def run(m: Manifest) -> Manifest:
     total = sum(p.duration_s or 0 for p in panels)
     print(f"  voiced {spoken}/{len(panels)} panels with Chatterbox "
           f"[{engine.label}], ~{total:.1f}s total -> {audio_dir}")
+    record_usage("audio", engine.label, engine.device == "cuda")
     m.stage = "audio"
     return m

@@ -31,15 +31,10 @@ google-genai==2.25.0  # tools/framer/app.py: Gemini API script generation
 keyring>=25.0        # stores GEMINI_API_KEY in Windows Credential Manager, not plaintext
 
 # --- Stage 6: Chatterbox TTS, runs locally (GPU with CPU fallback) --------
-# IMPORTANT (Windows): the default PyPI torch wheel is CPU-only. To use an
-# NVIDIA GPU, install the CUDA build first, then the rest of this file, e.g.:
-#   pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu128
-# Do NOT pin a +cuXXX wheel URL here (it's machine/CUDA-specific). After any
-# install, re-check `python -c "import torch; print(torch.cuda.is_available())"`.
-# torch/torchaudio pinned exactly to match chatterbox-tts's own exact pin
-# (avoids pip backtracking through dozens of versions to find that match).
-torch==2.6.0
-torchaudio==2.6.0
+# torch/torchaudio are deliberately NOT listed here: PyPI's Windows wheels are
+# CPU-only, so any `pip install -r requirements.txt` that pinned them would
+# silently replace the CUDA build. They live in requirements-gpu.txt, which
+# setup.bat installs FIRST so every other package here sees torch as satisfied.
 soundfile>=0.12      # voice-reference preprocessing (float32/mono/24kHz)
 numpy>=2.0.0
 

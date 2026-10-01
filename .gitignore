@@ -15,6 +15,12 @@ install_log.txt
 # (no console at all - see its module docstring) ---
 app_log.txt
 
+# --- gpu.py: what the last audio/video run actually used ---
+gpu_usage.json
+
+# --- projects.import_archive staging folders ---
+.import_*/
+
 # --- installer.iss build output (the compiled Setup.exe) ---
 installer/output/
 

@@ -747,6 +747,8 @@
       <div class="apptopbar">
         <div class="crumbs"><span class="cur">Projects</span></div>
         <div class="actions">
+          <button id="importProjectBtn" data-icon="upload" data-ic-size="15" title="Restore a project from an exported .zip"><span>Import project</span></button>
+          <input type="file" id="importProjectFile" accept=".zip" hidden />
           <button id="npToggleBtn" class="primary" data-icon="plus" data-ic-size="15"><span>New project</span></button>
         </div>
       </div>
@@ -911,6 +913,9 @@
           <span class="navlabel" style="margin-top:14px">Visuals</span>
           <a href="#s-bg">Video background</a>
           <a href="#s-anim">Frame animation</a>
+          <span class="navlabel" style="margin-top:14px">System</span>
+          <a href="#s-gpu">GPU acceleration</a>
+          <a href="#s-backup">Export project</a>
           <div class="settingsnote">Changes apply to every chapter rendered in this project. Already-rendered chapters need a re-render.</div>
         </nav>
         <div class="settingscontent">
@@ -1052,6 +1057,22 @@
                   <span class="plbl">Live preview</span>
                 </div>
               </div>
+            </div>
+          </div>
+
+          <div class="setcard" id="s-gpu">
+            <div class="setlabel"><b>GPU acceleration</b><span>Whether your NVIDIA GPU is detected and used for narration (PyTorch/CUDA) and for video encoding (NVENC). Applies to the whole app.</span></div>
+            <div class="setbody">
+              <div class="gplist" id="gpuRows"></div>
+              <div class="filerow"><button type="button" id="gpuRecheckBtn" class="small ghost" data-icon="refresh" data-ic-size="14"><span>Re-check</span></button></div>
+            </div>
+          </div>
+
+          <div class="setcard" id="s-backup">
+            <div class="setlabel"><b>Export project</b><span>Save this whole project as one .zip - chapter downloads, boxed frames, scripts, audio, renders, uploaded media and settings - to back it up, reinstall the app, or move it to another PC. Restore it with "Import project" on the Projects screen.</span></div>
+            <div class="setbody">
+              <label class="field" style="margin:0;flex-direction:row;gap:8px;align-items:center"><input type="checkbox" id="exportVideos" checked /><span>Include rendered videos (larger file)</span></label>
+              <div class="filerow"><button type="button" id="exportProjectBtn" class="small ghost" data-icon="download" data-ic-size="14"><span>Export project</span></button></div>
             </div>
           </div>
 
@@ -1283,6 +1304,7 @@
 <script>
 /* Lucide-style line icons (stroke, 24 grid) - no emoji anywhere in the UI. */
 const ICONS = {
+  upload:'<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m17 8-5-5-5 5"/><path d="M12 3v12"/>',
   download:'<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/>',
   layers:'<path d="M12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z"/><path d="m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65"/><path d="m22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65"/>',
   crop:'<path d="M6 2v14a2 2 0 0 0 2 2h14"/><path d="M18 22V8a2 2 0 0 0-2-2H2"/>',
@@ -2966,6 +2988,37 @@ function timeAgo(iso) {
   return `${dd}d ago`;
 }
 
+// --- project export / import (see api_export_project / api_import_project in app.py) ---
+function exportProject() {
+  const videos = $('exportVideos').checked ? 1 : 0;
+  showToast('Preparing the export - the download starts when it is ready. Large projects can take a minute.', null, null, 'ok');
+  window.location = `/api/projects/${encodeURIComponent(CURRENT_PROJECT.slug)}/export?videos=${videos}`;
+}
+
+async function importProject() {
+  const input = $('importProjectFile');
+  const file = input.files[0];
+  input.value = '';
+  if (!file) return;
+  const btn = $('importProjectBtn');
+  btnBusy(btn, true);
+  setGlobalProg(null, 'Importing project');
+  try {
+    const form = new FormData();
+    form.append('file', file);
+    const res = await fetch('/api/projects/import', { method: 'POST', body: form });
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.error || 'Import failed');
+    showToast(`Imported "${d.project.name}".`, null, null, 'ok');
+    navTo({ project: d.slug });
+  } catch (e) {
+    showToast('Import failed: ' + e.message, null, null, 'err');
+  } finally {
+    clearGlobalProg();
+    btnBusy(btn, false);
+  }
+}
+
 async function renderProjectsList() {
   const list = $('pList');
   const recent = $('recentList');
@@ -3115,10 +3168,35 @@ async function openSettingsScreen(slug) {
     paintProjectChrome();
     fillSettingsForm();
     loadGeminiKeyStatus();
+    loadGpuStatus();
   } catch (e) {
     setStatus('Open settings error: ' + e.message, true);
   }
 }
+
+// --- GPU acceleration status (see gpu.status in gpu.py) ---
+async function loadGpuStatus() {
+  const rows = $('gpuRows');
+  rows.innerHTML = '<div class="gprow"><span class="gpname">Checking…</span></div>';
+  const row = (label, ok, note) =>
+    `<div class="gprow"><span class="gpname">${escHtml(label)}</span>` +
+    `<span class="gpmeta" style="color:var(${ok ? '--ok' : '--warn'})">${escHtml(note)}</span></div>`;
+  const lastRun = (u, what) => u
+    ? `Last ${what} run: ${u.backend} on ${u.gpu ? 'GPU' : 'CPU'} (${u.at})`
+    : `No ${what} run yet`;
+  try {
+    const d = await (await fetch('/api/gpu/status')).json();
+    rows.innerHTML =
+      row('GPU', !!d.gpu, d.gpu ? `${d.gpu.name}, ${Math.round(d.gpu.vram_mb / 1024)} GB, driver ${d.gpu.driver}` : 'No NVIDIA GPU detected') +
+      row('Audio (narration)', d.audio.gpu_ready, d.audio.gpu_ready ? 'GPU ready' : 'CPU only') +
+      `<div class="gprow"><span class="gpmeta" style="margin-left:0;white-space:normal">${escHtml(d.audio.note)} ${escHtml(lastRun(d.last_run.audio, 'audio'))}</span></div>` +
+      row('Video (encoding)', d.video.gpu_ready, d.video.gpu_ready ? 'GPU ready (NVENC)' : 'CPU only (libx264)') +
+      `<div class="gprow"><span class="gpmeta" style="margin-left:0;white-space:normal">${escHtml(d.video.note)} ${escHtml(lastRun(d.last_run.video, 'video'))}</span></div>`;
+  } catch (e) {
+    rows.innerHTML = row('GPU status', false, 'Could not check: ' + e.message);
+  }
+}
+$('gpuRecheckBtn').onclick = loadGpuStatus;
 
 // --- Gemini API key (global, .env-only - see api_gemini_key_status in app.py) ---
 async function loadGeminiKeyStatus() {
@@ -3858,6 +3936,9 @@ $('npCreateBtn').onclick = createProject;
 $('npManualBtn').onclick = useManualRange;
 $('checkUpdateBtn').onclick = checkForUpdate;
 $('themeBtnP').onclick = toggleTheme;
+$('importProjectBtn').onclick = () => $('importProjectFile').click();
+$('importProjectFile').onchange = importProject;
+$('exportProjectBtn').onclick = exportProject;
 $('npToggleBtn').onclick = () => $('npComposer').classList.toggle('on');
 $('npCloseBtn').onclick = () => $('npComposer').classList.remove('on');
 $('backToProjectsBtn').onclick = () => navTo({});

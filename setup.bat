@@ -91,6 +91,7 @@ if errorlevel 1 (
         )
     )
 ) else (
+    set "HAS_NVIDIA=1"
     set "GPU_NAME=unknown"
     set "GPU_VRAM="
     nvidia-smi --query-gpu=name --format=csv,noheader >"%TMPFILE%" 2>>"%LOGFILE%"
@@ -187,8 +188,20 @@ echo       can take 10-30+ minutes depending on your internet^)...
 call :log "[4/7] Installing packages..."
 call :progress "4" "Downloading AI libraries (about 2.5GB)..."
 
-echo   4a. Installing the app's packages ^(this pulls in a generic,
-echo       non-CUDA PyTorch as a side effect - step 4b fixes that^)...
+echo   4a. Installing PyTorch with CUDA support ^(GPU acceleration^) - watch this
+echo       window for progress. This goes FIRST so no other package ever
+echo       pulls in PyPI's CPU-only PyTorch...
+call :progress "5" "Configuring GPU acceleration..."
+powershell -NoProfile -Command "& { & '%VENV_PY%' -m pip install -r '%~dp0requirements-gpu.txt' 2>&1 | Tee-Object -FilePath '%LOGFILE%' -Append; exit $LASTEXITCODE }"
+if errorlevel 1 (
+    echo   [FAIL] Installing the PyTorch CUDA build failed. See setup_log.txt.
+    call :log "  [FAIL] requirements-gpu.txt install failed."
+    goto :fail
+)
+echo   [OK] PyTorch CUDA build installed.
+call :log "  [OK] PyTorch CUDA build installed (step 4a)."
+
+echo   4b. Installing the app's packages...
 powershell -NoProfile -Command "& { & '%VENV_PY%' -m pip install -r '%~dp0requirements.txt' 2>&1 | Tee-Object -FilePath '%LOGFILE%' -Append; exit $LASTEXITCODE }"
 if errorlevel 1 (
     echo   [FAIL] Package install failed. See setup_log.txt for the error.
@@ -196,22 +209,7 @@ if errorlevel 1 (
     goto :fail
 )
 echo   [OK] All packages installed.
-call :log "  [OK] All packages installed."
-
-call :progress "5" "Configuring GPU acceleration..."
-echo   4b. Switching PyTorch to the CUDA build - watch this window for progress...
-echo       ^(one of the AI packages above pins a specific plain-CPU
-echo       PyTorch version as ITS OWN dependency; this step deliberately
-echo       overrides that with the matching CUDA build instead - this is
-echo       expected and the app is tested working this way^)...
-powershell -NoProfile -Command "& { & '%VENV_PY%' -m pip install --upgrade --index-url https://download.pytorch.org/whl/cu128 torch torchaudio 2>&1 | Tee-Object -FilePath '%LOGFILE%' -Append; exit $LASTEXITCODE }"
-if errorlevel 1 (
-    echo   [FAIL] Installing the PyTorch CUDA build failed. See setup_log.txt.
-    call :log "  [FAIL] torch/torchaudio (cu128) install failed."
-    goto :fail
-)
-echo   [OK] PyTorch CUDA build installed.
-call :log "  [OK] PyTorch CUDA build installed (step 4b)."
+call :log "  [OK] All packages installed (step 4b)."
 
 echo   4c. Installing chatterbox-tts ^(the AI voice engine^)...
 echo       ^(its own metadata hard-requires gradio==6.8.0 for a demo UI its
@@ -325,18 +323,18 @@ echo.
 echo [6/7] Checking for ffmpeg ^(video encoder^)...
 call :log "[6/7] Checking for ffmpeg..."
 call :progress "7" "Setting up video tools..."
-where ffmpeg >nul 2>&1
-if not errorlevel 1 (
-    echo   [OK] ffmpeg is already on this PC's PATH.
-    call :log "  [OK] ffmpeg found on PATH."
-) else if exist "%FFMPEG_BIN%\ffmpeg.exe" (
+call :system_ffmpeg_ok
+if exist "%FFMPEG_BIN%\ffmpeg.exe" (
     echo   [OK] ffmpeg already downloaded for this app.
     call :log "  [OK] ffmpeg already present in vendor\ffmpeg."
+) else if not errorlevel 1 (
+    echo   [OK] ffmpeg is already on this PC's PATH.
+    call :log "  [OK] usable ffmpeg found on PATH."
 ) else (
-    echo   ffmpeg not found - downloading a copy just for this app
+    echo   No usable ffmpeg found ^(with NVIDIA GPU encoding, if you have a GPU^) - downloading a copy just for this app
     echo   ^(this does NOT change your system - it's saved inside this
     echo   app's own folder^)...
-    call :log "  ffmpeg not found - downloading."
+    call :log "  no usable ffmpeg on PATH - downloading."
     powershell -NoProfile -ExecutionPolicy Bypass -Command ^
         "$ErrorActionPreference='Stop'; $zip = Join-Path $env:TEMP 'manhwa_ffmpeg.zip'; Invoke-WebRequest -Uri 'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip' -OutFile $zip; $extract = Join-Path $env:TEMP 'manhwa_ffmpeg_extract'; if (Test-Path $extract) { Remove-Item $extract -Recurse -Force }; Expand-Archive -Path $zip -DestinationPath $extract -Force; $exe = Get-ChildItem -Path $extract -Filter ffmpeg.exe -Recurse | Select-Object -First 1; if (-not $exe) { throw 'ffmpeg.exe not found in downloaded archive' }; $bin = $exe.DirectoryName; New-Item -ItemType Directory -Force -Path '%FFMPEG_BIN%' | Out-Null; Copy-Item (Join-Path $bin '*') '%FFMPEG_BIN%' -Force; Remove-Item $zip -Force; Remove-Item $extract -Recurse -Force" >>"%LOGFILE%" 2>&1
     if not exist "%FFMPEG_BIN%\ffmpeg.exe" (
@@ -383,6 +381,10 @@ set "FFMPEG_OK=0"
 ffmpeg -version >>"%LOGFILE%" 2>&1
 if not errorlevel 1 set "FFMPEG_OK=1"
 
+set "NVENC_OK=0"
+"%VENV_PY%" "%~dp0gpu.py" nvenc >>"%LOGFILE%" 2>&1
+if not errorlevel 1 set "NVENC_OK=1"
+
 echo.
 echo ============================================================
 if "!APP_IMPORT_OK!"=="1" (
@@ -398,13 +400,18 @@ if "!CUDA_OK!"=="1" (
     echo   [WARN] GPU acceleration is NOT active ^(will run on CPU - slow^).
     echo          Try re-running setup.bat. If it still fails, open a
     echo          Command Prompt in this folder and run:
-    echo            .venv\Scripts\python -m pip install --upgrade --index-url https://download.pytorch.org/whl/cu128 torch torchaudio
+    echo            .venv\Scripts\python -m pip install --force-reinstall -r requirements-gpu.txt
     echo          See setup_log.txt for details.
 )
 if "!FFMPEG_OK!"=="1" (
     echo   [PASS] ffmpeg runs correctly
 ) else (
     echo   [FAIL] ffmpeg did not run correctly. See setup_log.txt.
+)
+if "!NVENC_OK!"=="1" (
+    echo   [PASS] GPU video encoding ^(h264_nvenc^)
+) else (
+    echo   [WARN] GPU video encoding is NOT active ^(videos will encode on the CPU^).
 )
 echo ============================================================
 echo.
@@ -472,6 +479,15 @@ REM run still pauses so the console window doesn't vanish before it's read.
 :maybe_pause
 if not "%SETUP_UNATTENDED%"=="1" pause
 exit /b 0
+
+REM errorlevel 0 when the ffmpeg on PATH is usable: it exists and, on a PC with an
+REM NVIDIA GPU, was built with h264_nvenc (many builds are not).
+:system_ffmpeg_ok
+where ffmpeg >nul 2>&1
+if errorlevel 1 exit /b 1
+if not defined HAS_NVIDIA exit /b 0
+ffmpeg -hide_banner -encoders 2>nul | findstr /c:"h264_nvenc" >nul
+exit /b
 
 :find_python
 set "PYEXE="

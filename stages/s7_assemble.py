@@ -55,6 +55,7 @@ from pathlib import Path
 from config import ROOT, chapter_output_dir, chapter_work_dir, NO_CONSOLE
 from manifest import Manifest, Panel
 from atomic_io import read_json_with_backup_fallback
+from gpu import ffmpeg_path, nvenc_works, nvidia_gpu, record_usage
 
 # --- frame + template constants ------------------------------------------- #
 W, H = 1920, 1080
@@ -599,19 +600,6 @@ def _precompose(items: list[dict], stills_dir: Path, wm=None, bg=None,
 # --------------------------------------------------------------------------- #
 # ffmpeg assembly (direct - no MoviePy frame loop)
 # --------------------------------------------------------------------------- #
-def _ffmpeg() -> str:
-    return shutil.which("ffmpeg") or "ffmpeg"
-
-
-def _has_nvenc(ffmpeg: str) -> bool:
-    try:
-        out = subprocess.run([ffmpeg, "-hide_banner", "-encoders"],
-                             capture_output=True, text=True, timeout=20, **NO_CONSOLE)
-        return "h264_nvenc" in (out.stdout or "")
-    except Exception:  # noqa: BLE001
-        return False
-
-
 def _build_filtergraph(items: list[dict], music_in: int | None, total: float,
                        transition: str = "fade", crossfade: float = CROSSFADE,
                        ken_burns: bool = False, bg_in: int | None = None,
@@ -771,8 +759,8 @@ def _assemble_ffmpeg(items: list[dict], music_path: Path | None, total: float, o
                      bg_dim: float = 0.85) -> str:
     """Render with ffmpeg directly. Tries h264_nvenc (if present) then libx264.
     Returns the codec used; raises if every attempt fails."""
-    ffmpeg = _ffmpeg()
-    codecs = ["h264_nvenc", "libx264"] if _has_nvenc(ffmpeg) else ["libx264"]
+    ffmpeg = ffmpeg_path()
+    codecs = ["h264_nvenc", "libx264"] if nvenc_works(ffmpeg) else ["libx264"]
     last = ""
     for codec in codecs:
         cmd = _build_cmd(ffmpeg, items, music_path, total, out, codec, transition, crossfade,
@@ -932,6 +920,10 @@ def run(m: Manifest) -> Manifest:
         shutil.rmtree(stills_dir, ignore_errors=True)
 
     dt = time.perf_counter() - t0
+    record_usage("video", codec, codec == "h264_nvenc")
+    if codec != "h264_nvenc" and nvidia_gpu():
+        print("  WARNING: an NVIDIA GPU is present but the video was encoded on the CPU "
+              "(h264_nvenc failed or is missing from this ffmpeg build)")
     if music_path:
         print(f"  music bed: {music_path.name} @ vol {MUSIC_VOL} (ducked)")
     print(f"  rendered {len(lines)} lines / {len(items)} stills ({total:.1f}s, "

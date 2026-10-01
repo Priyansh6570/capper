@@ -1,20 +1,20 @@
-# Work log
+# Work log - project export / import
 
-Framer fixes: editor persistence, upload progress, video flicker, "no background audio".
+## What
+- Export: Project settings -> System -> "Export project" downloads `<slug>.recapper.zip` containing the whole
+  `projects/<slug>/` folder (chapter downloads, frames, scripts, audio, renders, uploaded media, settings).
+  Checkbox "Include rendered videos" (off = skips recap.mp4 and merged/, much smaller).
+- Import: Projects screen -> "Import project" restores a zip as a NEW project (never overwrites; renamed
+  `-2` etc. if the slug exists), then opens it.
+- Import rewrites the exporting machine's absolute project path inside chapter JSON (manifest, framer
+  mapping; `export_info.json` in the zip records it) and regenerates each chapter's media_settings.json.
 
-## Changes
-- `tools/framer/app.py`
-  - `/editor_state/load` now resolves state from disk (`_resolve_editor_state`): newest *populated* of `editor_state.json` / `recovery.json`, else rebuilt from `framer/mapping.json`.
-  - `_video_url` (mtime-versioned) used by render jobs and by `/chapter_source_status`, which now returns `video_url` if `recap.mp4` exists.
-- `tools/framer/index.html`
-  - Autosave only writes when there are real edits (`dirty`), flushes on `pagehide`, uses `keepalive`.
-  - Removed the empty "silent checkpoint" saves after download/stitch; export now saves editor state.
-  - `openChapterEditor` just restores from disk (strip, script + frames, rendered video).
-  - `showGenResult` is idempotent -> no more video blinking (was rebuilt with a new `Date.now()` URL every 1.5s job poll).
-  - Asset upload uses XHR with a progress bar + % label, disabled Browse button, `beforeunload` warning; file counts as set only after the server responds.
-  - Music setting: "No background audio" option.
-- `tools/framer/projects.py`: music mode `none` validated; snapshot emits `music_off`.
-- `stages/s7_assemble.py`: `_resolve_music` returns None when `music_off`.
+## Files
+- `tools/framer/projects.py`: `export_archive`, `import_archive`, `_rebase_paths` (zip-slip checked, staged in `.import_*`).
+- `tools/framer/app.py`: `GET /api/projects/<slug>/export`, `POST /api/projects/import`.
+- `tools/framer/index.html`: Import button, Export card, upload icon. `.gitignore`: `.import_*/`. `CLAUDE.md` note.
 
-## Next
-Restart the app, open a boxed chapter, close and reopen it; try a large background upload and "No background audio" + Re-render video.
+## Verified
+Exported the real stellar-swordmaster project (613 MB without videos), imported into a scratch projects
+folder: paths rebased to the new location, videos excluded, bad/duplicate imports handled. UI not opened in a browser.
+Reinstalling the app: export first (the uninstaller deletes `projects/` only if you say yes), then Import.

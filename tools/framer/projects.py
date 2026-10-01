@@ -18,11 +18,15 @@ config.py. Nothing here imports Flask; app.py wires this to routes.
 from __future__ import annotations
 
 import json
+import os
 import re
+import shutil
+import tempfile
 import threading
+import zipfile
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Optional
 
 from config import PROJECTS_DIR
@@ -202,7 +206,6 @@ def create(name: str, url: str) -> dict:
 
 
 def delete(slug: str) -> None:
-    import shutil
     d = project_dir(slug)
     d.resolve().relative_to(PROJECTS_DIR.resolve())  # refuse anything outside PROJECTS_DIR
     shutil.rmtree(d, ignore_errors=True)
@@ -482,3 +485,82 @@ def record_merge(slug: str, entry: dict) -> dict:
         project.setdefault("merges", []).insert(0, entry)
         save(project)
         return project
+
+
+# --------------------------------------------------------------------------- #
+# export / import - a project is fully self-contained under projects/<slug>/
+# (downloads, frames, audio, renders, assets, settings), so a backup is just
+# that folder as a zip. The chapters' JSON files (manifest, framer mapping)
+# store ABSOLUTE paths, so import rewrites the exporting machine's project
+# folder prefix to the new one; media_settings.json is regenerated outright.
+# --------------------------------------------------------------------------- #
+EXPORT_INFO = "export_info.json"
+
+
+def export_archive(slug: str, dest: Path, include_videos: bool = True) -> None:
+    root = project_dir(slug)
+    with zipfile.ZipFile(dest, "w", zipfile.ZIP_DEFLATED, compresslevel=1) as zf:
+        for folder, dirs, files in os.walk(root):
+            rel_folder = Path(folder).relative_to(root)
+            if not include_videos and rel_folder.parts[:1] == ("merged",):
+                dirs.clear()
+                continue
+            for name in files:
+                if not include_videos and name.lower().endswith(".mp4"):
+                    continue
+                zf.write(Path(folder) / name, (rel_folder / name).as_posix())
+        zf.writestr(EXPORT_INFO, json.dumps({"slug": slug, "project_dir": str(root)}))
+
+
+def _rebase_paths(root: Path, old: str, new: str) -> None:
+    """Replace the old project folder prefix with the new one in every JSON file
+    under `root`, in plain, forward-slash and JSON-escaped spellings."""
+    spellings = (lambda p: p, lambda p: p.replace("\\", "/"), lambda p: json.dumps(p)[1:-1])
+    pairs = [(f(old), f(new)) for f in spellings]
+    for path in root.rglob("*"):
+        if not path.is_file() or path.suffix not in (".json", ".bak"):
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            continue
+        rebased = text
+        for a, b in pairs:
+            rebased = rebased.replace(a, b)
+        if rebased != text:
+            path.write_text(rebased, encoding="utf-8")
+
+
+def import_archive(archive: Path) -> dict:
+    """Unpack an export_archive() zip as a new project (renamed if its slug is
+    taken) and return the loaded project. Raises ValueError for a bad archive."""
+    try:
+        zf = zipfile.ZipFile(archive)
+    except zipfile.BadZipFile as e:
+        raise ValueError("That file is not a valid project export (.zip).") from e
+    with zf:
+        names = zf.namelist()
+        if "project.json" not in names:
+            raise ValueError("That zip is not a project export (project.json is missing).")
+        for n in names:
+            parts = PurePosixPath(n).parts
+            if PurePosixPath(n).is_absolute() or ".." in parts or ":" in n:
+                raise ValueError(f"Unsafe path in archive: {n}")
+        info = json.loads(zf.read(EXPORT_INFO)) if EXPORT_INFO in names else {}
+        meta = json.loads(zf.read("project.json"))
+        slug = unique_slug(meta.get("slug") or meta.get("name") or "project")
+        PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
+        staging = Path(tempfile.mkdtemp(dir=PROJECTS_DIR.parent, prefix=".import_"))
+        try:
+            zf.extractall(staging)
+            (staging / EXPORT_INFO).unlink(missing_ok=True)
+            if info.get("project_dir"):
+                _rebase_paths(staging, info["project_dir"], str(project_dir(slug)))
+            shutil.move(str(staging), str(project_dir(slug)))
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
+    project = load(slug)
+    project["slug"] = slug
+    save(project)
+    write_all_media_snapshots(slug)
+    return project
