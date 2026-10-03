@@ -254,8 +254,7 @@ def _stitch_pdf(pdf_path: Path, chapter_id: str) -> Image.Image:
         doc_type="webtoon",
     )
     s1.run(m)  # writes strip_001.png (+ a stage-1 preview we ignore)
-    strip = Image.open(_strip_path(chapter_id)).convert("RGB")
-    return strip
+    return Image.open(_strip_path(chapter_id))
 
 
 # --------------------------------------------------------------------------- #
@@ -2754,7 +2753,7 @@ def merge_stream(slug):
             stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
             name = f"merged_{stamp}_ch" + "-".join(str(n) for n in chapters) + ".mp4"
             out = out_dir / name
-            ffmpeg = s7._ffmpeg()
+            ffmpeg = gpu.ffmpeg_path()
 
             if uniform:
                 yield _sse({"type": "log", "line": "All inputs are 1920x1080 with matching codecs - "
@@ -2764,7 +2763,7 @@ def merge_stream(slug):
                 cmd = _build_merge_cmd_copy(ffmpeg, list_file, out)
                 mode = "copy"
             else:
-                codec = "h264_nvenc" if s7._has_nvenc(ffmpeg) else "libx264"
+                codec = "h264_nvenc" if gpu.nvenc_works(ffmpeg) else "libx264"
                 yield _sse({"type": "log",
                             "line": f"Inputs differ in resolution/codec - normalizing every clip to "
                                     f"1920x1080@24fps before merging ({codec}, slower)."})

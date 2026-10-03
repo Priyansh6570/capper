@@ -364,7 +364,9 @@
                background:var(--panel); border:1px solid var(--line); border-radius:var(--r);
                box-shadow:var(--shadow); z-index:55; display:none; overflow:hidden; }
   .jobwidget.on { display:block; }
-  .jwhead { display:flex; align-items:center; gap:8px; padding:8px 10px; border-bottom:1px solid var(--line); }
+  .jwhead { display:flex; align-items:center; gap:8px; padding:8px 10px; border-bottom:1px solid var(--line);
+            cursor:grab; touch-action:none; user-select:none; }
+  .jobwidget.dragging .jwhead { cursor:grabbing; }
   .jwhead .jwtitle { display:flex; align-items:center; gap:7px; font-size:11px; font-weight:800;
                       text-transform:uppercase; letter-spacing:.08em; color:var(--muted); }
   .jwhead .chev { margin-left:auto; }
@@ -1294,7 +1296,7 @@
      the projects list, a chapter list, or the editor for a DIFFERENT
      chapter - see startJobsPolling()/renderJobWidget() in the script. -->
 <div class="jobwidget" id="jobWidget">
-  <div class="jwhead">
+  <div class="jwhead" id="jwHead" title="Drag to move">
     <span class="jwtitle" data-icon="film" data-ic-size="13">Rendering</span>
     <button type="button" id="jwCollapseBtn" class="ghost icon small chev" data-icon="chevdown" data-ic-size="13" title="Collapse"></button>
   </div>
@@ -2602,6 +2604,52 @@ $('jwCollapseBtn').onclick = () => {
   chev.dataset.icon = $('jwBody').classList.contains('collapsed') ? 'chevup' : 'chevdown';
   chev.removeAttribute('data-ic'); chev.innerHTML = ''; paintIcons(chev.parentElement);
 };
+
+// Drag the widget by its header to move it off whatever it covers; the spot is
+// remembered per browser.
+(() => {
+  const widget = $('jobWidget'), KEY = 'framer.jobWidgetPos';
+  const place = (x, y) => {
+    const w = widget.offsetWidth, h = widget.offsetHeight;
+    Object.assign(widget.style, {
+      width: w + 'px', right: 'auto', bottom: 'auto',
+      left: Math.min(Math.max(0, x), Math.max(0, innerWidth - w)) + 'px',
+      top: Math.min(Math.max(0, y), Math.max(0, innerHeight - h)) + 'px',
+    });
+  };
+  try {
+    const saved = JSON.parse(localStorage.getItem(KEY));
+    if (saved) place(saved.x, saved.y);
+  } catch (e) { /* storage unavailable: keep the default corner */ }
+
+  $('jwHead').addEventListener('pointerdown', e => {
+    if (e.target.closest('button')) return;
+    const box = widget.getBoundingClientRect();
+    const dx = e.clientX - box.left, dy = e.clientY - box.top;
+    const head = e.currentTarget;
+    head.setPointerCapture(e.pointerId);
+    widget.classList.add('dragging');
+    const move = ev => place(ev.clientX - dx, ev.clientY - dy);
+    const end = () => {
+      head.removeEventListener('pointermove', move);
+      head.removeEventListener('pointerup', end);
+      head.removeEventListener('pointercancel', end);
+      widget.classList.remove('dragging');
+      const { left, top } = widget.getBoundingClientRect();
+      try { localStorage.setItem(KEY, JSON.stringify({ x: left, y: top })); } catch (err) { /* not persisted */ }
+    };
+    head.addEventListener('pointermove', move);
+    head.addEventListener('pointerup', end);
+    head.addEventListener('pointercancel', end);
+  });
+
+  addEventListener('resize', () => {
+    if (widget.style.top) {
+      const { left, top } = widget.getBoundingClientRect();
+      place(left, top);
+    }
+  });
+})();
 
 // ---------------------------------------------------------------------------
 // save / load project + periodic autosave (recovery)
