@@ -6,7 +6,9 @@ and output directories:
 
     projects/<slug>/
       project.json
-      assets/                       uploaded music / voice ref / watermark / background
+      assets/                       uploaded music / voice ref / watermark / background / intro / outro
+      merged/                       merged videos (+ their _branded.mp4 finals)
+      cache/branding/               normalized intro/outro clips (regenerable)
       chapters/<n>/
         work/                       download/ pages/ framer/ frames/ audio/ ...
         output/                     recap.mp4, video_plan.json
@@ -101,6 +103,12 @@ def merged_dir(slug: str) -> Path:
     return d
 
 
+def branding_cache_dir(slug: str) -> Path:
+    d = project_dir(slug) / "cache" / "branding"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
 def _atomic_write(path: Path, text: str) -> None:
     # See atomic_io.py: temp file + os.replace (never a half-written
     # project.json/media_settings.json) plus a rolling `<path>.bak`.
@@ -131,6 +139,11 @@ def _default_settings() -> dict:
         # independent of the transition style above; see s7_assemble.
         "animation": {"style": "fade", "direction": "left", "duration": 0.35,
                      "ken_burns": False},
+        # Intro/outro joined onto MERGED videos only (see branding.py). `file`
+        # is a custom upload; None means the bundled recapper_intro/outro.mp4.
+        # The flags are the project's remembered choice for its next merge.
+        "branding": {"intro": {"enabled": True, "file": None},
+                     "outro": {"enabled": True, "file": None}},
         # Gemini-driven script generation (tools/framer/app.py's
         # /gemini_script_stream) - the API key itself is NEVER stored here
         # (like every other key in this app, it's .env-only, see
@@ -170,7 +183,6 @@ def load(slug: str) -> dict:
     data = read_json_with_backup_fallback(project_json_path(slug))
     data.setdefault("schema", SCHEMA_VERSION)
     data.setdefault("chapters", [])
-    data.setdefault("merges", [])
     data.setdefault("settings", _default_settings())
     settings = _default_settings()
     _deep_merge(settings, data["settings"])
@@ -288,8 +300,9 @@ def set_status(slug: str, n, status: str, *, force: bool = False) -> dict:
 def derive_status(slug: str, n) -> dict:
     """Re-derive a chapter's status from what's actually on disk (pdf ->
     downloaded, mapping.json -> boxed, recap.mp4 -> rendered) and merge it with
-    the stored status by rank, so an interrupted write never lies. Never
-    downgrades a manually-set "complete"."""
+    the stored status by rank, so an interrupted write never lies. A manually-set
+    "complete" is kept only while its recap.mp4 still exists: once the video is
+    gone the chapter falls back to what the disk supports."""
     with _LOCK:
         project = load(slug)
         ch = get_chapter(project, n)
@@ -304,7 +317,8 @@ def derive_status(slug: str, n) -> dict:
             derived = "boxed"
         if (out / "recap.mp4").is_file():
             derived = "rendered"
-        if STATUS_RANK[derived] > STATUS_RANK.get(ch["status"], 0):
+        video_gone = ch["status"] in ("rendered", "complete") and derived != "rendered"
+        if STATUS_RANK[derived] > STATUS_RANK.get(ch["status"], 0) or video_gone:
             ch["status"] = derived
             ch["updated_at"] = _now_iso()
             save(project)
@@ -314,7 +328,7 @@ def derive_status(slug: str, n) -> dict:
 # --------------------------------------------------------------------------- #
 # settings + media snapshot for stage 7 (see stages/s7_assemble.py)
 # --------------------------------------------------------------------------- #
-VALID_ASSET_KINDS = ("music", "voice", "watermark", "background")
+VALID_ASSET_KINDS = ("music", "voice", "watermark", "background", "intro", "outro")
 _ASSET_EXTS = {
     "music": {".mp3", ".wav", ".m4a", ".ogg", ".oga", ".aac", ".flac"},
     "voice": {".wav"},          # Chatterbox reference clip - wav only
@@ -323,6 +337,8 @@ _ASSET_EXTS = {
     # depending on the project's `background.mode` ("image" or "video"; see
     # _default_settings()). save_asset() below doesn't otherwise care which.
     "background": {".png", ".jpg", ".jpeg", ".webp", ".mp4", ".mov", ".webm", ".mkv", ".m4v"},
+    "intro": {".mp4", ".mov", ".webm", ".mkv", ".m4v"},
+    "outro": {".mp4", ".mov", ".webm", ".mkv", ".m4v"},
 }
 
 
@@ -350,6 +366,8 @@ def update_settings(slug: str, settings: dict) -> dict:
             anim["direction"] = "left"
         anim["duration"] = max(0.05, min(1.0, float(anim.get("duration", 0.35))))
         anim["ken_burns"] = bool(anim.get("ken_burns"))
+        for clip in project["settings"]["branding"].values():
+            clip["enabled"] = bool(clip.get("enabled"))
         gm = project["settings"]["gemini"]
         if gm.get("tone") not in ("serious", "comedy", "dramatic", "epic"):
             gm["tone"] = "serious"
@@ -469,22 +487,6 @@ def write_all_media_snapshots(slug: str) -> list[Path]:
         if p:
             written.append(p)
     return written
-
-
-# --------------------------------------------------------------------------- #
-# merged videos (multiple chapters' recap.mp4 concatenated into one) - see
-# app.py's /api/projects/<slug>/merge_stream. Purely a framer-side feature:
-# it only reads already-rendered recap.mp4 files, so it needs no changes to
-# the manifest, orchestrator, or any pipeline stage.
-# --------------------------------------------------------------------------- #
-def record_merge(slug: str, entry: dict) -> dict:
-    """Append one completed merge's record ({file, chapters, mode,
-    created_at}) to project.json, most-recent first."""
-    with _LOCK:
-        project = load(slug)
-        project.setdefault("merges", []).insert(0, entry)
-        save(project)
-        return project
 
 
 # --------------------------------------------------------------------------- #

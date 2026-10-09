@@ -66,6 +66,8 @@ from atomic_io import atomic_write_json, read_json_with_backup_fallback  # noqa:
 import gpu  # noqa: E402
 
 import projects  # noqa: E402 - the project system (this package: tools/framer/projects.py)
+import branding  # noqa: E402 - intro/outro for merged videos
+import library  # noqa: E402 - per-project media library (sizes, deletion)
 import sites  # noqa: E402 - per-site adapters (tools/framer/sites/): metadata + chapter download
 from stages import s7_assemble as s7  # noqa: E402 - reused by the settings live-preview routes
 
@@ -1436,6 +1438,7 @@ _JOBS_COND = threading.Condition(_JOBS_LOCK)
 # ffmpeg) used only until real history exists; capped so old outliers age out.
 _RENDER_HISTORY: dict[str, list[float]] = {"both": [9.0], "voice": [7.0], "video": [2.5]}
 _RENDER_HISTORY_CAP = 20
+BRAND_ESTIMATE_S = 15.0       # clips are cached after the first branded render; the join is a copy
 
 
 class Job:
@@ -1443,12 +1446,14 @@ class Job:
     SSE connection - see module note above."""
 
     def __init__(self, chapter_id: str, what: str, slug: str | None, ch_no: str | None,
-                 total_beats: int):
+                 total_beats: int, target: str | None = None):
         self.id = uuid.uuid4().hex[:12]
         self.chapter_id = chapter_id
-        self.what = what                  # both|voice|video
+        self.what = what                  # both|voice|video|brand
         self.slug = slug
         self.ch_no = ch_no
+        self.target = target              # brand: the merged video being branded
+        self.fraction = 0.0               # brand: progress reported by its ffmpeg steps
         self.status = "queued"            # queued|running|done|failed|cancelled
         self.total_beats = total_beats
         self.audio = 0
@@ -1480,6 +1485,8 @@ class Job:
         number: s6 prints one "[NNN] …" per voiced line, s7 one "line N: …"
         per rendered line. Audio is the slow part, weighted heavier for a
         combined run."""
+        if self.what == "brand":
+            return self.fraction
         if self.total_beats <= 0 or (self.audio == 0 and self.video == 0):
             return 0.0
         a = min(1.0, self.audio / self.total_beats)
@@ -1491,6 +1498,8 @@ class Job:
         return min(1.0, 0.05 + 0.70 * a + 0.22 * v)
 
     def estimated_total_s(self) -> float:
+        if self.what == "brand":
+            return BRAND_ESTIMATE_S
         return max(1.0, self.total_beats) * _rate_for(self.what)
 
     def eta_s(self, queued_ahead_s: float = 0.0) -> float | None:
@@ -1506,7 +1515,8 @@ class Job:
     def public(self) -> dict:
         return {
             "id": self.id, "chapter_id": self.chapter_id, "what": self.what,
-            "project": self.slug, "ch_no": self.ch_no, "status": self.status,
+            "project": self.slug, "ch_no": self.ch_no, "target": self.target,
+            "status": self.status,
             "total_beats": self.total_beats, "audio": self.audio, "video": self.video,
             "progress": round(self.progress_fraction(), 4) if self.status == "running" else
                         (1.0 if self.status == "done" else 0.0),
@@ -1578,7 +1588,61 @@ threading.Thread(target=_job_worker, daemon=True).start()
 def _run_job(job: "Job") -> None:
     job.status = "running"
     job.started_at = _now_iso()
+    try:
+        (_run_brand_job if job.what == "brand" else _run_pipeline_job)(job)
+    finally:
+        job.finished_at = _now_iso()
+        _record_history(job)
+        with _JOBS_LOCK:
+            _ACTIVE_CHAPTERS.discard(job.chapter_id)
 
+
+_FFMPEG_PROGRESS_LINE = re.compile(r"^\w+=\s*\S*$")
+
+
+def _ffmpeg_runner(job: "Job") -> branding.Runner:
+    """Runs one ffmpeg command for `job`: streams `-progress` output into the
+    job's progress fraction and its log, and lets cancel terminate the process."""
+    def run(cmd, duration, on_fraction):
+        job.append_log("$ " + " ".join(cmd))
+        proc = subprocess.Popen(
+            cmd, cwd=str(ROOT), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL, text=True, bufsize=1, encoding="utf-8",
+            errors="replace", **NO_CONSOLE)
+        job.proc = proc
+        for line in proc.stdout:
+            line = line.strip()
+            if line.startswith("out_time_us="):
+                done_us = line.partition("=")[2]
+                if duration > 0 and done_us.isdigit():
+                    on_fraction(min(1.0, int(done_us) / 1e6 / duration))
+            elif line and not _FFMPEG_PROGRESS_LINE.match(line):
+                job.append_log(line)
+        proc.wait()
+        if proc.returncode != 0:
+            raise RuntimeError(f"ffmpeg exited with code {proc.returncode}")
+    return run
+
+
+def _run_brand_job(job: "Job") -> None:
+    def on_fraction(f: float) -> None:
+        job.fraction = f
+
+    try:
+        final = branding.render_final(job.slug, job.target, _ffmpeg_runner(job), on_fraction)
+        job.status, job.ok, job.message = "done", True, "Done."
+        job.fraction = 1.0
+        job.video_url = f"/projects/{job.slug}/merged/{final.name}?v={int(final.stat().st_mtime)}"
+    except Exception as e:  # noqa: BLE001 - report, don't crash the worker
+        if job.cancel_requested:
+            job.status, job.ok, job.message = "cancelled", False, "Stopped by user."
+        else:
+            job.status, job.ok = "failed", False
+            job.message = f"{type(e).__name__}: {e}"
+            job.append_log(f"ERROR: {job.message}")
+
+
+def _run_pipeline_job(job: "Job") -> None:
     slug, ch_no, chapter_id = job.slug, job.ch_no, job.chapter_id
     work_dir = projects.chapter_work_dir(slug, ch_no) if slug and ch_no else chapter_work_dir(chapter_id)
     output_dir = projects.chapter_output_dir(slug, ch_no) if slug and ch_no else chapter_output_dir(chapter_id)
@@ -1667,10 +1731,14 @@ def _run_job(job: "Job") -> None:
                     proc.terminate()
                 except Exception:  # noqa: BLE001
                     pass
-            job.finished_at = _now_iso()
-            _record_history(job)
-            with _JOBS_LOCK:
-                _ACTIVE_CHAPTERS.discard(job.chapter_id)
+
+
+def _enqueue(job: "Job") -> None:
+    with _JOBS_COND:
+        _JOBS[job.id] = job
+        _QUEUE_ORDER.append(job.id)
+        _ACTIVE_CHAPTERS.add(job.chapter_id)
+        _JOBS_COND.notify()
 
 
 @app.post("/api/generate")
@@ -1692,6 +1760,9 @@ def api_generate():
     work_dir = projects.chapter_work_dir(slug, ch_no) if slug and ch_no else chapter_work_dir(chapter_id)
     if not (work_dir / "manifest.json").exists():
         return jsonify(error=f"No manifest for {chapter_id}. Export from the Framer first."), 400
+    blockers = library.render_blockers(work_dir, what)
+    if blockers:
+        return jsonify(error=" ".join(blockers)), 409
 
     with _JOBS_LOCK:
         if chapter_id in _ACTIVE_CHAPTERS:
@@ -1705,11 +1776,7 @@ def api_generate():
     job = Job(chapter_id, what, slug, ch_no, total)
     label = {"both": "audio + video", "voice": "audio (voice only)", "video": "video"}[what]
     job.append_log(f"Queued {label} for {chapter_id} ({total or '?'} line(s))…")
-    with _JOBS_COND:
-        _JOBS[job.id] = job
-        _QUEUE_ORDER.append(job.id)
-        _ACTIVE_CHAPTERS.add(chapter_id)
-        _JOBS_COND.notify()
+    _enqueue(job)
 
     return jsonify(ok=True, job_id=job.id, job=job.public())
 
@@ -2336,7 +2403,11 @@ def api_get_project(slug):
             projects.derive_status(slug, ch["n"])
         except Exception:  # noqa: BLE001 - a derive glitch must not break the page
             pass
-    return jsonify(project=projects.load(slug))
+    project = projects.load(slug)
+    for ch in project["chapters"]:
+        video = projects.chapter_video_path(slug, ch["n"])
+        ch["duration"] = branding.duration_of(video) if ch["status"] == "complete" and video.is_file() else None
+    return jsonify(project=project)
 
 
 @app.get("/api/projects/<slug>/export")
@@ -2451,7 +2522,7 @@ def api_set_settings(slug):
 
 @app.post("/api/projects/<slug>/asset")
 def api_upload_asset(slug):
-    """Multipart: {kind: music|voice|watermark|background, file}. Saves the
+    """Multipart: {kind: music|voice|watermark|background|intro|outro, file}. Saves the
     file under projects/<slug>/assets/ and points the matching settings field
     at it; does NOT switch mode/enabled by itself (stays whatever the
     settings panel already has - selecting "custom" is a separate action)."""
@@ -2475,6 +2546,8 @@ def api_upload_asset(slug):
         project["settings"]["watermark"]["file"] = rel_path
     elif kind == "background":
         project["settings"]["background"]["file"] = rel_path
+    else:
+        project["settings"]["branding"][kind]["file"] = rel_path
     projects.save(project)
     projects.write_all_media_snapshots(slug)
     return jsonify(ok=True, path=rel_path, name=Path(rel_path).name)
@@ -2497,6 +2570,8 @@ def api_delete_asset(slug, kind):
         project["settings"]["watermark"]["file"] = None
     elif kind == "background":
         project["settings"]["background"] = {"mode": "blur", "file": None, "dim": 0.85}
+    else:
+        project["settings"]["branding"][kind]["file"] = None
     projects.save(project)
     projects.write_all_media_snapshots(slug)
     return jsonify(ok=True)
@@ -2602,28 +2677,6 @@ _MERGE_JOBS: dict[str, "subprocess.Popen | None"] = {}
 _MERGE_LOCK = threading.Lock()
 
 
-def _ffprobe_info(path: Path) -> dict | None:
-    """{"video": {width,height,codec_name}, "audio": {codec_name,sample_rate}}
-    for `path`, or None on any failure (missing ffprobe, unreadable file).
-    Used to decide whether a fast stream-copy merge is safe, or whether every
-    input needs normalizing first (see merge_stream)."""
-    ffprobe = shutil.which("ffprobe") or "ffprobe"
-    try:
-        out = subprocess.run(
-            [ffprobe, "-v", "error",
-             "-show_entries", "stream=index,codec_type,width,height,codec_name,sample_rate",
-             "-of", "json", str(path)],
-            capture_output=True, text=True, timeout=30, **NO_CONSOLE)
-        streams = json.loads(out.stdout or "{}").get("streams") or []
-    except Exception:  # noqa: BLE001 - a bad probe must not crash the merge
-        return None
-    video = next((s for s in streams if s.get("codec_type") == "video"), None)
-    audio = next((s for s in streams if s.get("codec_type") == "audio"), None)
-    if video is None:
-        return None
-    return {"video": video, "audio": audio or {}}
-
-
 def _write_concat_list(paths: list[Path], dest: Path) -> None:
     """ffmpeg concat-demuxer list file. Forward slashes side-step that format's
     own backslash-escaping rules, which Windows paths would otherwise trip."""
@@ -2663,13 +2716,6 @@ def _build_merge_cmd_reencode(ffmpeg: str, codec: str, paths: list[Path], out: P
         cmd += ["-c:v", "libx264", "-preset", "medium", "-crf", "20"]
     cmd += ["-c:a", "aac", "-b:a", "192k", "-pix_fmt", "yuv420p", str(out)]
     return cmd
-
-
-@app.get("/api/projects/<slug>/merges")
-def api_list_merges(slug):
-    if not projects.exists(slug):
-        return jsonify(error=f"No such project: {slug}"), 404
-    return jsonify(merges=projects.load(slug).get("merges", []))
 
 
 @app.get("/api/projects/<slug>/merge_stream")
@@ -2732,7 +2778,7 @@ def merge_stream(slug):
             yield _sse({"type": "log", "line": f"Probing {len(paths)} video(s)…"})
             infos = []
             for n, p in zip(chapters, paths):
-                info = _ffprobe_info(p)
+                info = branding.probe(p)
                 if info is None:
                     yield _sse({"type": "error", "message": f"Could not read video info for chapter {n}."})
                     return
@@ -2761,14 +2807,12 @@ def merge_stream(slug):
                 list_file = out_dir / "_concat_list.txt"
                 _write_concat_list(paths, list_file)
                 cmd = _build_merge_cmd_copy(ffmpeg, list_file, out)
-                mode = "copy"
             else:
                 codec = "h264_nvenc" if gpu.nvenc_works(ffmpeg) else "libx264"
                 yield _sse({"type": "log",
                             "line": f"Inputs differ in resolution/codec - normalizing every clip to "
                                     f"1920x1080@24fps before merging ({codec}, slower)."})
                 cmd = _build_merge_cmd_reencode(ffmpeg, codec, paths, out)
-                mode = "reencode"
 
             yield _sse({"type": "log", "line": "$ " + " ".join(cmd)})
             proc = subprocess.Popen(cmd, cwd=str(ROOT), stdout=subprocess.PIPE,
@@ -2782,8 +2826,6 @@ def merge_stream(slug):
             proc.wait()
 
             if proc.returncode == 0 and out.is_file():
-                projects.record_merge(slug, {"file": f"merged/{name}", "chapters": chapters,
-                                             "mode": mode, "created_at": _now_iso()})
                 url = f"/projects/{slug}/merged/{name}"
                 yield _sse({"type": "done", "ok": True, "video": url,
                             "message": f"Merged {len(chapters)} chapter(s) -> {name}"})
@@ -2818,6 +2860,140 @@ def merged_file(slug, name):
     if not (d / name).exists():
         return jsonify(error=f"{name} not found for this project."), 404
     return send_from_directory(str(d), name)
+
+# --------------------------------------------------------------------------- #
+# merged videos: the on-disk list, intro/outro "final" renders (queued like any
+# other job, see _run_brand_job) and deletion. Branding never touches chapter
+# renders - see branding.py.
+# --------------------------------------------------------------------------- #
+def _brand_key(slug: str, name: str) -> str:
+    return f"brand:{slug}:{name}"
+
+
+def _busy(key: str) -> bool:
+    with _JOBS_LOCK:
+        return key in _ACTIVE_CHAPTERS
+
+
+@app.get("/api/projects/<slug>/merges")
+def api_list_merges(slug):
+    if not projects.exists(slug):
+        return jsonify(error=f"No such project: {slug}"), 404
+    return jsonify(merges=branding.list_merges(slug), folder=str(projects.merged_dir(slug)),
+                   branding=projects.load(slug)["settings"]["branding"],
+                   default_clips={k: p.name for k, p in branding.DEFAULT_CLIPS.items()})
+
+
+@app.get("/api/projects/<slug>/branding/<kind>")
+def api_branding_clip(slug, kind):
+    """The clip that will actually be used for `kind` (custom upload or bundled default)."""
+    if kind not in branding.CLIP_KINDS or not projects.exists(slug):
+        return jsonify(error="unknown project or clip"), 404
+    try:
+        clip = branding.clip_source(slug, kind)
+    except FileNotFoundError as e:
+        return jsonify(error=str(e)), 404
+    return send_from_directory(str(clip.parent), clip.name)
+
+
+@app.post("/api/projects/<slug>/merges/<name>/final")
+def api_render_final(slug, name):
+    """Queue the branded version of a merged video (intro/outro per the project's
+    branding settings). Writes `<merge>_branded.mp4`; the raw merge is untouched."""
+    if not projects.exists(slug):
+        return jsonify(error=f"No such project: {slug}"), 404
+    try:
+        raw = branding.merge_path(slug, name)
+    except ValueError as e:
+        return jsonify(error=str(e)), 400
+    if not raw.is_file():
+        return jsonify(error=f"{name} not found."), 404
+    settings = projects.load(slug)["settings"]["branding"]
+    if not any(settings[k]["enabled"] for k in branding.CLIP_KINDS):
+        return jsonify(error="Turn on the intro or the outro first."), 400
+    key = _brand_key(slug, name)
+    if _busy(key):
+        return jsonify(error="A final render is already queued or running for this video."), 409
+    job = Job(key, "brand", slug, None, 0, target=name)
+    job.append_log(f"Queued final render of {name}…")
+    _enqueue(job)
+    return jsonify(ok=True, job_id=job.id, job=job.public())
+
+
+@app.delete("/api/projects/<slug>/merges/<name>")
+def api_delete_merge(slug, name):
+    """Delete a merged video and its branded file, or only the branded file (?final=1)."""
+    if not projects.exists(slug):
+        return jsonify(error=f"No such project: {slug}"), 404
+    if _busy(_brand_key(slug, name)):
+        return jsonify(error="A final render is in progress for this video."), 409
+    try:
+        branding.delete_merge(slug, name, final_only=request.args.get("final") == "1")
+    except ValueError as e:
+        return jsonify(error=str(e)), 400
+    return jsonify(ok=True)
+
+
+# --------------------------------------------------------------------------- #
+# media library: sizes per project / chapter / file type, and deleting whole
+# regenerable types. Only types known to library.KINDS are reachable here; the
+# work itself (script, mapping, editor state, settings, uploads) is not.
+# --------------------------------------------------------------------------- #
+@app.get("/api/projects/<slug>/library")
+def api_library(slug):
+    if not projects.exists(slug):
+        return jsonify(error=f"No such project: {slug}"), 404
+    merges = branding.list_merges(slug)
+    merged_bytes = sum(m["size"] + (m["final"] or {}).get("size", 0) for m in merges)
+    return jsonify(**library.overview(slug, merged_bytes), merges=merges)
+
+
+@app.get("/api/projects/<slug>/library/<int:n>")
+def api_library_chapter(slug, n):
+    if not projects.exists(slug) or projects.get_chapter(projects.load(slug), n) is None:
+        return jsonify(error="No such chapter."), 404
+    return jsonify(library.chapter_detail(slug, n))
+
+
+@app.get("/api/projects/<slug>/library/<int:n>/file")
+def api_library_file(slug, n):
+    path = library.servable_file(slug, n, request.args.get("path", ""))
+    if path is None:
+        return jsonify(error="No such file."), 404
+    return send_from_directory(str(path.parent), path.name)
+
+
+@app.post("/api/projects/<slug>/library/delete")
+def api_library_delete(slug):
+    """Body: JSON {chapters:[n...], kind, dry_run?}. dry_run reports what would be
+    freed; otherwise deletes that type across the chapters and returns each
+    chapter's status re-derived from disk."""
+    if not projects.exists(slug):
+        return jsonify(error=f"No such project: {slug}"), 404
+    data = request.get_json(silent=True) or {}
+    kind = data.get("kind")
+    if kind not in library.KINDS:
+        return jsonify(error=f"Unknown file type: {kind}"), 400
+    project = projects.load(slug)
+    known = {c["n"] for c in project["chapters"]}
+    try:
+        chapters = sorted({int(n) for n in data.get("chapters") or []})
+    except (TypeError, ValueError):
+        return jsonify(error="chapters must be chapter numbers."), 400
+    if not chapters or not known.issuperset(chapters):
+        return jsonify(error="Pick at least one chapter of this project."), 400
+    if data.get("dry_run"):
+        return jsonify(library.plan_delete(slug, chapters, kind))
+    busy = [n for n in chapters if _busy(f"{slug}_ch{n}")]
+    if busy:
+        return jsonify(error="Chapter(s) " + ", ".join(map(str, busy)) +
+                             " have a render in progress; wait for it or stop it first."), 409
+    freed, locked = library.delete_kind(slug, chapters, kind)
+    statuses = {str(n): projects.derive_status(slug, n)["status"] for n in chapters}
+    if locked:
+        return jsonify(error=f"{locked} file(s) are in use and were kept - close any open "
+                             "player and try again.", freed=freed, statuses=statuses), 409
+    return jsonify(ok=True, freed=freed, statuses=statuses)
 
 
 def _port_open(host: str, port: int, timeout: float = 0.3) -> bool:

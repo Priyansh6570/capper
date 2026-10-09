@@ -1,20 +1,11 @@
-# Work log - project export / import
+# Work log - merged videos: intro/outro polish, chapter lengths
 
-## What
-- Export: Project settings -> System -> "Export project" downloads `<slug>.recapper.zip` containing the whole
-  `projects/<slug>/` folder (chapter downloads, frames, scripts, audio, renders, uploaded media, settings).
-  Checkbox "Include rendered videos" (off = skips recap.mp4 and merged/, much smaller).
-- Import: Projects screen -> "Import project" restores a zip as a NEW project (never overwrites; renamed
-  `-2` etc. if the slug exists), then opens it.
-- Import rewrites the exporting machine's absolute project path inside chapter JSON (manifest, framer
-  mapping; `export_info.json` in the zip records it) and regenerates each chapter's media_settings.json.
+- Branded finals now have a 1s black/silent gap after the intro and before the outro, and the
+  main video's audio fades in from 15% to 100% over its first 2s (picture still stream-copied;
+  only the audio track is re-encoded). Constants at the top of `tools/framer/branding.py`.
+- Chapters list shows each complete chapter's video length; the merge bar shows the combined
+  length of the selected chapters (`/api/projects/<slug>` now returns `duration` per chapter).
+- Earlier work (Merged videos view, Media library, branding job, status-from-disk) is unchanged:
+  see CLAUDE.md. New files: `tools/framer/branding.py`, `tools/framer/library.py`, the two clips.
 
-## Files
-- `tools/framer/projects.py`: `export_archive`, `import_archive`, `_rebase_paths` (zip-slip checked, staged in `.import_*`).
-- `tools/framer/app.py`: `GET /api/projects/<slug>/export`, `POST /api/projects/import`.
-- `tools/framer/index.html`: Import button, Export card, upload icon. `.gitignore`: `.import_*/`. `CLAUDE.md` note.
-
-## Verified
-Exported the real stellar-swordmaster project (613 MB without videos), imported into a scratch projects
-folder: paths rebased to the new location, videos excluded, bad/duplicate imports handled. UI not opened in a browser.
-Reinstalling the app: export first (the uninstaller deletes `projects/` only if you say yes), then Import.
+Next: restart the app, then `git add recapper_intro.mp4 recapper_outro.mp4 tools/framer` and commit.

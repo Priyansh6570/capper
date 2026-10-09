@@ -395,7 +395,7 @@
   .screen { display:none; }
   .screen.on { display:block; }
   #scr-editor { height:100vh; overflow:hidden; }
-  #scr-projects, #scr-project, #scr-settings { height:100vh; overflow:hidden; background:var(--bg); }
+  #scr-projects, #scr-project, #scr-hub, #scr-settings { height:100vh; overflow:hidden; background:var(--bg); }
 
   .appshell { display:flex; height:100%; }
   .appsidebar { width:224px; flex:none; background:var(--panel); border-right:1px solid var(--line);
@@ -454,6 +454,7 @@
      class (sidebar/workspace/right, see the comment near the top of this file);
      reusing that name here previously clobbered the editor's 3-column layout
      into a stacked column, since this rule came later in the stylesheet. */
+  .screenbody[hidden] { display:none; }
   .screenbody { flex:1; min-height:0; overflow-y:auto; padding:24px 26px 40px; display:flex; flex-direction:column; gap:22px; }
 
   .composer { background:var(--panel); border:1px solid var(--line); border-radius:var(--r);
@@ -554,6 +555,90 @@
   .mergebar2 .mtexts b { font-size:14px; }
   .mergebar2 .macts { display:flex; gap:8px; flex:none; }
   .mergebar2 .progress { margin-top:10px; }
+
+  /* --- merged videos + media library (scr-hub) ------------------------------ */
+  :root { --k-video:var(--accent); --k-audio:var(--warn); --k-frames:var(--ok); --k-strips:#2bb3c0;
+          --k-pdfs:#6c8cff; --k-merged:#b07cff; --k-kept:var(--muted); }
+  .mcard { display:grid; grid-template-columns:minmax(0,380px) minmax(0,1fr); gap:20px; padding:18px;
+           border-bottom:1px solid var(--line); }
+  .mcard:last-child { border-bottom:0; }
+  .mcard [hidden] { display:none; }
+  .mcard video { width:100%; background:#000; border-radius:var(--r2); }
+  .mcard .mtop { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+  .mcard .mtop b { font-size:14px; }
+  .mcard .mmeta { font:11px ui-monospace,Consolas,monospace; color:var(--muted); }
+  .mcard .mtop .macts { margin-left:auto; display:flex; gap:7px; }
+  .mbrand { margin-top:12px; padding:12px 14px; background:var(--surface); border:1px solid var(--line);
+            border-radius:var(--r2); display:flex; flex-direction:column; gap:10px; }
+  .brandrow { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+  .brandrow .togglesw { min-width:112px; }
+  .brandrow .brandclip { font-size:12px; color:var(--muted); min-width:0; overflow:hidden;
+                         text-overflow:ellipsis; white-space:nowrap; flex:1 1 140px; }
+  .brandrow .brandacts { display:flex; gap:7px; margin-left:auto; position:relative; }
+  .brandpreview { width:100%; max-width:320px; }
+  .mfinalrow { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+  .mfinalrow .progress { flex:1 1 160px; }
+  .mfinal { margin-top:12px; padding-top:12px; border-top:1px dashed var(--line); display:flex;
+            flex-direction:column; gap:8px; }
+  .libbar { display:flex; height:12px; border-radius:999px; overflow:hidden; background:var(--input2);
+            margin:14px 18px 10px; }
+  .libbar span { height:100%; }
+  .liblegend { display:flex; flex-wrap:wrap; gap:6px 18px; padding:0 18px 16px; font-size:12px; }
+  .liblegend i { display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:6px; }
+  .liblegend b { font-family:ui-monospace,Consolas,monospace; font-weight:600; margin-left:4px; }
+  .k-video { background:var(--k-video); } .k-audio { background:var(--k-audio); }
+  .k-frames { background:var(--k-frames); } .k-strips { background:var(--k-strips); }
+  .k-pdfs { background:var(--k-pdfs); } .k-merged { background:var(--k-merged); }
+  .k-kept { background:var(--k-kept); }
+  .libbulk { padding:14px 18px 16px; display:flex; flex-direction:column; gap:12px; }
+  .libbulk .bulklist { max-height:260px; overflow-y:auto; border:1px solid var(--line); border-radius:var(--r2); }
+  .bulkrow { display:flex; align-items:center; gap:10px; padding:7px 12px; border-bottom:1px solid var(--line);
+             font-size:13px; cursor:pointer; }
+  .bulkrow:last-child { border-bottom:0; }
+  .bulkrow:hover { background:var(--surface); }
+  .bulkrow input { accent-color:var(--accent); }
+  .bulkrow .bsize { margin-left:auto; font:11px ui-monospace,Consolas,monospace; color:var(--muted); }
+  .bulkfoot { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+  .bulkfoot .hint { flex:1; }
+  .libchap { border-bottom:1px solid var(--line); }
+  .libchap:last-child { border-bottom:0; }
+  .libchaphead { display:flex; align-items:center; gap:10px; padding:11px 18px; cursor:pointer; }
+  .libchaphead:hover { background:var(--surface); }
+  .libchaphead .chev { transition:transform .15s; color:var(--muted); }
+  .libchap.open .libchaphead .chev { transform:rotate(90deg); }
+  .libchaphead .chno { font:700 12px ui-monospace,Consolas,monospace; color:var(--accent); }
+  .libchaphead .chtitle { font-weight:600; font-size:13.5px; min-width:0; overflow:hidden;
+                          text-overflow:ellipsis; white-space:nowrap; }
+  .libchaphead .chips { margin-left:auto; display:flex; gap:12px; font:11px ui-monospace,Consolas,monospace;
+                        color:var(--muted); flex-wrap:wrap; justify-content:flex-end; }
+  .libchaphead .chips b { color:var(--txt); font-weight:600; }
+  .libchapbody { display:none; padding:4px 18px 16px 44px; flex-direction:column; gap:14px; }
+  .libchap.open .libchapbody { display:flex; }
+  .libgroup { display:flex; flex-direction:column; gap:6px; }
+  .libghead { display:flex; align-items:center; gap:10px; }
+  .libghead .gdot { width:9px; height:9px; border-radius:50%; flex:none; }
+  .libghead b { font-size:13px; }
+  .libghead .small { margin-left:auto; }
+  .libfile { display:flex; align-items:center; gap:10px; font:11.5px ui-monospace,Consolas,monospace;
+             padding:4px 0; flex-wrap:wrap; }
+  .libfile .fsize { margin-left:auto; color:var(--muted); }
+  .libplayer { flex:1 1 100%; }
+  .libplayer audio { width:100%; height:30px; }
+  .libplayer video { width:100%; max-width:420px; background:#000; border-radius:var(--r2); }
+  .libfile a { color:var(--accent); text-decoration:none; }
+  .libkept { font-size:12px; color:var(--muted); }
+  .libkept summary { cursor:pointer; }
+  .libkept .libfile { padding:2px 0; }
+  .modalback { position:fixed; inset:0; background:var(--overlay); z-index:200; display:none;
+               align-items:center; justify-content:center; padding:20px; }
+  .modalback.on { display:flex; }
+  .modal { width:min(460px,100%); background:var(--panel); border:1px solid var(--line);
+           border-radius:var(--r); box-shadow:var(--shadow); padding:20px; display:flex;
+           flex-direction:column; gap:12px; }
+  .modal h3 { margin:0; font-size:15px; }
+  .modal p { margin:0; font-size:13px; line-height:1.55; }
+  .modal .macts { display:flex; justify-content:flex-end; gap:8px; margin-top:4px; }
+  @media (max-width: 860px) { .mcard { grid-template-columns:1fr; } }
 
   /* --- settings screen ------------------------------------------------------ */
   .settingsbody { flex:1; min-height:0; display:flex; }
@@ -822,6 +907,8 @@
         <div class="navtitle" id="pjSideTitle"></div>
         <nav class="appnav">
           <a href="javascript:void(0)" id="pjChaptersNav" class="on" data-icon="film" data-ic-size="14"><span>Chapters</span><span class="navcount" id="pjChapNavCount"></span></a>
+          <a href="javascript:void(0)" id="pjMergedNav" data-icon="play" data-ic-size="14"><span>Merged videos</span></a>
+          <a href="javascript:void(0)" id="pjLibraryNav" data-icon="layers" data-ic-size="14"><span>Media library</span></a>
           <a href="javascript:void(0)" id="pjSettingsBtn" data-icon="settings" data-ic-size="14"><span>Project settings</span></a>
         </nav>
       </div>
@@ -870,7 +957,84 @@
         <div class="progress" id="mergeProgress"><div class="bar" id="mergeBar"></div></div>
         <div class="genlog" id="mergeStatus"></div>
         <div class="result" id="mergeResult"></div>
-        <div id="pastMerges"></div>
+      </div>
+    </main>
+  </div>
+</section>
+
+<!-- ==================== MERGED VIDEOS + MEDIA LIBRARY screen ==================== -->
+<section id="scr-hub" class="screen">
+  <div class="appshell">
+    <aside class="appsidebar">
+      <div class="applogo">
+        <img src="/assets/ReCapper.png" alt="ReCapper" />
+        <div><div class="an">ReCapper</div><div class="av">v1.0.0</div></div>
+      </div>
+      <nav class="appnav">
+        <a href="javascript:void(0)" id="hubAllProjectsBtn" data-icon="chevleft" data-ic-size="14"><span>All projects</span></a>
+      </nav>
+      <div>
+        <div class="navtitle" id="hubSideTitle"></div>
+        <nav class="appnav">
+          <a href="javascript:void(0)" id="hubChaptersNav" data-icon="film" data-ic-size="14"><span>Chapters</span><span class="navcount" id="hubChapNavCount"></span></a>
+          <a href="javascript:void(0)" id="hubMergedNav" data-hubview="merged" data-icon="play" data-ic-size="14"><span>Merged videos</span></a>
+          <a href="javascript:void(0)" id="hubLibraryNav" data-hubview="library" data-icon="layers" data-ic-size="14"><span>Media library</span></a>
+          <a href="javascript:void(0)" id="hubSettingsNav" data-icon="settings" data-ic-size="14"><span>Project settings</span></a>
+        </nav>
+      </div>
+    </aside>
+    <main class="appmain">
+      <div class="apptopbar">
+        <div class="crumbs">
+          <a href="javascript:void(0)" id="hubCrumbProjects">Projects</a><span class="sep">/</span>
+          <a href="javascript:void(0)" id="hubCrumbProject">Project</a><span class="sep">/</span>
+          <span class="cur" id="hubViewCrumb"></span>
+        </div>
+        <div class="actions">
+          <button id="hubRefreshBtn" class="small ghost" data-icon="refresh" data-ic-size="14" title="Re-read the list from disk"><span>Refresh</span></button>
+        </div>
+      </div>
+
+      <div class="screenbody" id="hubMerged" hidden>
+        <div class="chaptercard">
+          <div class="chaptercardhead">
+            <div><h2>Merged videos</h2><p class="hint">Merge complete chapters on the Chapters screen. Here you can add the intro and outro and render a branded copy - the raw merge is never changed, and chapter renders stay unbranded. Your intro/outro choices are remembered for the project.</p></div>
+          </div>
+          <div id="mergedList"></div>
+        </div>
+      </div>
+
+      <div class="screenbody" id="hubLibrary" hidden>
+        <div class="chaptercard">
+          <div class="chaptercardhead">
+            <div><h2>Space used</h2><p class="hint" id="libTotalHint"></p></div>
+          </div>
+          <div class="libbar" id="libBar"></div>
+          <div class="liblegend" id="libLegend"></div>
+        </div>
+        <div class="chaptercard">
+          <div class="chaptercardhead">
+            <div><h2>Free up space</h2><p class="hint">Delete one type of regenerable file from several chapters at once. Your script, frame mapping, editor state, settings and custom voice / music / watermark uploads can never be deleted here.</p></div>
+          </div>
+          <div class="libbulk">
+            <div class="segctl" id="bulkKinds"></div>
+            <div class="setnote"><span class="tag">AFTER</span><span id="bulkRegen"></span></div>
+            <label class="bulkrow" style="border:1px solid var(--line);border-radius:var(--r2)"><input type="checkbox" id="bulkAll" /><b>Select all</b><span class="bsize" id="bulkAllSize"></span></label>
+            <div class="bulklist" id="bulkList"></div>
+            <div class="bulkfoot">
+              <span class="hint" id="bulkSummary"></span>
+              <button id="bulkDeleteBtn" class="danger" data-icon="trash" data-ic-size="14" disabled><span>Delete selected</span></button>
+            </div>
+          </div>
+        </div>
+        <div class="chaptercard">
+          <div class="chaptercardhead"><div><h2>Chapters</h2><p class="hint">One folder per chapter. Open one to see its files, play videos and audio, or delete a type.</p></div></div>
+          <div id="libChapters"></div>
+        </div>
+        <div class="chaptercard">
+          <div class="chaptercardhead"><div><h2>Merged videos</h2><p class="hint">Project-level. Add intro/outro or delete them from the Merged videos screen.</p></div></div>
+          <div id="libMerged"></div>
+        </div>
       </div>
     </main>
   </div>
@@ -891,6 +1055,8 @@
         <div class="navtitle" id="stSideTitle"></div>
         <nav class="appnav">
           <a href="javascript:void(0)" id="stChaptersNav" data-icon="film" data-ic-size="14"><span>Chapters</span><span class="navcount" id="stChapNavCount"></span></a>
+          <a href="javascript:void(0)" id="stMergedNav" data-icon="play" data-ic-size="14"><span>Merged videos</span></a>
+          <a href="javascript:void(0)" id="stLibraryNav" data-icon="layers" data-ic-size="14"><span>Media library</span></a>
           <a href="javascript:void(0)" class="on" data-icon="settings" data-ic-size="14"><span>Project settings</span></a>
         </nav>
       </div>
@@ -1291,6 +1457,17 @@
 </section>
 
 <div id="toast"></div>
+
+<div class="modalback" id="confirmModal">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="cfmTitle">
+    <h3 id="cfmTitle"></h3>
+    <div id="cfmBody"></div>
+    <div class="macts">
+      <button id="cfmCancel" class="small ghost"><span>Cancel</span></button>
+      <button id="cfmOk" class="danger"><span></span></button>
+    </div>
+  </div>
+</div>
 
 <!-- Global render-job widget: outside every .screen, so it's visible from
      the projects list, a chapter list, or the editor for a DIFFERENT
@@ -2389,6 +2566,7 @@ async function pollJobs() {
     JOBS = (await res.json()).jobs || [];
     renderJobWidget();
     syncEditorJobUI();
+    syncMergedJobs();
   } catch (_) { /* transient - the next tick retries; never throws into the caller */ }
 }
 function jobsForChapter(chapterId) { return JOBS.filter(j => j.chapter_id === chapterId); }
@@ -2571,6 +2749,7 @@ function escHtml(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt
 // the queue in order.
 // ---------------------------------------------------------------------------
 function jobLabel(j) {
+  if (j.what === 'brand') return `Final render - ${j.target}`;
   const w = { both: 'Audio + video', voice: 'Voice', video: 'Video' }[j.what] || 'Render';
   return `${w} - ${j.chapter_id}`;
 }
@@ -2955,7 +3134,7 @@ let CURRENT_PROJECT = null;   // the project object backing the open Project scr
 
 function showScreen(name) {
   SCREEN = name;
-  ['projects', 'project', 'settings', 'editor'].forEach(n => {
+  ['projects', 'project', 'hub', 'settings', 'editor'].forEach(n => {
     const el = $('scr-' + n);
     if (el) el.classList.toggle('on', n === name);
   });
@@ -3011,6 +3190,7 @@ function navTo(params, push) {
 function dispatchRoute(params) {
   if (params.project && params.chapter) openChapterEditor(params.project, params.chapter);
   else if (params.project && params.view === 'settings') openSettingsScreen(params.project);
+  else if (params.project && (params.view === 'merged' || params.view === 'library')) openHubScreen(params.project, params.view);
   else if (params.project) openProjectScreen(params.project);
   else { showScreen('projects'); renderProjectsList(); }
 }
@@ -3174,8 +3354,8 @@ function paintProjectChrome() {
   const p = CURRENT_PROJECT;
   const chapters = p.chapters || [];
   const done = chapters.filter(c => c.status === 'complete').length;
-  ['pjSideTitle', 'stSideTitle'].forEach(id => { const el = $(id); if (el) el.textContent = p.name; });
-  ['pjChapNavCount', 'stChapNavCount'].forEach(id => { const el = $(id); if (el) el.textContent = String(chapters.length); });
+  ['pjSideTitle', 'stSideTitle', 'hubSideTitle'].forEach(id => { const el = $(id); if (el) el.textContent = p.name; });
+  ['pjChapNavCount', 'stChapNavCount', 'hubChapNavCount'].forEach(id => { const el = $(id); if (el) el.textContent = String(chapters.length); });
   if ($('pjSideProgress')) $('pjSideProgress').textContent = `${done}/${chapters.length}`;
   if ($('pjSideProgressFill')) $('pjSideProgressFill').style.width = (chapters.length ? Math.round(100 * done / chapters.length) : 0) + '%';
   const src = $('pjSourceLink');
@@ -3194,17 +3374,467 @@ async function openProjectScreen(slug) {
   $('pjTitle').textContent = 'Loading…';
   $('chList').innerHTML = '<div class="empty">Loading…</div>';
   MERGE_SELECTION.clear();
-  $('mergeStatus').textContent = ''; $('mergeResult').innerHTML = ''; $('pastMerges').innerHTML = '';
+  $('mergeStatus').textContent = ''; $('mergeResult').innerHTML = '';
   try {
     await loadCurrentProject(slug);
     $('pjTitle').textContent = CURRENT_PROJECT.name;
     paintProjectChrome();
     renderChapterList();
-    refreshPastMerges();
   } catch (e) {
     setStatus('Open project error: ' + e.message, true);
     $('chList').innerHTML = '<div class="empty">Could not load this project.</div>';
   }
+}
+
+// --- Merged videos + media library (scr-hub) -----------------------------------
+// Two views of one project, sharing a sidebar: the on-disk list of merged videos
+// (with intro/outro branding) and the media library (space used, deleting
+// regenerable files). Everything shown is read from the server, i.e. from disk.
+let HUB_VIEW = 'merged';
+const enc = encodeURIComponent;
+const projectApi = path => `/api/projects/${enc(CURRENT_PROJECT.slug)}${path}`;
+
+async function apiJson(url, method, body) {
+  const res = await fetch(url, { method, headers: { 'Content-Type': 'application/json' },
+                                 body: body === undefined ? undefined : JSON.stringify(body) });
+  return { ok: res.ok, data: await res.json().catch(() => ({})) };
+}
+
+function askConfirm({ title, body, confirmLabel }) {
+  return new Promise(resolve => {
+    $('cfmTitle').textContent = title;
+    $('cfmBody').innerHTML = body;
+    $('cfmOk').firstElementChild.textContent = confirmLabel;
+    const modal = $('confirmModal');
+    modal.classList.add('on');
+    const finish = answer => {
+      modal.classList.remove('on');
+      $('cfmOk').onclick = $('cfmCancel').onclick = null;
+      resolve(answer);
+    };
+    $('cfmOk').onclick = () => finish(true);
+    $('cfmCancel').onclick = () => finish(false);
+  });
+}
+
+function fmtClock(seconds) {
+  const s = Math.round(seconds);
+  const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), sec = String(s % 60).padStart(2, '0');
+  return h ? `${h}h ${String(m).padStart(2, '0')}m ${sec}s` : `${m}m ${sec}s`;
+}
+
+const isBrandJob = j => j.what === 'brand' && CURRENT_PROJECT && j.project === CURRENT_PROJECT.slug;
+const isRunningJob = j => j.status === 'queued' || j.status === 'running';
+
+async function openHubScreen(slug, view) {
+  JOBS.filter(j => j.what === 'brand' && !isRunningJob(j)).forEach(j => brandedHandled.add(j.id));
+  showScreen('hub');
+  HUB_VIEW = view;
+  $('hubMerged').hidden = view !== 'merged';
+  $('hubLibrary').hidden = view !== 'library';
+  $('hubViewCrumb').textContent = view === 'merged' ? 'Merged videos' : 'Media library';
+  document.querySelectorAll('#scr-hub [data-hubview]')
+    .forEach(a => a.classList.toggle('on', a.dataset.hubview === view));
+  try {
+    await loadCurrentProject(slug);
+    $('hubCrumbProject').textContent = CURRENT_PROJECT.name;
+    paintProjectChrome();
+    if (view === 'merged') await loadMerged(); else await loadLibrary();
+  } catch (e) {
+    setStatus(`Open ${view} error: ${e.message}`, true);
+  }
+}
+
+// --- merged videos -------------------------------------------------------------
+let MERGED = { merges: [], branding: {}, default_clips: {}, folder: '' };
+const BRAND_KINDS = ['intro', 'outro'];
+const brandedHandled = new Set();   // finished final-render jobs already announced
+
+async function loadMerged() {
+  MERGED = await (await fetch(projectApi('/merges'))).json();
+  renderMerged();
+}
+
+function renderMerged() {
+  const list = $('mergedList');
+  if (!MERGED.merges.length) {
+    list.innerHTML = '<div class="empty">No merged videos yet. Tick two or more complete chapters on the Chapters screen and press "Merge selected videos".</div>';
+    return;
+  }
+  list.innerHTML = '';
+  MERGED.merges.forEach(m => {
+    const card = document.createElement('div');
+    card.className = 'mcard';
+    card.dataset.name = m.name;
+    card.innerHTML = mergedCardHtml(m);
+    wireMergedCard(card, m);
+    list.appendChild(card);
+  });
+  paintIcons(list);
+  syncMergedJobs();
+}
+
+function brandRowHtml(kind) {
+  const cfg = MERGED.branding[kind];
+  const label = cfg.file ? `Custom: ${cfg.file.split('/').pop()}` : `Default: ${MERGED.default_clips[kind]}`;
+  return `<div class="brandrow" data-kind="${kind}">
+    <label class="togglesw"><input type="checkbox" class="brandToggle" ${cfg.enabled ? 'checked' : ''} /><span class="tk"></span><span>Add ${kind}</span></label>
+    <span class="brandclip" title="${escAttr(label)}">${escHtml(label)}</span>
+    <div class="brandacts">
+      <button class="small ghost brandPreview" data-icon="play" data-ic-size="13"><span>Preview</span></button>
+      <button class="small ghost brandBrowse" data-icon="upload" data-ic-size="13"><span>Upload custom</span></button>
+      ${cfg.file ? '<button class="small ghost brandReset" data-icon="refresh" data-ic-size="13" title="Go back to the default clip"><span>Use default</span></button>' : ''}
+      <input type="file" class="filehidden brandFile" accept="video/*" />
+    </div>
+  </div>`;
+}
+
+function mergedCardHtml(m) {
+  const meta = `${fmtClock(m.duration)} · ${fmtSize(m.size)} · ${new Date(m.created_at).toLocaleString()}`;
+  const final = m.final ? `
+    <div class="mfinal">
+      <div class="mtop"><b>Branded version</b>
+        <span class="mmeta">${fmtClock(m.final.duration)} · ${fmtSize(m.final.size)}</span>
+        <div class="macts">
+          <a class="btnlink" href="${m.final.url}" download>${ic('download', 14)}<span>Download</span></a>
+          <button class="small ghost danger finalDelete" data-icon="trash" data-ic-size="13"><span>Delete</span></button>
+        </div>
+      </div>
+      <video controls preload="metadata" src="${m.final.url}?v=${Date.parse(m.final.created_at)}"></video>
+    </div>` : '';
+  return `
+    <div><video controls preload="metadata" src="${m.url}"></video></div>
+    <div>
+      <div class="mtop">
+        <b>Chapters ${m.chapters.join(', ') || '?'}</b><span class="mmeta">${meta}</span>
+        <div class="macts">
+          <button class="small ghost mergeFolder" data-icon="folder" data-ic-size="13"><span>Open folder</span></button>
+          <button class="small ghost danger mergeDelete" data-icon="trash" data-ic-size="13"><span>Delete</span></button>
+        </div>
+      </div>
+      <div class="mbrand">
+        ${BRAND_KINDS.map(brandRowHtml).join('')}
+        <div class="mfinalrow">
+          <button class="primary finalRender" data-icon="film" data-ic-size="14"><span>${m.final ? 'Re-render final' : 'Render final'}</span></button>
+          <button class="small danger finalStop" data-icon="stop" data-ic-size="13" hidden><span>Stop</span></button>
+          <div class="progress"><div class="bar"></div></div>
+          <span class="hint finalState"></span>
+        </div>
+        <span class="hint finalMsg"></span>
+      </div>
+      ${final}
+    </div>`;
+}
+
+function wireMergedCard(card, m) {
+  card.querySelectorAll('.brandrow').forEach(row => {
+    const kind = row.dataset.kind;
+    const input = row.querySelector('.brandFile');
+    row.querySelector('.brandToggle').onchange = e => setBrandEnabled(kind, e.target.checked);
+    row.querySelector('.brandPreview').onclick = () => toggleBrandPreview(row, kind);
+    row.querySelector('.brandBrowse').onclick = () => input.click();
+    input.onchange = () => uploadBrandClip(kind, input.files[0], row);
+    const reset = row.querySelector('.brandReset');
+    if (reset) reset.onclick = () => resetBrandClip(kind);
+  });
+  card.querySelector('.finalRender').onclick = () => startFinalRender(m.name);
+  card.querySelector('.finalStop').onclick = () => cancelFinalRender(m.name);
+  card.querySelector('.mergeFolder').onclick = () => openFolder(MERGED.folder);
+  card.querySelector('.mergeDelete').onclick = () => deleteMerged(m, false);
+  const deleteFinal = card.querySelector('.finalDelete');
+  if (deleteFinal) deleteFinal.onclick = () => deleteMerged(m, true);
+}
+
+function toggleBrandPreview(row, kind) {
+  const open = row.nextElementSibling;
+  if (open && open.classList.contains('brandpreview')) { open.remove(); return; }
+  const video = document.createElement('video');
+  video.className = 'genvideo brandpreview';
+  video.controls = true;
+  video.autoplay = true;
+  video.src = `${projectApi('/branding/' + kind)}?t=${Date.now()}`;
+  row.after(video);
+}
+
+function syncBrandingState(branding) {
+  MERGED.branding = branding;
+  CURRENT_PROJECT.settings.branding = branding;
+}
+
+async function setBrandEnabled(kind, enabled) {
+  const { ok, data } = await apiJson(projectApi('/settings'), 'POST', { branding: { [kind]: { enabled } } });
+  if (!ok) { setStatus(data.error || 'Could not save the choice.', true); return; }
+  syncBrandingState(data.settings.branding);
+  document.querySelectorAll(`#mergedList .brandrow[data-kind="${kind}"] .brandToggle`)
+    .forEach(box => { box.checked = enabled; });
+  syncMergedJobs();
+}
+
+async function uploadBrandClip(kind, file, row) {
+  if (!file) return;
+  try {
+    const d = await uploadAssetFile(kind, file, row.querySelector('.brandclip'),
+      row.querySelector('.brandBrowse'), () => {});
+    MERGED.branding[kind].file = d.path;
+    CURRENT_PROJECT.settings.branding[kind].file = d.path;
+    showToast(`Custom ${kind} uploaded.`, null, null, 'ok');
+    renderMerged();
+  } catch (e) {
+    setStatus('Upload error: ' + e.message, true);
+  }
+}
+
+async function resetBrandClip(kind) {
+  const { ok, data } = await apiJson(projectApi('/asset/' + kind), 'DELETE');
+  if (!ok) { setStatus(data.error || 'Could not reset the clip.', true); return; }
+  MERGED.branding[kind].file = null;
+  CURRENT_PROJECT.settings.branding[kind].file = null;
+  renderMerged();
+}
+
+async function startFinalRender(name) {
+  const { ok, data } = await apiJson(projectApi(`/merges/${enc(name)}/final`), 'POST');
+  if (!ok) { setStatus(data.error || 'Could not start the final render.', true); return; }
+  showToast('Final render queued.', null, null, 'ok');
+  pollJobs();
+}
+
+async function cancelFinalRender(name) {
+  const job = JOBS.find(j => isBrandJob(j) && j.target === name && isRunningJob(j));
+  if (!job) return;
+  await apiJson(`/api/jobs/${enc(job.id)}/cancel`, 'POST');
+  pollJobs();
+}
+
+async function deleteMerged(m, finalOnly) {
+  const what = finalOnly ? m.final : m;
+  const size = finalOnly ? m.final.size : m.size + (m.final ? m.final.size : 0);
+  const ok = await askConfirm({
+    title: finalOnly ? 'Delete the branded version?' : 'Delete this merged video?',
+    body: `<p><b>${escHtml(what.name)}</b>${!finalOnly && m.final ? ' and its branded version' : ''} will be deleted, freeing <b>${fmtSize(size)}</b>.</p>
+           <p class="hint">${finalOnly ? 'The raw merge is kept.' : 'You can merge the chapters again from the Chapters screen.'}</p>`,
+    confirmLabel: 'Delete',
+  });
+  if (!ok) return;
+  document.querySelectorAll('#mergedList video').forEach(v => { v.pause(); v.removeAttribute('src'); v.load(); });
+  const res = await apiJson(projectApi(`/merges/${enc(m.name)}${finalOnly ? '?final=1' : ''}`), 'DELETE');
+  if (!res.ok) setStatus(res.data.error || 'Delete failed.', true);
+  else showToast('Deleted.', null, null, 'ok');
+  loadMerged();
+}
+
+// Called on every job poll: shows each card's final-render progress and reloads
+// the list once when a render finishes.
+function syncMergedJobs() {
+  if (SCREEN !== 'hub' || HUB_VIEW !== 'merged' || !CURRENT_PROJECT) return;
+  const jobs = JOBS.filter(isBrandJob);
+  let finished = false;
+  jobs.filter(j => !isRunningJob(j) && !brandedHandled.has(j.id)).forEach(j => {
+    brandedHandled.add(j.id);
+    if (j.status === 'done') { showToast('Final video ready.', null, null, 'ok'); finished = true; }
+    else if (j.status === 'failed') setStatus('Final render failed: ' + j.message, true);
+    else showToast('Final render stopped.', null, null, 'warn');
+  });
+  if (finished) { loadMerged(); return; }
+
+  const anyEnabled = BRAND_KINDS.some(k => MERGED.branding[k] && MERGED.branding[k].enabled);
+  document.querySelectorAll('#mergedList .mcard').forEach(card => {
+    const mine = jobs.filter(j => j.target === card.dataset.name);
+    const active = mine.find(isRunningJob);
+    const last = mine.find(j => !isRunningJob(j));
+    const bar = card.querySelector('.progress');
+    card.querySelector('.finalRender').disabled = !!active || !anyEnabled;
+    card.querySelector('.finalStop').hidden = !active;
+    bar.style.display = active ? 'block' : 'none';
+    bar.classList.toggle('indet', !!active && active.status === 'queued');
+    bar.firstElementChild.style.width = active ? Math.round((active.progress || 0) * 100) + '%' : '0';
+    card.querySelector('.finalState').textContent = !active ? ''
+      : active.status === 'queued' ? 'Queued - ' + fmtEta(active.eta_s)
+      : `Rendering ${Math.round((active.progress || 0) * 100)}% - ${fmtEtaOrElapsed(active)}`;
+    card.querySelector('.finalMsg').textContent = !active && last && last.status === 'failed'
+      ? 'Last final render failed: ' + last.message
+      : (anyEnabled ? '' : 'Turn on the intro or the outro to render a final video.');
+  });
+}
+
+// --- media library ---------------------------------------------------------------
+let LIB = null;                       // GET /library: sizes per type, chapter and project
+const LIB_OPEN = new Set();           // chapters whose folder is expanded
+const LIB_FILE_LIMIT = 30;
+const BULK_LABELS = { video: 'Videos', audio: 'Audio', frames: 'Frames', strips: 'Strips', pdfs: 'PDFs' };
+const bulk = { kind: 'video', selected: new Set() };
+
+async function loadLibrary() {
+  const d = await (await fetch(projectApi('/library'))).json();
+  if (!d.kinds) throw new Error(d.error || 'library unavailable');
+  LIB = d;
+  renderLibrary();
+}
+
+function renderLibrary() {
+  renderLibrarySummary();
+  renderBulk();
+  renderLibraryChapters();
+  renderLibraryMerged();
+}
+
+function renderLibrarySummary() {
+  const parts = [
+    ...LIB.kinds.map(k => ({ key: k.key, label: k.label, bytes: LIB.by_kind[k.key] })),
+    { key: 'merged', label: 'Merged videos', bytes: LIB.merged_bytes },
+    { key: 'kept', label: 'Work, settings & uploads (kept)', bytes: LIB.kept_bytes },
+  ];
+  $('libTotalHint').textContent = `${fmtSize(LIB.total_bytes)} in this project.`;
+  $('libBar').innerHTML = parts.filter(p => p.bytes > 0).map(p =>
+    `<span class="k-${p.key}" style="width:${(100 * p.bytes / LIB.total_bytes).toFixed(2)}%" title="${escAttr(p.label)}: ${fmtSize(p.bytes)}"></span>`).join('');
+  $('libLegend').innerHTML = parts.map(p =>
+    `<span><i class="k-${p.key}"></i>${escHtml(p.label)}<b>${fmtSize(p.bytes) || '0B'}</b></span>`).join('');
+}
+
+// bulk delete: one file type across several chapters
+function renderBulk() {
+  const kind = LIB.kinds.find(k => k.key === bulk.kind);
+  const rows = LIB.chapters.filter(c => c.kinds[bulk.kind].count > 0);
+  bulk.selected = new Set([...bulk.selected].filter(n => rows.some(c => c.n === n)));
+  $('bulkKinds').innerHTML = LIB.kinds.map(k =>
+    `<label class="segopt"><input type="radio" name="bulkKind" value="${k.key}" ${k.key === bulk.kind ? 'checked' : ''} />${BULK_LABELS[k.key]}</label>`).join('');
+  $('bulkRegen').textContent = kind.regenerate;
+  $('bulkList').innerHTML = rows.length ? rows.map(c =>
+    `<label class="bulkrow"><input type="checkbox" data-n="${c.n}" ${bulk.selected.has(c.n) ? 'checked' : ''} />
+       <b>#${c.n}</b><span class="hint">${escHtml(c.title)}</span>
+       <span class="bsize">${c.kinds[bulk.kind].count} file(s) · ${fmtSize(c.kinds[bulk.kind].bytes)}</span></label>`).join('')
+    : `<div class="empty">No chapter has any ${BULK_LABELS[bulk.kind].toLowerCase()} on disk.</div>`;
+  updateBulkSummary(rows);
+}
+
+function updateBulkSummary(rows) {
+  rows = rows || LIB.chapters.filter(c => c.kinds[bulk.kind].count > 0);
+  const bytes = rows.filter(c => bulk.selected.has(c.n)).reduce((sum, c) => sum + c.kinds[bulk.kind].bytes, 0);
+  const all = $('bulkAll');
+  all.checked = rows.length > 0 && bulk.selected.size === rows.length;
+  all.indeterminate = bulk.selected.size > 0 && bulk.selected.size < rows.length;
+  all.disabled = !rows.length;
+  $('bulkAllSize').textContent = rows.length ? `${fmtSize(rows.reduce((sum, c) => sum + c.kinds[bulk.kind].bytes, 0))} in total` : '';
+  $('bulkSummary').textContent = bulk.selected.size
+    ? `${bulk.selected.size} chapter(s) selected - about ${fmtSize(bytes)} to free.` : 'Select the chapters to clean up.';
+  $('bulkDeleteBtn').disabled = !bulk.selected.size;
+}
+
+$('bulkKinds').onchange = e => { bulk.kind = e.target.value; bulk.selected.clear(); renderBulk(); };
+$('bulkList').onchange = e => {
+  const n = +e.target.dataset.n;
+  if (e.target.checked) bulk.selected.add(n); else bulk.selected.delete(n);
+  updateBulkSummary();
+};
+$('bulkAll').onchange = e => {
+  bulk.selected = e.target.checked
+    ? new Set(LIB.chapters.filter(c => c.kinds[bulk.kind].count > 0).map(c => c.n)) : new Set();
+  renderBulk();
+};
+$('bulkDeleteBtn').onclick = () => deleteLibraryKind([...bulk.selected], bulk.kind);
+
+// the confirmation states exactly what the server will remove (dry run)
+async function deleteLibraryKind(chapters, kindKey) {
+  const kind = LIB.kinds.find(k => k.key === kindKey);
+  const url = projectApi('/library/delete');
+  const plan = await apiJson(url, 'POST', { chapters, kind: kindKey, dry_run: true });
+  if (!plan.ok) { setStatus(plan.data.error || 'Could not check what would be deleted.', true); return; }
+  if (!plan.data.bytes) { showToast('Nothing to delete.', null, null, 'warn'); return; }
+  const confirmed = await askConfirm({
+    title: `Delete ${kind.label.toLowerCase()}?`,
+    body: `<p>This permanently deletes <b>${plan.data.count} file(s)</b> from <b>${chapters.length} chapter(s)</b> and frees exactly <b>${fmtSize(plan.data.bytes)}</b> (${plan.data.bytes.toLocaleString()} bytes).</p>
+           <p class="hint">To get it back: ${escHtml(kind.regenerate)}</p>`,
+    confirmLabel: `Delete and free ${fmtSize(plan.data.bytes)}`,
+  });
+  if (!confirmed) return;
+  document.querySelectorAll('#hubLibrary audio, #hubLibrary video')
+    .forEach(media => { media.pause(); media.removeAttribute('src'); media.load(); });
+  const res = await apiJson(url, 'POST', { chapters, kind: kindKey });
+  if (res.ok) showToast(`Freed ${fmtSize(res.data.freed)}. ${kind.regenerate}`, null, null, 'ok');
+  else setStatus(res.data.error || 'Delete failed.', true);
+  bulk.selected.clear();
+  await loadCurrentProject(CURRENT_PROJECT.slug);
+  paintProjectChrome();
+  await loadLibrary();
+}
+
+function renderLibraryChapters() {
+  const box = $('libChapters');
+  if (!LIB.chapters.length) { box.innerHTML = '<div class="empty">No chapter has any files yet.</div>'; return; }
+  box.innerHTML = '';
+  LIB.chapters.forEach(c => box.appendChild(libChapterEl(c)));
+  paintIcons(box);
+}
+
+function libChapterEl(c) {
+  const el = document.createElement('div');
+  el.className = 'libchap' + (LIB_OPEN.has(c.n) ? ' open' : '');
+  const chips = LIB.kinds.filter(k => c.kinds[k.key].bytes)
+    .map(k => `<span>${BULK_LABELS[k.key].toLowerCase()} <b>${fmtSize(c.kinds[k.key].bytes)}</b></span>`).join('');
+  el.innerHTML = `
+    <div class="libchaphead">
+      <span class="chev" style="display:flex">${ic('chevright', 14)}</span>
+      <span class="chno">#${c.n}</span><span class="chtitle">${escHtml(c.title)}</span>
+      <span class="stpill st-${c.status}">${STATUS_LABELS[c.status] || c.status.replace('_', ' ')}</span>
+      <span class="chips">${chips}<span>total <b>${fmtSize(c.bytes)}</b></span></span>
+    </div>
+    <div class="libchapbody"></div>`;
+  const body = el.querySelector('.libchapbody');
+  el.querySelector('.libchaphead').onclick = () => {
+    const open = el.classList.toggle('open');
+    if (open) { LIB_OPEN.add(c.n); loadChapterDetail(c.n, body); } else LIB_OPEN.delete(c.n);
+  };
+  if (LIB_OPEN.has(c.n)) loadChapterDetail(c.n, body);
+  return el;
+}
+
+async function loadChapterDetail(n, body) {
+  body.innerHTML = '<div class="hint">Loading…</div>';
+  const detail = await (await fetch(projectApi(`/library/${n}`))).json();
+  renderChapterDetail(n, body, detail, new Set());
+}
+
+function renderChapterDetail(n, body, detail, expanded) {
+  const fileUrl = f => projectApi(`/library/${n}/file?path=${enc(f.path)}`);
+  const fileHtml = (key, f) => {
+    const url = fileUrl(f);
+    const player = key === 'audio' ? `<div class="libplayer"><audio controls preload="none" src="${url}"></audio></div>`
+      : f.name.endsWith('.mp4') ? `<div class="libplayer"><video controls preload="none" src="${url}"></video></div>` : '';
+    return `<div class="libfile"><span>${escHtml(f.name)}</span>${player ? '' : `<a href="${url}" target="_blank">open</a>`}<span class="fsize">${fmtSize(f.size)}</span>${player}</div>`;
+  };
+  const groupHtml = g => {
+    const shown = expanded.has(g.key) ? g.files : g.files.slice(0, LIB_FILE_LIMIT);
+    const more = g.files.length - shown.length;
+    return `<div class="libgroup">
+      <div class="libghead"><i class="gdot k-${g.key}"></i><b>${escHtml(g.label)}</b>
+        <span class="hint">${g.files.length ? `${g.files.length} file(s) · ${fmtSize(g.bytes)}` : 'none on disk'}</span>
+        ${g.files.length ? `<button class="small danger libdel" data-kind="${g.key}" data-icon="trash" data-ic-size="13"><span>Delete</span></button>` : ''}
+      </div>
+      ${g.files.length ? `<span class="hint">To get it back: ${escHtml(g.regenerate)}</span>` : ''}
+      ${shown.map(f => fileHtml(g.key, f)).join('')}
+      ${more > 0 ? `<button class="small ghost libmore" data-kind="${g.key}"><span>Show ${more} more</span></button>` : ''}
+    </div>`;
+  };
+  const keptBytes = detail.kept.reduce((sum, f) => sum + f.size, 0);
+  body.innerHTML = detail.groups.map(groupHtml).join('') + `
+    <details class="libkept"><summary>Kept work - ${detail.kept.length} file(s), ${fmtSize(keptBytes)}. Script, mapping, editor state and settings can't be deleted here.</summary>
+      ${detail.kept.map(f => `<div class="libfile"><span>${escHtml(f.name)}</span><span class="fsize">${fmtSize(f.size)}</span></div>`).join('')}
+    </details>`;
+  paintIcons(body);
+  body.querySelectorAll('.libdel').forEach(btn => btn.onclick = () => deleteLibraryKind([n], btn.dataset.kind));
+  body.querySelectorAll('.libmore').forEach(btn => btn.onclick = () => {
+    expanded.add(btn.dataset.kind);
+    renderChapterDetail(n, body, detail, expanded);
+  });
+}
+
+function renderLibraryMerged() {
+  const row = (name, hint, size, url) =>
+    `<div class="libfile" style="padding:10px 18px"><span>${escHtml(name)}</span><span class="hint">${hint}</span><span class="fsize">${fmtSize(size)}</span><div class="libplayer"><video controls preload="none" src="${url}"></video></div></div>`;
+  $('libMerged').innerHTML = LIB.merges.length
+    ? LIB.merges.map(m => row(m.name, `chapters ${m.chapters.join(', ')}`, m.size, m.url) +
+        (m.final ? row(m.final.name, 'with intro / outro', m.final.size, m.final.url) : '')).join('')
+    : '<div class="empty">No merged videos yet.</div>';
 }
 
 // --- Project settings screen ---------------------------------------------------
@@ -3283,6 +3913,7 @@ let MERGE_SELECTION = new Set();   // chapter numbers currently checked for merg
 
 // rank used only for the row's 3-segment "Download -> Edit -> Complete" mini
 // progress bar - purely cosmetic, mirrors projects.py's STATUS_RANK ordering.
+const STATUS_LABELS = { boxed: 'needs render' };
 const CH_RANK = { not_started: 0, downloaded: 1, boxed: 2, rendered: 3, complete: 4 };
 
 function renderChapterList() {
@@ -3317,8 +3948,9 @@ function renderChapterList() {
       `<div class="chsteps"><span class="${rank >= 1 ? 'on' : ''}"></span><span class="${rank >= 2 ? 'on' : ''}"></span><span class="${rank >= 4 ? 'on' : ''}"></span></div></div>` +
       `<div class="chacts">${primary}${markBtn}${previewBtn}</div>`;
     row.querySelector('.chtitle').textContent = ch.title;
-    row.querySelector('.chmeta').textContent = ch.updated_at ? `Updated ${timeAgo(ch.updated_at)}` : 'Not downloaded';
-    row.querySelector('.stpill').textContent = ch.status.replace('_', ' ');
+    row.querySelector('.chmeta').textContent = (ch.updated_at ? `Updated ${timeAgo(ch.updated_at)}` : 'Not downloaded')
+      + (ch.duration ? ` · video ${fmtClock(ch.duration)}` : '');
+    row.querySelector('.stpill').textContent = STATUS_LABELS[ch.status] || ch.status.replace('_', ' ');
     const acts = row.querySelector('.chacts');
     paintIcons(acts);
     acts.children[0].onclick = () => {
@@ -3363,8 +3995,12 @@ function selectAllComplete() {
 
 function updateMergeBar() {
   const n = MERGE_SELECTION.size;
+  const total = [...MERGE_SELECTION].reduce((sum, no) => {
+    const ch = CURRENT_PROJECT.chapters.find(c => c.n === no);
+    return sum + ((ch && ch.duration) || 0);
+  }, 0);
   $('mergeSelHint').textContent = n === 0 ? 'No chapters selected.'
-    : `${n} chapter(s) selected: ${[...MERGE_SELECTION].sort((a,b) => a - b).join(', ')}`;
+    : `${n} chapter(s) selected: ${[...MERGE_SELECTION].sort((a,b) => a - b).join(', ')} - merged video will be ${fmtClock(total)} (before any intro/outro)`;
   $('mergeBtn').disabled = n < 2 || !!mergeES;
 }
 
@@ -3430,7 +4066,6 @@ function handleMergeEvent(ev) {
       showToast('Merged video ready.', null, null, 'ok');
       if (ev.video) showMergeResult(ev.video);
       setStatus(ev.message || 'Merge complete.');
-      refreshPastMerges();
     } else {
       $('mergeProgress').classList.add('err');
       appendMergeLog('FAILED  ' + (ev.message || 'Failed.'));
@@ -3456,6 +4091,7 @@ function showMergeResult(videoUrl) {
        <div class="jobacts">
          <a class="btnlink" href="${src}" target="_blank">${ic('play',14)}<span>Play full size</span></a>
          <a class="btnlink" href="${src}" download="merged.mp4">${ic('download',14)}<span>Download</span></a>
+         <button class="btnlink" onclick="navTo({ project: CURRENT_PROJECT.slug, view: 'merged' })">${ic('film',14)}<span>Add intro / outro</span></button>
        </div>
      </div>`;
 }
@@ -3472,23 +4108,6 @@ function cancelMerge() {
   appendMergeLog('[stopped by user]');
   setStatus('Merge stopped.');
   showToast('Merge stopped.', null, null, 'warn');
-}
-
-async function refreshPastMerges() {
-  if (!CURRENT_PROJECT) return;
-  try {
-    const d = await (await fetch(`/api/projects/${encodeURIComponent(CURRENT_PROJECT.slug)}/merges`)).json();
-    const merges = d.merges || [];
-    const box = $('pastMerges');
-    if (!merges.length) { box.innerHTML = ''; return; }
-    box.innerHTML = '<div class="hint" style="margin:10px 0 6px">Past merges (click to play):</div>' +
-      merges.map((m, i) =>
-        `<div class="gprow" data-i="${i}" style="cursor:pointer">` +
-        `<span class="gpname">ch ${m.chapters.join(', ')} (${m.mode})</span>` +
-        `<span class="gpmeta">${new Date(m.created_at).toLocaleString()}</span></div>`).join('');
-    box.querySelectorAll('.gprow').forEach((el, i) =>
-      el.onclick = () => showMergeResult(`/projects/${CURRENT_PROJECT.slug}/${merges[i].file}`));
-  } catch (_) { /* non-fatal */ }
 }
 
 async function toggleComplete(ch) {
@@ -3731,12 +4350,10 @@ function postWithProgress(url, body, onProgress) {
   });
 }
 
-// The file only counts as set once the server has stored it: until then the
-// name field shows live progress and the old value is kept for a failed upload.
-async function uploadAsset(kind, file) {
-  if (!file || !CURRENT_PROJECT) return;
-  const ui = ASSET_UI[kind];
-  const nameEl = $(ui.name), browseBtn = $(ui.browse);
+// The file only counts as set once the server has stored it: until then `nameEl`
+// shows live progress and the old value is kept for a failed upload. Resolves
+// with the server's response; the caller records the new file.
+async function uploadAssetFile(kind, file, nameEl, browseBtn, onLabel) {
   const previousName = nameEl.textContent;
   const bar = document.createElement('span');
   bar.className = 'uploadbar';
@@ -3746,7 +4363,7 @@ async function uploadAsset(kind, file) {
     bar.firstChild.style.width = Math.round(frac * 100) + '%';
     const label = frac < 1 ? `Uploading… ${Math.round(frac * 100)}%` : 'Saving…';
     nameEl.textContent = label;
-    setSettingsSaveState('saving', label);
+    onLabel(label);
   };
 
   const fd = new FormData();
@@ -3756,7 +4373,23 @@ async function uploadAsset(kind, file) {
   btnBusy(browseBtn, true);
   setProgress(0);
   try {
-    const d = await postWithProgress(`/api/projects/${encodeURIComponent(CURRENT_PROJECT.slug)}/asset`, fd, setProgress);
+    return await postWithProgress(`/api/projects/${encodeURIComponent(CURRENT_PROJECT.slug)}/asset`, fd, setProgress);
+  } catch (e) {
+    nameEl.textContent = previousName;
+    throw e;
+  } finally {
+    uploadsInFlight--;
+    bar.remove();
+    btnBusy(browseBtn, false);
+  }
+}
+
+async function uploadAsset(kind, file) {
+  if (!file || !CURRENT_PROJECT) return;
+  const nameEl = $(ASSET_UI[kind].name);
+  try {
+    const d = await uploadAssetFile(kind, file, nameEl, $(ASSET_UI[kind].browse),
+      label => setSettingsSaveState('saving', label));
     nameEl.textContent = d.name;
     setSettingsSaveState('ok', 'Uploaded ' + new Date().toLocaleTimeString());
     showToast(kind + ' uploaded.', null, null, 'ok');
@@ -3764,13 +4397,8 @@ async function uploadAsset(kind, file) {
     if (kind === 'watermark') refreshWatermarkPreview();
     if (kind === 'background') refreshBackgroundPreview();
   } catch (e) {
-    nameEl.textContent = previousName;
     setSettingsSaveState('err', 'Upload failed');
     setStatus('Upload error: ' + e.message, true);
-  } finally {
-    uploadsInFlight--;
-    bar.remove();
-    btnBusy(browseBtn, false);
   }
 }
 
@@ -3998,6 +4626,14 @@ $('selectAllBtn').onclick = selectAllComplete;
 $('pjCrumbProjects').onclick = () => navTo({});
 $('pjSettingsBtn').onclick = () => navTo({ project: CURRENT_PROJECT.slug, view: 'settings' });
 $('pjChaptersNav').onclick = () => navTo({ project: CURRENT_PROJECT.slug });
+[['pj', 'Merged', 'merged'], ['pj', 'Library', 'library'], ['st', 'Merged', 'merged'], ['st', 'Library', 'library']]
+  .forEach(([screen, name, view]) => $(`${screen}${name}Nav`).onclick = () => navTo({ project: CURRENT_PROJECT.slug, view }));
+$('hubAllProjectsBtn').onclick = $('hubCrumbProjects').onclick = () => navTo({});
+$('hubChaptersNav').onclick = $('hubCrumbProject').onclick = () => navTo({ project: CURRENT_PROJECT.slug });
+$('hubSettingsNav').onclick = () => navTo({ project: CURRENT_PROJECT.slug, view: 'settings' });
+$('hubMergedNav').onclick = () => navTo({ project: CURRENT_PROJECT.slug, view: 'merged' });
+$('hubLibraryNav').onclick = () => navTo({ project: CURRENT_PROJECT.slug, view: 'library' });
+$('hubRefreshBtn').onclick = () => openHubScreen(CURRENT_PROJECT.slug, HUB_VIEW);
 $('stAllProjectsBtn').onclick = () => navTo({});
 $('stCrumbProjects').onclick = () => navTo({});
 $('stCrumbProject').onclick = () => navTo({ project: CURRENT_PROJECT.slug });

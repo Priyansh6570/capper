@@ -70,3 +70,7 @@ output/**/*.jpeg
 
 # keep small repo assets (e.g. icons) even if they match media patterns above
 !assets/**
+
+# default intro/outro for merged videos - shipped with the app (installer clones the repo)
+!/recapper_intro.mp4
+!/recapper_outro.mp4

@@ -201,6 +201,20 @@ rendered output with `ffprobe`/`ffmpeg` and writes to
 orchestrator, or any pipeline stage - keep it that way; it has nothing to do
 with a single chapter's render.
 
+The framer's **branding** (`branding.py`) joins `recapper_intro.mp4` /
+`recapper_outro.mp4` (project root, or a per-project custom upload) onto MERGED
+videos only, as a separate `<merge>_branded.mp4`, via the existing job queue
+(`what="brand"`). A 1s black/silent gap separates each clip from the main video
+and the main video's audio fades in over 2s. Chapter renders are never branded.
+Only the short clips (and the main audio track) are re-encoded; the main picture
+is stream-copied and the clips are cached under `cache/branding/`.
+The framer's **media library** (`library.py`) lists/deletes only the regenerable
+file types in `library.KINDS`; script, mapping, editor state, manifest, settings
+and custom uploads are not reachable from it. Chapter status is re-derived from
+disk (`derive_status`), so a deleted recap.mp4 drops the chapter to "needs
+render", and `/api/generate` refuses renders whose frames/audio were deleted.
+Neither feature touches the manifest, orchestrator, or any pipeline stage.
+
 The framer's **export/import** feature (`/api/projects/<slug>/export`,
 `/api/projects/import`, `projects.export_archive`/`import_archive`) zips a
 project's whole folder and restores it as a new project, rewriting the absolute
