@@ -31,6 +31,7 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Optional
 
+import claude_engine
 from config import PROJECTS_DIR
 from atomic_io import atomic_write_text, read_json_with_backup_fallback
 
@@ -69,6 +70,10 @@ def project_dir(slug: str) -> Path:
 
 def project_json_path(slug: str) -> Path:
     return project_dir(slug) / "project.json"
+
+
+def story_memory_path(slug: str) -> Path:
+    return project_dir(slug) / "story_memory.json"
 
 
 def assets_dir(slug: str) -> Path:
@@ -151,6 +156,12 @@ def _default_settings() -> dict:
         # knobs so different projects can want a different voice.
         "gemini": {"tone": "serious", "narration_type": "first_person",
                    "style_reference": "", "model": "gemini-3.1-pro-preview"},
+        # Which engine writes the script: "gemini" (API) or "claude" (the local
+        # Claude Code CLI, see claude_engine.py). Tone / narration type / style
+        # reference above apply to both; the series brief and per-pass models
+        # below are Claude-only.
+        "script_engine": "gemini",
+        "claude": {"series_brief": "", "comprehension_model": "opus", "narration_model": "sonnet"},
     }
 
 
@@ -376,6 +387,14 @@ def update_settings(slug: str, settings: dict) -> dict:
         if gm.get("model") not in ("gemini-3.1-pro-preview", "gemini-3.8-flash"):
             gm["model"] = "gemini-3.1-pro-preview"
         gm["style_reference"] = str(gm.get("style_reference") or "")[:12000]
+        settings = project["settings"]
+        if settings.get("script_engine") not in ("gemini", "claude"):
+            settings["script_engine"] = "gemini"
+        cl = settings["claude"]
+        cl["series_brief"] = str(cl.get("series_brief") or "")[:12000]
+        for key in ("comprehension_model", "narration_model"):
+            if cl.get(key) not in claude_engine.MODELS:
+                cl[key] = _default_settings()["claude"][key]
         save(project)
     write_all_media_snapshots(slug)
     return project

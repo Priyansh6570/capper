@@ -154,6 +154,7 @@
              gap:12px; padding:12px; }
   #srcpanel { display:flex; flex-direction:column; gap:12px; }
   #srcpanel[hidden] { display:none; }
+  #geminiKeyBlock[hidden], #claudeBlock[hidden], .geminiOnly[hidden] { display:none; }
   .sidecard { background:var(--surface); border:1px solid var(--line); border-radius:var(--r);
               padding:12px; display:flex; flex-direction:column; gap:9px; }
   .sidecard h2 { margin:0; display:flex; align-items:center; gap:8px; font-size:11px;
@@ -1089,8 +1090,15 @@
         <div class="settingscontent">
 
           <div class="setcard" id="s-gemini">
-            <div class="setlabel"><b>Script generation (Gemini)</b><span>Auto-generate the narration script from the chapter PDF with Google's Gemini API, instead of copy-pasting to Gemini by hand. Tone/style below are per-project; the API key is shared across all projects.</span></div>
+            <div class="setlabel"><b>Script generation</b><span>Auto-generate the narration script for a chapter. Gemini reads the chapter PDF through Google's API; Claude Code reads the split panels through your local Claude login. Tone and style below apply to both and are per-project; the Gemini API key is shared across all projects.</span></div>
             <div class="setbody">
+              <label class="field" style="margin:0 0 10px"><span class="lbl" style="text-transform:none;letter-spacing:0;font-weight:400;color:var(--muted)">Engine</span>
+                <select id="scriptEngine">
+                  <option value="gemini">Gemini API</option>
+                  <option value="claude">Claude Code (local, uses your Claude subscription)</option>
+                </select>
+              </label>
+              <div id="geminiKeyBlock">
               <div class="filerow">
                 <input id="geminiKeyInput" type="password" placeholder="Paste your Gemini API key" style="flex:1;min-width:220px" autocomplete="off" />
                 <button type="button" id="geminiKeySaveBtn" class="small ghost" data-icon="check" data-ic-size="14"><span>Save key</span></button>
@@ -1098,6 +1106,7 @@
               </div>
               <div class="hint" id="geminiKeyStatus"></div>
               <div class="setnote"><span class="tag">NOTE</span><span>Get a free key at <a href="javascript:void(0)" id="geminiKeyLinkBtn">aistudio.google.com/apikey</a>. Saved in Windows Credential Manager when available (plain <b>.env</b> otherwise) - never committed, never sent anywhere but Google's API. This keeps it out of a plaintext file, not absolutely secret: it's still readable on this machine by whoever controls it, same as any local app's saved credential - the real protection is that it's yours alone and never leaves this PC.</span></div>
+              </div>
 
               <div class="setgridpair" style="margin-top:10px">
                 <label class="field" style="margin:0"><span class="lbl" style="text-transform:none;letter-spacing:0;font-weight:400;color:var(--muted)">Tone</span>
@@ -1116,16 +1125,40 @@
                 </label>
               </div>
 
-              <label class="field" style="margin:10px 0 0"><span class="lbl" style="text-transform:none;letter-spacing:0;font-weight:400;color:var(--muted)">Model</span>
+              <label class="field geminiOnly" style="margin:10px 0 0"><span class="lbl" style="text-transform:none;letter-spacing:0;font-weight:400;color:var(--muted)">Model</span>
                 <select id="geminiModel">
                   <option value="gemini-3.1-pro-preview">Gemini 3.1 Pro - highest quality (slower, lower rate limit)</option>
                   <option value="gemini-3.8-flash">Gemini 3.8 Flash - faster (higher rate limit)</option>
                 </select>
               </label>
 
+              <div id="claudeBlock">
+                <div class="hint" id="claudeStatus"></div>
+                <label class="field" style="margin:10px 0 0">
+                  <span class="lbl" style="text-transform:none;letter-spacing:0;font-weight:400;color:var(--muted)">Series brief (optional)</span>
+                  <textarea id="claudeBrief" placeholder="Who the main characters are, the setting, the premise - anything Claude should know before chapter 1…" style="width:100%;height:110px"></textarea>
+                </label>
+                <div class="setgridpair" style="margin-top:10px">
+                  <label class="field" style="margin:0"><span class="lbl" style="text-transform:none;letter-spacing:0;font-weight:400;color:var(--muted)">Model: reading the panels</span>
+                    <select id="claudeComprehensionModel">
+                      <option value="opus">Opus</option>
+                      <option value="sonnet">Sonnet</option>
+                      <option value="haiku">Haiku</option>
+                    </select>
+                  </label>
+                  <label class="field" style="margin:0"><span class="lbl" style="text-transform:none;letter-spacing:0;font-weight:400;color:var(--muted)">Model: writing the narration</span>
+                    <select id="claudeNarrationModel">
+                      <option value="opus">Opus</option>
+                      <option value="sonnet">Sonnet</option>
+                      <option value="haiku">Haiku</option>
+                    </select>
+                  </label>
+                </div>
+              </div>
+
               <label class="field" style="margin:10px 0 0">
                 <span class="lbl" style="text-transform:none;letter-spacing:0;font-weight:400;color:var(--muted)">Style reference (optional)</span>
-                <textarea id="geminiStyleRef" placeholder="Paste an example script whose language/tone/humor Gemini should imitate…" style="width:100%;height:110px"></textarea>
+                <textarea id="geminiStyleRef" placeholder="Paste an example script whose language/tone/humor should be imitated…" style="width:100%;height:110px"></textarea>
               </label>
             </div>
           </div>
@@ -1608,6 +1641,7 @@ const S = {
   mode: 'frame',           // 'frame' | 'blur'
   blurStyle: 'm',          // style for NEW blur regions: 'm' mosaic | 'g' gaussian
   watchedJobId: null,      // render job this chapter session should announce completion for
+  watchedScriptJobId: null, // Claude script job whose narration should be loaded when it finishes
 };
 
 const $ = id => document.getElementById(id);
@@ -1918,6 +1952,89 @@ function handleGeminiScriptEvent(ev) {
 function finishGeminiScript() {
   if (ggES) { ggES.close(); ggES = null; }
   btnBusy($('genScriptBtn'), false);
+}
+
+// ---------------------------------------------------------------------------
+// Claude Code script engine (see claude_engine.py): a "script" job on the same
+// polled queue as renders. When it finishes, the chapter's editor state is
+// reloaded - the server pre-fills every narration block boxed to its panels.
+// ---------------------------------------------------------------------------
+const currentScriptEngine = () => (CURRENT_PROJECT && CURRENT_PROJECT.settings.script_engine) || 'gemini';
+
+function paintScriptEngine(engine) {
+  engine = engine || $('scriptEngine').value;
+  const claude = engine === 'claude';
+  $('geminiKeyBlock').hidden = claude;
+  $('claudeBlock').hidden = !claude;
+  document.querySelectorAll('.geminiOnly').forEach(el => { el.hidden = claude; });
+  $('genScriptBtn').querySelector('span').textContent = claude ? 'Generate script with Claude' : 'Generate script with Gemini';
+  if (claude) loadClaudeStatus();
+}
+
+async function loadClaudeStatus() {
+  try {
+    const d = await (await fetch('/api/claude/status')).json();
+    $('claudeStatus').textContent = d.message;
+    $('claudeStatus').style.color = d.ready ? '' : 'var(--warn)';
+    if (SCREEN === 'editor' && !d.ready) $('genScriptStatus').textContent = d.message;
+  } catch (_) { $('claudeStatus').textContent = ''; }
+}
+
+function startScript() {
+  return currentScriptEngine() === 'claude' ? startClaudeScript() : startGeminiScript();
+}
+
+async function startClaudeScript() {
+  if (!S.chapter_id) { setStatus('Load/Export a chapter first.', true); return; }
+  $('genScriptResult').innerHTML = '';
+  try {
+    const res = await fetch('/api/script/claude', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(scopeBody({ chapter: S.chapter_id })) });
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.error || 'failed to start');
+    S.watchedScriptJobId = d.job_id;
+    pollJobs();
+  } catch (e) {
+    $('genScriptStatus').textContent = e.message;
+    setStatus(e.message, true);
+  }
+}
+
+function scriptJobText(j) {
+  if (j.status === 'queued') return 'Queued…';
+  const pct = Math.round((j.progress || 0) * 100);
+  return j.resume_at ? j.message : `${j.message} (${pct}%)`;
+}
+
+function syncScriptJobUI() {
+  if (SCREEN !== 'editor' || !S.chapter_id) return;
+  const job = jobsForChapter(S.chapter_id).find(j => j.what === 'script');
+  const active = !!job && (job.status === 'queued' || job.status === 'running');
+  btnBusy($('genScriptBtn'), active);
+  if (active) {
+    S.watchedScriptJobId = job.id;
+    $('genScriptStatus').innerHTML = escHtml(scriptJobText(job)) +
+      ` <button type="button" class="small ghost" onclick="cancelScriptJob('${job.id}')">Stop</button>`;
+    return;
+  }
+  if (!job || S.watchedScriptJobId !== job.id) return;
+  S.watchedScriptJobId = null;
+  if (job.status === 'done') {
+    $('genScriptStatus').textContent = 'Narration ready - fix any wrong boxes, then export.';
+    showToast('Claude narration ready.', null, null, 'ok');
+    loadEditorState(false, false, true);
+  } else if (job.status === 'failed') {
+    $('genScriptStatus').innerHTML = escHtml(job.message) +
+      ' <button type="button" class="small ghost" onclick="startClaudeScript()">Retry</button>';
+    setStatus(job.message, true);
+  } else {
+    $('genScriptStatus').textContent = job.message;
+  }
+}
+
+async function cancelScriptJob(jobId) {
+  await fetch(`/api/jobs/${encodeURIComponent(jobId)}/cancel`, { method: 'POST' });
+  pollJobs();
 }
 
 function showGeminiPartsResult(dir, parts) {
@@ -2566,6 +2683,7 @@ async function pollJobs() {
     JOBS = (await res.json()).jobs || [];
     renderJobWidget();
     syncEditorJobUI();
+    syncScriptJobUI();
     syncMergedJobs();
   } catch (_) { /* transient - the next tick retries; never throws into the caller */ }
 }
@@ -2621,7 +2739,7 @@ async function startGenerate(what) {
 }
 
 async function cancelGenerate() {
-  const active = jobsForChapter(S.chapter_id).find(j => j.status === 'queued' || j.status === 'running');
+  const active = jobsForChapter(S.chapter_id).find(j => j.what !== 'script' && (j.status === 'queued' || j.status === 'running'));
   const jobId = S.watchedJobId || (active && active.id);
   if (!jobId) return;
   try {
@@ -2663,7 +2781,7 @@ function clearGenResult() {
 //     make sure the UI is idle, and quietly show the last result if there is one.
 function syncEditorJobUI() {
   if (SCREEN !== 'editor' || !S.chapter_id) return;
-  const mine = jobsForChapter(S.chapter_id);
+  const mine = jobsForChapter(S.chapter_id).filter(j => j.what !== 'script');
   const active = mine.find(j => j.status === 'queued' || j.status === 'running');
 
   if (active) {
@@ -2750,6 +2868,7 @@ function escHtml(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt
 // ---------------------------------------------------------------------------
 function jobLabel(j) {
   if (j.what === 'brand') return `Final render - ${j.target}`;
+  if (j.what === 'script') return `Claude script - ${j.chapter_id}`;
   const w = { both: 'Audio + video', voice: 'Voice', video: 'Video' }[j.what] || 'Render';
   return `${w} - ${j.chapter_id}`;
 }
@@ -2760,7 +2879,7 @@ function renderJobWidget() {
   widget.classList.add('on');
   const running = active.filter(j => j.status === 'running');
   const queued = active.filter(j => j.status === 'queued');
-  let html = running.map(j => j.downloading_model ? `
+  let html = running.map(j => j.downloading_model || j.resume_at ? `
     <div class="jwjob running">
       <div class="jwrow"><span class="jwname">${escHtml(jobLabel(j))}</span></div>
       <div class="jwrow"><span class="jwname" style="font-weight:400">${escHtml(j.message || 'Downloading voice model…')}</span></div>
@@ -2963,13 +3082,13 @@ function applyChapterSourceStatus(d) {
 }
 
 // `optional`: a chapter with nothing saved yet is expected (just opened), not an error.
-async function loadEditorState(recovery, optional) {
+async function loadEditorState(recovery, optional, narration) {
   const chap = ($('chapId').value.trim() || S.chapter_id || '');
   if (!chap) { setStatus('Enter a chapter id to load its saved state.', true); return; }
   showOverlay(recovery ? 'Restoring recovery' : 'Loading editor state');
   setGlobalProg(null, recovery ? 'Restoring recovery' : 'Loading editor state');
   try {
-    const res = await fetch(`/editor_state/load?chapter=${encodeURIComponent(chap)}${recovery ? '&recovery=1' : ''}${scopeQS()}`);
+    const res = await fetch(`/editor_state/load?chapter=${encodeURIComponent(chap)}${recovery ? '&recovery=1' : ''}${narration ? '&narration=1' : ''}${scopeQS()}`);
     if (res.status === 404 && optional) return;
     const d = await res.json();
     if (!res.ok) throw new Error(d.error || 'load failed');
@@ -4171,6 +4290,12 @@ function fillSettingsForm() {
   $('geminiNarrationType').value = gm.narration_type || 'first_person';
   $('geminiModel').value = gm.model || 'gemini-3.1-pro-preview';
   $('geminiStyleRef').value = gm.style_reference || '';
+  const cl = s.claude || {};
+  $('scriptEngine').value = s.script_engine || 'gemini';
+  $('claudeBrief').value = cl.series_brief || '';
+  $('claudeComprehensionModel').value = cl.comprehension_model || 'opus';
+  $('claudeNarrationModel').value = cl.narration_model || 'sonnet';
+  paintScriptEngine();
 
   updateSliderLabels();
   refreshWatermarkPreview();
@@ -4247,6 +4372,12 @@ function currentSettingsFromForm() {
       narration_type: $('geminiNarrationType').value,
       model: $('geminiModel').value,
       style_reference: $('geminiStyleRef').value,
+    },
+    script_engine: $('scriptEngine').value,
+    claude: {
+      series_brief: $('claudeBrief').value,
+      comprehension_model: $('claudeComprehensionModel').value,
+      narration_model: $('claudeNarrationModel').value,
     },
   };
 }
@@ -4440,6 +4571,8 @@ async function openChapterEditor(slug, chNo, opts) {
   $('chapId').value = S.chapter_id;
   showScreen('editor');
   pollJobs();   // don't wait for the next 1.5s tick - this chapter may already have a job
+  if (!CURRENT_PROJECT || CURRENT_PROJECT.slug !== slug) await loadCurrentProject(slug);
+  paintScriptEngine(currentScriptEngine());
 
   if (opts.autoDownload) {
     $('dlUrl').value = opts.url || '';
@@ -4650,6 +4783,10 @@ $('geminiTone').onchange = saveSettingsDebounced;
 $('geminiNarrationType').onchange = saveSettingsDebounced;
 $('geminiModel').onchange = saveSettingsDebounced;
 $('geminiStyleRef').oninput = saveSettingsDebounced;
+$('scriptEngine').onchange = () => { paintScriptEngine(); saveSettingsDebounced(); };
+$('claudeBrief').oninput = saveSettingsDebounced;
+$('claudeComprehensionModel').onchange = saveSettingsDebounced;
+$('claudeNarrationModel').onchange = saveSettingsDebounced;
 $('geminiKeySaveBtn').onclick = saveGeminiKey;
 $('geminiKeyClearBtn').onclick = clearGeminiKey;
 $('geminiKeyLinkBtn').onclick = () => window.open('https://aistudio.google.com/apikey', '_blank');
@@ -4665,7 +4802,7 @@ $('bgBrowseBtn').onclick = () => $('bgFile').click();
 $('dlBtn').onclick = doDownload;
 $('loadPdfBtn').onclick = loadPdf;
 $('loadScriptBtn').onclick = loadScript;
-$('genScriptBtn').onclick = startGeminiScript;
+$('genScriptBtn').onclick = startScript;
 $('addLineBtn').onclick = addLine;
 $('exportBtn').onclick = doExport;
 $('genAVBtn').onclick = () => startGenerate('both');

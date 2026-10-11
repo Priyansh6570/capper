@@ -67,6 +67,8 @@ import gpu  # noqa: E402
 
 import projects  # noqa: E402 - the project system (this package: tools/framer/projects.py)
 import branding  # noqa: E402 - intro/outro for merged videos
+import claude_engine  # noqa: E402 - script engine on the local Claude Code CLI
+import panel_split  # noqa: E402 - strip -> reading-order panels
 import library  # noqa: E402 - per-project media library (sizes, deletion)
 import sites  # noqa: E402 - per-site adapters (tools/framer/sites/): metadata + chapter download
 from stages import s7_assemble as s7  # noqa: E402 - reused by the settings live-preview routes
@@ -635,15 +637,25 @@ def _gemini_client():
     return genai.Client(api_key=key)
 
 
-def _gemini_system_prompt(tone: str, narration_type: str, style_reference: str,
-                           is_first_part: bool, is_last_part: bool) -> str:
+def _narration_voice(tone: str, narration_type: str) -> str:
     tone_desc = GEMINI_TONES.get(tone, GEMINI_TONES["serious"])
     narr_desc = GEMINI_NARRATION_TYPES.get(narration_type, GEMINI_NARRATION_TYPES["first_person"])
+    return f"Narrate {narr_desc}, in {tone_desc}."
+
+
+def _style_reference_directive(style_reference: str) -> str:
+    return ("Match the LANGUAGE, TONE, and HUMOR of this example script as closely "
+            "as you can - imitate its voice and style, not its plot or content:\n\n"
+            + style_reference.strip())
+
+
+def _gemini_system_prompt(tone: str, narration_type: str, style_reference: str,
+                           is_first_part: bool, is_last_part: bool) -> str:
     parts = [
         "You are writing a recap narration script for one part of a manhwa/webtoon "
         "chapter, from the attached PDF (its pages are the comic's panels, in "
         "reading order, including all dialogue and sound effects as they appear).",
-        f"Narrate {narr_desc}, in {tone_desc}.",
+        _narration_voice(tone, narration_type),
         "Extract EVERY piece of dialogue and every story beat faithfully - miss "
         "nothing important - but tell it as flowing narration prose, not a "
         "transcript: weave dialogue and description together naturally, the way "
@@ -653,11 +665,7 @@ def _gemini_system_prompt(tone: str, narration_type: str, style_reference: str,
         "images or the task.",
     ]
     if style_reference.strip():
-        parts.append(
-            "Match the LANGUAGE, TONE, and HUMOR of this example script as closely "
-            "as you can - imitate its voice and style, not its plot or content:\n\n"
-            + style_reference.strip()
-        )
+        parts.append(_style_reference_directive(style_reference))
     if not is_first_part:
         parts.append(
             "This PDF starts by repeating the last few pages of the previous part "
@@ -1390,7 +1398,7 @@ def export():
         work_dir=str(chapter_work_dir(chapter_id)),
         doc_type="webtoon",
         stage="clean",
-        pages=[Page(index=1, image=str(strip_path))],
+        pages=[Page(index=1, image=str(strip_path), panels=_manifest_panels(chapter_id))],
         beats=beats,
     )
     m.save()
@@ -1438,7 +1446,9 @@ _JOBS_COND = threading.Condition(_JOBS_LOCK)
 # ffmpeg) used only until real history exists; capped so old outliers age out.
 _RENDER_HISTORY: dict[str, list[float]] = {"both": [9.0], "voice": [7.0], "video": [2.5]}
 _RENDER_HISTORY_CAP = 20
-BRAND_ESTIMATE_S = 15.0       # clips are cached after the first branded render; the join is a copy
+# Jobs whose length isn't per-beat: a branded join is a copy once the clips are
+# cached; a script is two Claude calls over a whole chapter (a rough guess).
+FIXED_ESTIMATE_S = {"brand": 15.0, "script": 600.0}
 
 
 class Job:
@@ -1449,11 +1459,12 @@ class Job:
                  total_beats: int, target: str | None = None):
         self.id = uuid.uuid4().hex[:12]
         self.chapter_id = chapter_id
-        self.what = what                  # both|voice|video|brand
+        self.what = what                  # both|voice|video|brand|script
         self.slug = slug
         self.ch_no = ch_no
         self.target = target              # brand: the merged video being branded
-        self.fraction = 0.0               # brand: progress reported by its ffmpeg steps
+        self.fraction = 0.0               # brand/script: progress reported by the job itself
+        self.resume_at: str | None = None  # script: set while paused on Claude's usage limit
         self.status = "queued"            # queued|running|done|failed|cancelled
         self.total_beats = total_beats
         self.audio = 0
@@ -1485,7 +1496,7 @@ class Job:
         number: s6 prints one "[NNN] …" per voiced line, s7 one "line N: …"
         per rendered line. Audio is the slow part, weighted heavier for a
         combined run."""
-        if self.what == "brand":
+        if self.what in FIXED_ESTIMATE_S:
             return self.fraction
         if self.total_beats <= 0 or (self.audio == 0 and self.video == 0):
             return 0.0
@@ -1498,8 +1509,8 @@ class Job:
         return min(1.0, 0.05 + 0.70 * a + 0.22 * v)
 
     def estimated_total_s(self) -> float:
-        if self.what == "brand":
-            return BRAND_ESTIMATE_S
+        if self.what in FIXED_ESTIMATE_S:
+            return FIXED_ESTIMATE_S[self.what]
         return max(1.0, self.total_beats) * _rate_for(self.what)
 
     def eta_s(self, queued_ahead_s: float = 0.0) -> float | None:
@@ -1521,6 +1532,7 @@ class Job:
             "progress": round(self.progress_fraction(), 4) if self.status == "running" else
                         (1.0 if self.status == "done" else 0.0),
             "message": self.message, "video_url": self.video_url, "ok": self.ok,
+            "resume_at": self.resume_at,
             "downloading_model": self.downloading_model,
             "log": list(self.log), "created_at": self.created_at,
             "started_at": self.started_at, "finished_at": self.finished_at,
@@ -1589,7 +1601,7 @@ def _run_job(job: "Job") -> None:
     job.status = "running"
     job.started_at = _now_iso()
     try:
-        (_run_brand_job if job.what == "brand" else _run_pipeline_job)(job)
+        {"brand": _run_brand_job, "script": _run_script_job}.get(job.what, _run_pipeline_job)(job)
     finally:
         job.finished_at = _now_iso()
         _record_history(job)
@@ -1758,8 +1770,11 @@ def api_generate():
     slug, ch_no = _scope_params()
 
     work_dir = projects.chapter_work_dir(slug, ch_no) if slug and ch_no else chapter_work_dir(chapter_id)
-    if not (work_dir / "manifest.json").exists():
-        return jsonify(error=f"No manifest for {chapter_id}. Export from the Framer first."), 400
+    with config.chapter_scope(work_dir, projects.chapter_output_dir(slug, ch_no)
+                               if slug and ch_no else chapter_output_dir(chapter_id)):
+        total = _beat_count(chapter_id)
+    if not total:
+        return jsonify(error=f"No narration lines for {chapter_id}. Export from the Framer first."), 400
     blockers = library.render_blockers(work_dir, what)
     if blockers:
         return jsonify(error=" ".join(blockers)), 409
@@ -1768,10 +1783,6 @@ def api_generate():
         if chapter_id in _ACTIVE_CHAPTERS:
             return jsonify(error=f"A generate job is already queued or running for "
                                   f"{chapter_id}."), 409
-
-    with config.chapter_scope(work_dir, projects.chapter_output_dir(slug, ch_no)
-                               if slug and ch_no else chapter_output_dir(chapter_id)):
-        total = _beat_count(chapter_id)
 
     job = Job(chapter_id, what, slug, ch_no, total)
     label = {"both": "audio + video", "voice": "audio (voice only)", "video": "video"}[what]
@@ -1788,6 +1799,147 @@ def _beat_count(chapter_id: str) -> int:
         return len(Manifest.load(chapter_work_dir(chapter_id)).beats)
     except Exception:  # noqa: BLE001 - missing/old manifest -> unknown total
         return 0
+
+
+# --------------------------------------------------------------------------- #
+# Claude script engine - the local `claude` CLI instead of the Gemini API (see
+# claude_engine.py). A "script" job splits the chapter strip into panels, runs
+# the two passes, and leaves the narration blocks in work/<ch>/claude/state.json;
+# the framer then opens the chapter with every block boxed to its panels (see
+# _state_from_narration). TTS and render consume the framer's export unchanged.
+# --------------------------------------------------------------------------- #
+def _claude_state_path(chapter_id: str) -> Path:
+    d = chapter_work_dir(chapter_id) / "claude"
+    d.mkdir(parents=True, exist_ok=True)
+    return d / "state.json"
+
+
+def _manifest_panels(chapter_id: str) -> list[Panel]:
+    work = chapter_work_dir(chapter_id)
+    if not (work / "manifest.json").exists():
+        return []
+    pages = Manifest.load(work).pages
+    return pages[0].panels if pages else []
+
+
+def _ensure_panels(chapter_id: str) -> list[Panel]:
+    """The chapter's panels, split from its strip (stitching the downloaded PDF
+    first if needed) and recorded in the manifest the first time."""
+    panels = _manifest_panels(chapter_id)
+    if panels and all(Path(p.crop).is_file() for p in panels):
+        return panels
+    work = chapter_work_dir(chapter_id)
+    strip_path = _strip_path(chapter_id)
+    pdf = _downloaded_pdf(chapter_id)
+    if not strip_path.exists():
+        if pdf is None:
+            raise RuntimeError("Download the chapter first.")
+        _make_preview(_stitch_pdf(pdf, chapter_id), chapter_id)
+    panels = panel_split.split_panels(strip_path, work / "panels")
+    m = (Manifest.load(work) if (work / "manifest.json").exists() else
+         Manifest(chapter_id=chapter_id, source_pdf=str(pdf or ""), work_dir=str(work), doc_type="webtoon"))
+    m.pages = [Page(index=1, image=str(strip_path), panels=panels)]
+    m.save()
+    return panels
+
+
+def _run_script_job(job: "Job") -> None:
+    slug, ch_no, chapter_id = job.slug, job.ch_no, job.chapter_id
+
+    def on_step(label: str, fraction: float) -> None:
+        job.message, job.fraction = label + "…", fraction
+        job.append_log(job.message)
+
+    def on_limit(resume_at: datetime) -> None:
+        job.resume_at = resume_at.isoformat(timespec="seconds")
+        job.message = f"Usage limit reached - resumes at {resume_at:%H:%M}"
+        job.append_log(job.message)
+        while datetime.now().astimezone() < resume_at:
+            if job.cancel_requested:
+                raise RuntimeError("Stopped by user.")
+            time.sleep(1)
+        job.resume_at = None
+
+    def on_proc(proc: subprocess.Popen) -> None:
+        job.proc = proc
+
+    try:
+        with config.chapter_scope(projects.chapter_work_dir(slug, ch_no), projects.chapter_output_dir(slug, ch_no)):
+            settings = projects.load(slug)["settings"]
+            on_step("Splitting the strip into panels", 0.02)
+            panels = _ensure_panels(chapter_id)
+            voice = settings["gemini"]
+            style = [_narration_voice(voice["tone"], voice["narration_type"])]
+            if voice["style_reference"].strip():
+                style.append(_style_reference_directive(voice["style_reference"]))
+            blocks = claude_engine.run_chapter(
+                panels_dir=chapter_work_dir(chapter_id) / "panels",
+                state_path=_claude_state_path(chapter_id),
+                memory_path=projects.story_memory_path(slug),
+                ch_no=int(ch_no),
+                brief=settings["claude"]["series_brief"],
+                style="\n\n".join(style),
+                models={"comprehension": settings["claude"]["comprehension_model"],
+                        "narration": settings["claude"]["narration_model"]},
+                panel_ids=[p.id for p in panels],
+                on_step=on_step, on_limit=on_limit, on_proc=on_proc)
+        job.status, job.ok, job.fraction = "done", True, 1.0
+        job.message = f"Narration ready - {len(blocks)} block(s)."
+    except Exception as e:  # noqa: BLE001 - report, don't crash the worker
+        if job.cancel_requested:
+            job.status, job.ok, job.message = "cancelled", False, "Stopped by user."
+        else:
+            job.status, job.ok = "failed", False
+            job.message = f"{type(e).__name__}: {e}"
+            job.append_log(f"ERROR: {job.message}")
+    finally:
+        job.resume_at = None
+
+
+def _state_from_narration(chapter_id: str) -> dict | None:
+    """Editor lines for a chapter's Claude narration: one line per block, boxed
+    to its panels' full-width boxes on the strip."""
+    narration = claude_engine.read_narration(_claude_state_path(chapter_id))
+    if not narration:
+        return None
+    boxes = {p.id: p.bbox for p in _manifest_panels(chapter_id)}
+    return {
+        "chapter_id": chapter_id,
+        "saved_at": narration["saved_at"],
+        "lines": [{
+            "text": block["narration"],
+            "duration_s": 4,
+            "mode": "sequence",
+            "frames": [{"bbox": boxes[i], "flip": False, "blur": []} for i in block["panel_ids"] if i in boxes],
+        } for block in narration["blocks"]],
+    }
+
+
+@app.get("/api/claude/status")
+def api_claude_status():
+    return jsonify(claude_engine.cli_status())
+
+
+@app.post("/api/script/claude")
+def api_script_claude():
+    """Enqueue Claude script generation for a project chapter. Body: JSON
+    {chapter, project, ch_no}. Returns {job_id}; poll /api/jobs for progress."""
+    chapter_id = _sanitize_chapter((request.get_json(silent=True) or {}).get("chapter") or "")
+    slug, ch_no = _scope_params()
+    if not (slug and ch_no and projects.exists(slug)):
+        return jsonify(error="Open a project chapter first."), 400
+    status = claude_engine.cli_status()
+    if not status["ready"]:
+        return jsonify(error=status["message"]), 409
+    if not (_strip_path(chapter_id).exists() or _downloaded_pdf(chapter_id)):
+        return jsonify(error="Download the chapter first."), 400
+    with _JOBS_LOCK:
+        if chapter_id in _ACTIVE_CHAPTERS:
+            return jsonify(error=f"A job is already queued or running for {chapter_id}."), 409
+    job = Job(chapter_id, "script", slug, ch_no, 0)
+    job.append_log(f"Queued Claude script for {chapter_id}…")
+    _enqueue(job)
+    return jsonify(ok=True, job_id=job.id, job=job.public())
 
 
 @app.get("/api/jobs")
@@ -1948,12 +2100,14 @@ def _state_from_mapping(chapter_id: str) -> dict | None:
 
 def _resolve_editor_state(chapter_id: str) -> dict | None:
     """The chapter's editor state, derived from whatever is on disk: the most
-    recently written of editor_state.json / recovery.json that actually holds
-    lines, else the exported mapping.json, else any (empty) save. Never trusts
+    recently written of editor_state.json / recovery.json / the Claude narration
+    pre-fill that actually holds lines, else the exported mapping.json, else any
+    (empty) save. Never trusts
     one file just because it exists - an empty or stale one must not shadow
     real work in another."""
     saved = [s for s in (_read_editor_state(_editor_state_path(chapter_id, r)) for r in (False, True)) if s]
-    populated = sorted((s for s in saved if s.get("lines")),
+    prefilled = _state_from_narration(chapter_id)
+    populated = sorted((s for s in [*saved, prefilled] if s and s.get("lines")),
                        key=lambda s: s.get("saved_at", ""), reverse=True)
     if populated:
         return populated[0]
@@ -1993,13 +2147,15 @@ def save_editor_state():
 def load_editor_state():
     """Restore a saved session: returns {state, preview}.
 
-    Query: chapter, recovery?(0/1). `preview` is the same payload /load_pdf returns
+    Query: chapter, recovery?(0/1), narration?(0/1: the Claude pre-fill, regardless of newer saves). `preview` is the same payload /load_pdf returns
     (rebuilt from the persisted tiles, NO re-stitch) so the strip is shown again;
     it is null if the chapter has no stitched strip on disk.
     """
     chapter_id = _sanitize_chapter(request.args.get("chapter", ""))
     if request.args.get("recovery") in ("1", "true", "yes"):
         state = _read_editor_state(_editor_state_path(chapter_id, True))
+    elif request.args.get("narration") in ("1", "true", "yes"):
+        state = _state_from_narration(chapter_id)
     else:
         state = _resolve_editor_state(chapter_id)
     if state is None:

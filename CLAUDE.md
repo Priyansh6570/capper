@@ -221,6 +221,12 @@ project's whole folder and restores it as a new project, rewriting the absolute
 paths stored in chapter JSON files. Like merge, it needs no change to the
 manifest, orchestrator, or any pipeline stage.
 
+The framer's **Claude script engine** (`claude_engine.py`, `panel_split.py`; setting
+`script_engine`) is an alternative to the Gemini engine: it splits the strip into
+panels, calls the local `claude` CLI in two passes, and pre-fills the framer with
+narration boxed to full panels. It touches no pipeline stage; TTS/render still read
+the framer's export.
+
 ## Conventions
 
 - Make every stage write inspectable files; do not optimize them away into memory.
