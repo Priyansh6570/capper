@@ -33,6 +33,7 @@ from typing import Optional
 
 import claude_cli
 from config import PROJECTS_DIR
+from stages import tts_kokoro
 from atomic_io import atomic_write_text, read_json_with_backup_fallback
 
 # Status rank - forward-only transitions (never downgraded automatically).
@@ -126,7 +127,10 @@ def _atomic_write(path: Path, text: str) -> None:
 def _default_settings() -> dict:
     return {
         "music": {"mode": "default", "file": None},
-        "voice": {"mode": "default", "file": None},
+        # engine: "chatterbox" clones the reference voice (mode/file); "kokoro" has no cloning and
+        # speaks with one of its own voices (stages/tts_kokoro.py).
+        "voice": {"mode": "default", "file": None, "engine": "chatterbox",
+                  "kokoro_voice": tts_kokoro.DEFAULT_VOICE},
         "watermark": {"enabled": False, "type": "text", "text": "", "file": None,
                       "opacity": 0.12, "size": 0.12, "spacing": 1.0, "angle": -30},
         # mode: "blur" (default) | "image" | "video" - a video background is
@@ -369,6 +373,11 @@ def update_settings(slug: str, settings: dict) -> dict:
         wm["size"] = max(0.02, min(0.6, float(wm.get("size", 0.12))))
         wm["spacing"] = max(0.0, min(4.0, float(wm.get("spacing", 1.0))))
         wm["angle"] = max(-90, min(90, float(wm.get("angle", -30))))
+        voice = project["settings"]["voice"]
+        if voice.get("engine") not in ("chatterbox", "kokoro"):
+            voice["engine"] = "chatterbox"
+        if voice.get("kokoro_voice") not in tts_kokoro.VOICES:
+            voice["kokoro_voice"] = tts_kokoro.DEFAULT_VOICE
         music = project["settings"]["music"]
         if music.get("mode") not in ("default", "file", "none"):
             music["mode"] = "default"
@@ -465,7 +474,7 @@ def _resolved_str(slug: str, rel_path: Optional[str]) -> Optional[str]:
 def media_settings_snapshot(slug: str) -> dict:
     """Resolve a project's settings into ABSOLUTE paths for stages 6+7 to
     consume, with defaults folded in (None fields mean "use the built-in
-    default"). `voice` is read by stage 6 (s6_tts) for Chatterbox cloning;
+    default"). `voice` and `tts` are read by stage 6 (s6_tts) for Chatterbox cloning or Kokoro;
     `music`/`watermark`/`background` are read by stage 7 (s7_assemble)."""
     project = load(slug)
     s = project["settings"]
@@ -477,6 +486,7 @@ def media_settings_snapshot(slug: str) -> dict:
         "music": _resolved_str(slug, music.get("file")) if music.get("mode") == "file" else None,
         "music_off": music.get("mode") == "none",
         "voice": _resolved_str(slug, voice.get("file")) if voice.get("mode") == "file" else None,
+        "tts": {"engine": voice["engine"], "kokoro_voice": voice["kokoro_voice"]},
         "watermark": {
             **watermark,
             "file": _resolved_str(slug, watermark.get("file")) if watermark.get("type") == "image" else None,

@@ -249,6 +249,19 @@ if errorlevel 1 (
     call :log "  [OK] moviepy installed (step 4d)."
 )
 
+echo   4e. Installing kokoro ^(the alternative, faster narration voice^)...
+echo       ^(installed with --no-deps so pip cannot swap the CUDA torch build
+echo       for a CPU one; its small dependencies come from requirements.txt^)...
+powershell -NoProfile -Command "& { & '%VENV_PY%' -m pip install --no-deps kokoro==0.7.16 misaki==0.7.4 2>&1 | Tee-Object -FilePath '%LOGFILE%' -Append; exit $LASTEXITCODE }"
+if errorlevel 1 (
+    echo   [WARN] kokoro did not install - the Kokoro narration engine won't be
+    echo          available; Chatterbox is unaffected. See setup_log.txt.
+    call :log "  [WARN] kokoro --no-deps install failed."
+) else (
+    echo   [OK] kokoro installed.
+    call :log "  [OK] kokoro installed (step 4e)."
+)
+
 REM ==========================================================================
 REM Step 5: Hugging Face token (optional) + pre-download the voice model
 REM ==========================================================================

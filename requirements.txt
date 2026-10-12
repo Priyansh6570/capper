@@ -81,3 +81,13 @@ imageio>=2.38
 imageio-ffmpeg>=0.6
 proglog>=0.1
 decorator>=5.3
+
+# --- Kokoro narration engine ---
+# kokoro and misaki themselves are installed in setup.bat with --no-deps (pip's resolver
+# cannot be trusted near torch); these are the dependencies they actually use.
+spacy
+loguru
+addict
+num2words
+espeakng-loader
+phonemizer-fork

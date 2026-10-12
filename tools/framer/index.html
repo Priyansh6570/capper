@@ -1269,8 +1269,21 @@
           </div>
 
           <div class="setcard" id="s-voice">
-            <div class="setlabel"><b>Narration voice</b><span>The voice cloned for narration. Samples are converted to 24kHz mono automatically.</span></div>
+            <div class="setlabel"><b>Narration voice</b><span>Chatterbox clones a voice sample (samples are converted to 24kHz mono automatically). Kokoro is faster but cannot clone: pick one of its voices.</span></div>
             <div class="setbody">
+              <div class="segctl">
+                <label class="segopt"><input type="radio" name="voiceEngine" value="chatterbox" /><span>Chatterbox (cloned voice)</span></label>
+                <label class="segopt"><input type="radio" name="voiceEngine" value="kokoro" /><span>Kokoro (fixed voices)</span></label>
+              </div>
+              <div id="kokoroBlock" hidden>
+                <div class="filerow">
+                  <select id="kokoroVoice"></select>
+                  <button type="button" id="kokoroPreviewBtn" class="small ghost" data-icon="play" data-ic-size="14"><span>Preview</span></button>
+                </div>
+                <audio id="kokoroSample" controls hidden></audio>
+                <div class="hint" id="kokoroHint"></div>
+              </div>
+              <div id="chatterboxBlock">
               <div class="optionlist">
                 <label class="optbtn"><input type="radio" name="voiceMode" value="default" /><span class="otexts"><b>Default voice</b><span>assets/voice_ref.wav</span></span></label>
                 <label class="optbtn"><input type="radio" name="voiceMode" value="file" /><span class="otexts"><b>Custom voice sample</b><span>10-30s of clean speech works best</span></span></label>
@@ -1282,6 +1295,7 @@
               </div>
               <audio id="voicePreview" controls hidden></audio>
               <div class="hint" id="voiceActiveHint"></div>
+              </div>
               <div class="setnote"><span class="tag">NOTE</span><span>Changing the voice doesn't touch your frame selection. Use <b>Re-render voice</b> in the chapter editor to regenerate narration only.</span></div>
             </div>
           </div>
@@ -4617,6 +4631,9 @@ function fillSettingsForm() {
   $('musicName').textContent = s.music.file ? s.music.file.split('/').pop() : '';
 
   document.querySelector(`input[name=voiceMode][value="${s.voice.mode}"]`).checked = true;
+  document.querySelector(`input[name=voiceEngine][value="${s.voice.engine || 'chatterbox'}"]`).checked = true;
+  $('kokoroVoice').value = s.voice.kokoro_voice || $('kokoroVoice').value;
+  paintVoiceEngine();
   $('voiceName').textContent = s.voice.file ? s.voice.file.split('/').pop() : '';
   refreshVoiceActive();
 
@@ -4684,6 +4701,33 @@ function updateSliderLabels() {
   $('animDurationLbl').textContent = (+$('animDuration').value / 100).toFixed(2) + 's';
 }
 
+function paintVoiceEngine() {
+  const kokoro = document.querySelector('input[name=voiceEngine]:checked').value === 'kokoro';
+  $('kokoroBlock').hidden = !kokoro;
+  $('chatterboxBlock').hidden = kokoro;
+}
+
+async function loadKokoroVoices() {
+  const { voices } = await (await fetch('/api/tts/kokoro/voices')).json();
+  $('kokoroVoice').innerHTML = Object.entries(voices).map(([id, label]) => `<option value="${id}">${escHtml(label)}</option>`).join('');
+}
+
+async function previewKokoro() {
+  const btn = $('kokoroPreviewBtn');
+  btnBusy(btn, true);
+  $('kokoroHint').textContent = 'Rendering a sample (the first one loads the model, which can take a minute)…';
+  try {
+    const res = await fetch(`/api/tts/kokoro/preview?voice=${encodeURIComponent($('kokoroVoice').value)}`);
+    if (!res.ok) throw new Error((await res.json()).error || 'Preview failed.');
+    const audio = $('kokoroSample');
+    audio.src = URL.createObjectURL(await res.blob());
+    audio.hidden = false;
+    audio.play();
+    $('kokoroHint').textContent = '';
+  } catch (e) { $('kokoroHint').textContent = e.message; }
+  finally { btnBusy(btn, false); }
+}
+
 function refreshVoiceActive() {
   if (!CURRENT_PROJECT) return;
   // mode reads the LIVE radio (updates instantly on click, before the
@@ -4707,7 +4751,9 @@ function refreshVoiceActive() {
 function currentSettingsFromForm() {
   return {
     music: { mode: document.querySelector('input[name=musicMode]:checked').value },
-    voice: { mode: document.querySelector('input[name=voiceMode]:checked').value },
+    voice: { mode: document.querySelector('input[name=voiceMode]:checked').value,
+             engine: document.querySelector('input[name=voiceEngine]:checked').value,
+             kokoro_voice: $('kokoroVoice').value },
     watermark: {
       enabled: $('wmEnabled').checked,
       type: document.querySelector('input[name=wmType]:checked').value,
@@ -5142,6 +5188,10 @@ $('stAllProjectsBtn').onclick = () => navTo({});
 $('stCrumbProjects').onclick = () => navTo({});
 $('stCrumbProject').onclick = () => navTo({ project: CURRENT_PROJECT.slug });
 $('stChaptersNav').onclick = () => navTo({ project: CURRENT_PROJECT.slug });
+document.querySelectorAll('input[name=voiceEngine]').forEach(el => el.onchange = () => { paintVoiceEngine(); saveSettingsDebounced(); });
+$('kokoroVoice').onchange = saveSettingsDebounced;
+$('kokoroPreviewBtn').onclick = previewKokoro;
+loadKokoroVoices();
 ['musicMode', 'voiceMode', 'wmType', 'bgMode', 'animStyle'].forEach(name => {
   document.querySelectorAll(`input[name=${name}]`).forEach(el => el.onchange = saveSettingsDebounced);
 });

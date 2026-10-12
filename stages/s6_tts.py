@@ -40,6 +40,10 @@ Output: one wav per panel in `work/<chapter>/audio/<panel_id>.wav`, with
 `panel.audio` + `panel.duration_s` (the REAL clip length, which drives slide
 timing in stage 7). Empty `script_line` -> `audio=None`, `duration_s=0`.
 
+Kokoro: a project can choose Kokoro instead (Project settings -> Narration voice). The
+chapter's media settings then carry `tts: {engine: "kokoro", kokoro_voice}` and the whole chapter
+is voiced by `tts_kokoro.run`; everything above applies to the Chatterbox engine only.
+
 Draft mode: set env `MANHWA_TTS_DRAFT=1` to use the fast edge-tts path instead
 (no GPU, seconds per chapter) when you just want timings to iterate on stage 7.
 """
@@ -54,6 +58,7 @@ from pathlib import Path
 from config import ROOT, chapter_work_dir, TTS_VOICE
 from gpu import nvidia_gpu, record_usage
 from manifest import Manifest
+from stages import tts_kokoro
 
 # Reference clip for voice cloning. If absent, the default voice is used.
 VOICE_REF = ROOT / "assets" / "voice_ref.wav"
@@ -497,6 +502,11 @@ def run(m: Manifest) -> Manifest:
     if os.environ.get("MANHWA_TTS_DRAFT", "").strip() not in ("", "0", "false", "False"):
         return _run_draft(m, audio_dir)
 
+    settings = _load_media_settings(m.chapter_id)
+    tts = settings.get("tts") or {}
+    if tts.get("engine") == "kokoro":
+        return tts_kokoro.run(m, audio_dir, tts.get("kokoro_voice") or tts_kokoro.DEFAULT_VOICE)
+
     if _emotion_mode():
         print("  [s6] MANHWA_TTS_EMOTION=1: FULL Chatterbox (Turbo disabled) - "
               "per-emotion exaggeration/cfg_weight ARE applied")
@@ -504,7 +514,6 @@ def run(m: Manifest) -> Manifest:
         print("  [s6] fast default: Chatterbox-Turbo (flat affect; emotion knobs "
               "ignored). Set MANHWA_TTS_EMOTION=1 for the emotional full model")
 
-    settings = _load_media_settings(m.chapter_id)
     project_voice = settings.get("voice")
     if project_voice and Path(project_voice).exists():
         ref = project_voice

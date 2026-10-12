@@ -77,6 +77,7 @@ import panel_split  # noqa: E402 - strip -> reading-order panels
 import library  # noqa: E402 - per-project media library (sizes, deletion)
 import sites  # noqa: E402 - per-site adapters (tools/framer/sites/): metadata + chapter download
 from stages import s7_assemble as s7  # noqa: E402 - reused by the settings live-preview routes
+from stages import tts_kokoro  # noqa: E402 - the Kokoro voices and their preview
 
 # Belt-and-suspenders: ensure the bomb guard stays off even if import order shifts.
 Image.MAX_IMAGE_PIXELS = None
@@ -2024,23 +2025,26 @@ def _run_script_job(job: "Job") -> None:
 
 
 def _state_from_narration(chapter_id: str) -> dict | None:
-    """Editor lines for a chapter's Claude narration: one line per block, boxed
-    to its panels' full-width boxes on the strip."""
+    """Editor lines for a chapter's Claude narration: one line per block, with the
+    block's frames cropped, blurred and flopped as the engine decided."""
     narration = claude_engine.read_narration(_claude_state_path(chapter_id))
     if not narration:
         return None
     boxes = {p.id: p.bbox for p in _manifest_panels(chapter_id)}
+
+    def frames_of(block: dict) -> list[dict]:
+        if "frames" in block:
+            return [{"bbox": f["bbox"], "flip": f["flip"], "blur": f["blur"]} for f in block["frames"]]
+        return [{"bbox": boxes[i], "flip": False,
+                 "blur": [[*box, DEFAULT_BLUR_STYLE] for box in block["blur"].get(i, [])]}
+                for i in block["panel_ids"] if i in boxes]
+
     return {
         "chapter_id": chapter_id,
         "saved_at": narration["saved_at"],
-        "lines": [{
-            "text": block["narration"],
-            "duration_s": block["duration_s"],
-            "mode": "sequence",
-            "frames": [{"bbox": boxes[i], "flip": False,
-                        "blur": [[*box, DEFAULT_BLUR_STYLE] for box in block["blur"].get(i, [])]}
-                       for i in block["panel_ids"] if i in boxes],
-        } for block in narration["blocks"]],
+        "lines": [{"text": block["narration"], "duration_s": block["duration_s"],
+                   "mode": block.get("mode", "sequence"), "frames": frames_of(block)}
+                  for block in narration["blocks"]],
     }
 
 
@@ -2833,6 +2837,23 @@ def api_set_chapter_status(slug, n):
     return jsonify(ok=True, chapter=ch)
 
 
+@app.get("/api/tts/kokoro/voices")
+def api_kokoro_voices():
+    return jsonify(voices=tts_kokoro.VOICES)
+
+
+@app.get("/api/tts/kokoro/preview")
+def api_kokoro_preview():
+    """A short sample of the Kokoro voice in `?voice=`, as a wav."""
+    voice = request.args.get("voice", "")
+    if voice not in tts_kokoro.VOICES:
+        return jsonify(error="Unknown Kokoro voice."), 400
+    try:
+        return Response(tts_kokoro.sample_wav(voice), mimetype="audio/wav")
+    except ImportError:
+        return jsonify(error="Kokoro is not installed. Run setup.bat again, or: pip install kokoro misaki[en]"), 409
+
+
 @app.get("/api/projects/<slug>/settings")
 def api_get_settings(slug):
     if not projects.exists(slug):
@@ -2983,7 +3004,7 @@ def api_preview_watermark(slug):
     # wm goes to the BACKGROUND layer only (see _compose_still), matching the
     # real render - so this preview accurately shows the watermark hidden
     # under the sample frame and visible only around/behind it.
-    still = s7._compose_still(str(sample), wm=wm)
+    still = s7._compose_still([str(sample)], wm=wm)
     return _png_response(still.resize((960, 540), Image.LANCZOS))
 
 
@@ -2995,7 +3016,7 @@ def api_preview_background(slug):
     bg = s7._load_background({"background": {"file": str(bg_asset) if bg_asset else None,
                                               "dim": dim}})
     sample = _placeholder_frame(slug)
-    still = s7._compose_still(str(sample), bg)
+    still = s7._compose_still([str(sample)], bg)
     return _png_response(still.resize((960, 540), Image.LANCZOS))
 
 

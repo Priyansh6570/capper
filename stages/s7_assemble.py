@@ -44,8 +44,8 @@ the fallback so the orchestrator can import this module without moviepy installe
 """
 from __future__ import annotations
 
+import itertools
 import json
-import math
 import os
 import shutil
 import subprocess
@@ -71,11 +71,13 @@ CROSSFADE = 0.35       # DEFAULT crossfade length - overridden per-project by th
                        # "animation" setting (see _resolve_animation()); this is
                        # also the value an old project.json with no such setting
                        # falls back to, matching what was always hardcoded here.
-CROP_FRAC_H = 0.85     # frame fit to this fraction of HEIGHT ...
-CROP_FRAC_W = 0.92     # ... and capped at this fraction of WIDTH (wide panels)
-KEN_BURNS_MAX_ZOOM = 1.15  # peak scale for the alternating Ken Burns effect -
+FILL = 0.96            # frames (or a together-group) fill up to this share of the canvas
+KEN_BURNS_MAX_ZOOM = 1.10  # peak scale for the alternating Ken Burns effect -
                            # always >= 1.0 so the zoompan crop never samples
                            # outside the still's own 1920x1080 canvas
+KEN_BURNS_FILL = 0.88  # with Ken Burns on, frames fill less: at peak zoom the visible window is
+                       # 1/KEN_BURNS_MAX_ZOOM (0.909) of the canvas, and 0.88 stays inside it
+GROUP_GAP = 0.02       # gap between frames shown together, as a share of the canvas width
 BG_BLUR = 40           # background gaussian blur radius (px)
 BG_BRIGHTNESS = 0.40   # darken background to ~40% brightness
 MUSIC_VOL = 0.06       # static music bed volume (low; ducked further under speech)
@@ -365,7 +367,7 @@ def _load_background(settings: dict):
 
 def _blurred_self_cover(img):
     """Today's default background: a blurred + darkened cover-crop of the frame
-    itself. Extracted unchanged from the old _compose_still/_compose_grid_still."""
+    itself. Extracted unchanged from the old _compose_still."""
     from PIL import ImageEnhance, ImageFilter
     bg = _cover_crop(img, W, H).filter(ImageFilter.GaussianBlur(BG_BLUR))
     return ImageEnhance.Brightness(bg).enhance(BG_BRIGHTNESS)
@@ -407,69 +409,64 @@ def _paste_background(base, bg, wm=None, transparent: bool = False):
     return base
 
 
-def _compose_still(frame_path: str | None, bg=None, wm=None, transparent: bool = False):
-    """Build the full 1920x1080 still for a beat: the frame fit to ~85%H/~92%W,
-    centered over `bg` (a project's custom background) if given, else a blurred
-    + darkened cover of itself as before - UNLESS `transparent` is set (a video
-    background - see _paste_background), in which case the background area is
-    left transparent instead (an RGBA image is returned, not RGB). `wm` (a
-    watermark RGBA layer), if given, is composited onto the background/
-    transparent area ONLY, before the frame crop goes on top - see
-    _paste_background."""
+def _row_splits(n: int):
+    """Every way to cut n frames, in order, into consecutive rows."""
+    for cuts in itertools.product((False, True), repeat=n - 1):
+        rows, start = [], 0
+        for i, cut in enumerate(cuts, start=1):
+            if cut:
+                rows.append(range(start, i))
+                start = i
+        yield rows + [range(start, n)]
+
+
+def _arrange(aspects: list[float], fit_w: float, fit_h: float, gap: float) -> list[tuple[float, float, float, float]]:
+    """(x, y, w, h) of each frame, given its width/height ratio, packed into a fit_w x fit_h
+    box as rows of one common height. The split into rows with the tallest rows (hence the
+    largest frames) wins, so two tall frames sit side by side and two wide ones stack."""
+    def row_height(rows) -> float:
+        return min((fit_h - gap * (len(rows) - 1)) / len(rows),
+                   *((fit_w - gap * (len(row) - 1)) / sum(aspects[i] for i in row) for row in rows))
+
+    best_rows = max(_row_splits(len(aspects)), key=row_height)
+    height = row_height(best_rows)
+    y = (fit_h - (height * len(best_rows) + gap * (len(best_rows) - 1))) / 2
+    boxes = [None] * len(aspects)
+    for row in best_rows:
+        x = (fit_w - (height * sum(aspects[i] for i in row) + gap * (len(row) - 1))) / 2
+        for i in row:
+            boxes[i] = (x, y, height * aspects[i], height)
+            x += height * aspects[i] + gap
+        y += height + gap
+    return boxes
+
+
+def _compose_still(frame_paths: list[str | None], bg=None, wm=None, transparent: bool = False,
+                   fill: float = FILL):
+    """Build the full 1920x1080 still for a beat: its frames (one, or several shown
+    together) packed as large as `fill` of the canvas allows, over `bg` (a project's custom
+    background) if given, else a blurred + darkened cover of the first frame - UNLESS
+    `transparent` is set (a video background - see _paste_background), in which case the
+    background area is left transparent instead (an RGBA image is returned, not RGB). `wm`
+    (a watermark RGBA layer), if given, is composited onto the background/transparent area
+    ONLY, before the frames go on top - see _paste_background."""
     from PIL import Image
 
     base = (Image.new("RGBA", (W, H), (0, 0, 0, 0)) if transparent
             else Image.new("RGB", (W, H), (12, 12, 12)))
-    img = _open_rgb(frame_path)
-    if img is None:
+    imgs = [img for img in (_open_rgb(path) for path in frame_paths) if img is not None]
+    if not imgs:
         return base
 
-    if bg is None and not transparent:
-        bg = _blurred_self_cover(img)
-    base = _paste_background(base, bg, wm, transparent)
-
-    # Foreground: fit within 85%H / 92%W (whichever is tighter), centered.
-    fscale = min((CROP_FRAC_H * H) / img.height, (CROP_FRAC_W * W) / img.width)
-    fw, fh = max(1, round(img.width * fscale)), max(1, round(img.height * fscale))
-    fg = img.resize((fw, fh), Image.LANCZOS)
-    base.paste(fg, ((W - fw) // 2, (H - fh) // 2))
-    return base
-
-
-def _compose_grid_still(frame_paths: list[str | None], bg=None, wm=None, transparent: bool = False):
-    """Build the full 1920x1080 still for a "together" line: every frame fit into
-    its cell of a simple grid (2 -> side by side, 3-4 -> 2x2, etc.), over `bg`
-    (a project's custom background) if given, else a shared blurred + darkened
-    cover of the first frame as before (or left transparent - see
-    _compose_still - when `transparent` is set for a video background). `wm`,
-    if given, is composited onto the background/transparent area ONLY, before
-    any frame crop goes on top - see _compose_still."""
-    from PIL import Image
-
-    imgs = [im for im in (_open_rgb(p) for p in frame_paths) if im is not None]
-    if not imgs:
-        return Image.new("RGBA", (W, H), (0, 0, 0, 0)) if transparent else Image.new("RGB", (W, H), (12, 12, 12))
-    if len(imgs) == 1:
-        return _compose_still(frame_paths[0], bg, wm, transparent)
-
-    base = (Image.new("RGBA", (W, H), (0, 0, 0, 0)) if transparent
-            else Image.new("RGB", (W, H), (12, 12, 12)))
     if bg is None and not transparent:
         bg = _blurred_self_cover(imgs[0])
     base = _paste_background(base, bg, wm, transparent)
 
-    # Foreground grid: cols ~ sqrt(N), each frame fit within ~92% of its cell.
-    n = len(imgs)
-    cols = math.ceil(math.sqrt(n))
-    rows = math.ceil(n / cols)
-    cell_w, cell_h = W / cols, H / rows
-    for idx, img in enumerate(imgs):
-        r, c = divmod(idx, cols)
-        fscale = min((0.92 * cell_w) / img.width, (0.92 * cell_h) / img.height)
-        fw, fh = max(1, round(img.width * fscale)), max(1, round(img.height * fscale))
-        fg = img.resize((fw, fh), Image.LANCZOS)
-        cx, cy = (c + 0.5) * cell_w, (r + 0.5) * cell_h
-        base.paste(fg, (round(cx - fw / 2), round(cy - fh / 2)))
+    fit_w, fit_h = W * fill, H * fill
+    boxes = _arrange([img.width / img.height for img in imgs], fit_w, fit_h, GROUP_GAP * W)
+    for img, (x, y, w, h) in zip(imgs, boxes):
+        size = (max(1, round(w)), max(1, round(h)))
+        base.paste(img.resize(size, Image.LANCZOS), (round((W - fit_w) / 2 + x), round((H - fit_h) / 2 + y)))
     return base
 
 
@@ -575,13 +572,14 @@ def _build_watermark_layer(settings: dict):
 
 
 def _precompose(items: list[dict], stills_dir: Path, wm=None, bg=None,
-                transparent: bool = False) -> None:
+                transparent: bool = False, fill: float = FILL) -> None:
     """Render every item's still PNG into stills_dir and record its path on the
     item (key "still"). All the per-frame compositing work happens here, once.
-    A "grid" item lays its frames out together; everything else is one frame.
+    A "grid" item shows its frames together; everything else is one frame. `fill` is the
+    share of the canvas the frames may cover (less with Ken Burns, which crops the edges).
     `bg` (a PIL image) replaces the default blurred self-cover when given; `wm`
     (a PIL RGBA layer), when given, is composited onto the BACKGROUND layer
-    only (see _compose_still/_compose_grid_still) - frame crops are pasted on
+    only (see _compose_still) - frame crops are pasted on
     top of that afterward, so they always cover/hide the watermark under them.
     `transparent=True` (a video background - see run()) saves RGBA PNGs with
     the background area left transparent instead, for ffmpeg to `overlay`
@@ -589,10 +587,7 @@ def _precompose(items: list[dict], stills_dir: Path, wm=None, bg=None,
     stills_dir.mkdir(parents=True, exist_ok=True)
     for i, it in enumerate(items):
         out = stills_dir / f"beat_{i:04d}.png"
-        if it["layout"] == "grid":
-            still = _compose_grid_still(it["frames"], bg, wm, transparent)
-        else:
-            still = _compose_still(it["frames"][0], bg, wm, transparent)
+        still = _compose_still(it["frames"], bg, wm, transparent, fill)
         still.save(out)
         it["still"] = str(out)
 
@@ -896,7 +891,8 @@ def run(m: Manifest) -> Manifest:
     stills_dir = out_dir / "_stills"
     t0 = time.perf_counter()
     try:
-        _precompose(items, stills_dir, watermark, background, transparent=(video_bg is not None))
+        _precompose(items, stills_dir, watermark, background, transparent=(video_bg is not None),
+                    fill=KEN_BURNS_FILL if ken_burns else FILL)
         anim_desc = "cut (no transition)" if transition == "cut" else f"{transition} @ {crossfade:.2f}s"
         if ken_burns:
             anim_desc += " + alternating Ken Burns"
