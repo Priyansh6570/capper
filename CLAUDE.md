@@ -223,8 +223,9 @@ manifest, orchestrator, or any pipeline stage.
 
 The framer's **Claude script engine** (`claude_engine.py`, `panel_split.py`; setting
 `script_engine`) is an alternative to the Gemini engine: it splits the strip into
-panels, calls the local `claude` CLI in two passes, and pre-fills the framer with
-narration boxed to full panels. It touches no pipeline stage; TTS/render still read
+panels, sends them as images to the local `claude` CLI in batches (pass 1) and writes
+the narration from the resulting text-only breakdown (pass 2), then pre-fills the framer
+with narration boxed to full panels, bubble blur boxes included. It touches no pipeline stage; TTS/render still read
 the framer's export.
 
 ## Conventions

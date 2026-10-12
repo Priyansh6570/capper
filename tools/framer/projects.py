@@ -31,7 +31,7 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Optional
 
-import claude_engine
+import claude_cli
 from config import PROJECTS_DIR
 from atomic_io import atomic_write_text, read_json_with_backup_fallback
 
@@ -161,7 +161,10 @@ def _default_settings() -> dict:
         # reference above apply to both; the series brief and per-pass models
         # below are Claude-only.
         "script_engine": "gemini",
-        "claude": {"series_brief": "", "comprehension_model": "opus", "narration_model": "sonnet"},
+        # target_minutes: how long the narration should run; min_frame_s: the least
+        # time any one frame stays on screen (caps frames per block).
+        "claude": {"series_brief": "", "comprehension_model": "opus", "narration_model": "sonnet",
+                   "target_minutes": 10, "min_frame_s": 3},
     }
 
 
@@ -393,8 +396,10 @@ def update_settings(slug: str, settings: dict) -> dict:
         cl = settings["claude"]
         cl["series_brief"] = str(cl.get("series_brief") or "")[:12000]
         for key in ("comprehension_model", "narration_model"):
-            if cl.get(key) not in claude_engine.MODELS:
+            if cl.get(key) not in claude_cli.MODELS:
                 cl[key] = _default_settings()["claude"][key]
+        cl["target_minutes"] = max(1.0, min(30.0, float(cl.get("target_minutes") or 10)))
+        cl["min_frame_s"] = max(1.0, min(10.0, float(cl.get("min_frame_s") or 3)))
         save(project)
     write_all_media_snapshots(slug)
     return project

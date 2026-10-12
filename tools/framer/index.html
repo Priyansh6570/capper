@@ -212,6 +212,9 @@
   .box.read { border:1px solid var(--frame); background:var(--frame-fill); opacity:.55; }
   .box.reading { border:3px solid var(--accent); background:var(--frame-fill2); }
   .box.skipped { border:2px dashed var(--blur); background:var(--blur-fill); }
+  body.stripLocked #stage { overflow:hidden !important; pointer-events:none; }
+  body.stripLocked .stagebar { pointer-events:none; opacity:.5; }
+  .box.dropped { border:1px dashed var(--muted); opacity:.5; }
   #claudeFeed { margin:0 0 8px; }
   #claudeFeed .cfstats { font-size:11px; color:var(--muted); line-height:1.5; }
   #claudeFeed .cfstats b { color:var(--text); font-weight:600; }
@@ -1163,6 +1166,14 @@
                     </select>
                   </label>
                 </div>
+                <div class="setgridpair" style="margin-top:10px">
+                  <label class="field" style="margin:0"><span class="lbl" style="text-transform:none;letter-spacing:0;font-weight:400;color:var(--muted)">Target narration length (minutes)</span>
+                    <input id="claudeTargetMinutes" type="number" min="1" max="30" step="0.5" />
+                  </label>
+                  <label class="field" style="margin:0"><span class="lbl" style="text-transform:none;letter-spacing:0;font-weight:400;color:var(--muted)">Shortest time a frame stays on screen (seconds)</span>
+                    <input id="claudeMinFrame" type="number" min="1" max="10" step="0.5" />
+                  </label>
+                </div>
               </div>
 
               <label class="field" style="margin:10px 0 0">
@@ -2031,7 +2042,7 @@ function claudeStatsHtml(j) {
 }
 
 // Strip viewer marks: panels read so far, the one being read, and any skipped.
-const readState = { panels: [], read: new Set(), current: null, done: false, es: null, jobId: null };
+const readState = { panels: [], read: new Set(), dropped: new Set(), current: null, done: false, es: null, jobId: null, positioned: false };
 
 async function loadReadPanels() {
   const d = await (await fetch(`/api/claude/panels?chapter=${encodeURIComponent(S.chapter_id)}${scopeQS()}`)).json();
@@ -2046,25 +2057,39 @@ function redrawReadMarks() {
   readState.panels.forEach((p, i) => {
     const read = readState.read.has(p.id);
     const skipped = !read && (readState.done || i < newest - READ_BATCH_SLACK);
-    const cls = p.id === readState.current ? 'reading' : read ? 'read' : skipped ? 'skipped' : '';
+    const cls = p.id === readState.current ? 'reading' : read ? 'read' : readState.dropped.has(p.id) ? 'dropped' : skipped ? 'skipped' : '';
     if (cls) layer.appendChild(boxEl(p.bbox, cls, p.id));
   });
 }
 const READ_BATCH_SLACK = 10;
+
+// While a Claude job runs the strip belongs to it: it starts at the chapter's
+// first panel at fit-width zoom, and the user cannot scroll, zoom or draw.
+function setStripLocked(on) {
+  document.body.classList.toggle('stripLocked', on);
+  if (!on) readState.positioned = false;
+  else if (S.preview_w && !readState.positioned) {
+    readState.positioned = true;
+    computeZoomRange();
+    setZoom(S.fitZoom);
+    $('stage').scrollTop = 0;
+  }
+}
 
 function scrollToPanel(id) {
   const p = readState.panels.find(x => x.id === id);
   if (p) $('stage').scrollTop = trueToWorld(p.bbox[1]) - $('stage').clientHeight / 3;
 }
 
-function openClaudeFeed(job) {
+async function openClaudeFeed(job) {
   if (readState.jobId === job.id) return;
   closeClaudeFeed();
   readState.jobId = job.id;
-  readState.read = new Set(); readState.current = null; readState.done = false;
+  readState.read = new Set(); readState.dropped = new Set(); readState.current = null; readState.done = false;
   $('claudeFeed').hidden = false;
   $('cfText').textContent = '';
-  loadReadPanels();
+  await loadReadPanels();
+  if (readState.jobId !== job.id) return;
   readState.es = new EventSource(`/api/jobs/${encodeURIComponent(job.id)}/events`);
   readState.es.onmessage = e => handleClaudeEvent(JSON.parse(e.data));
 }
@@ -2076,7 +2101,10 @@ function closeClaudeFeed() {
 
 function handleClaudeEvent(ev) {
   const text = $('cfText');
-  if (ev.type === 'read') {
+  if (ev.type === 'plan') {
+    readState.dropped = new Set(ev.dropped);
+    redrawReadMarks();
+  } else if (ev.type === 'read') {
     readState.read.add(ev.panel);
     readState.current = ev.panel;
     redrawReadMarks();
@@ -2107,6 +2135,7 @@ function syncScriptJobUI() {
   if (SCREEN !== 'editor' || !S.chapter_id) return;
   const job = jobsForChapter(S.chapter_id).find(j => j.what === 'script');
   const active = !!job && (job.status === 'queued' || job.status === 'running');
+  setStripLocked(!!job && job.status === 'running');
   btnBusy($('genScriptBtn'), active);
   if (active) {
     S.watchedScriptJobId = job.id;
@@ -2120,7 +2149,7 @@ function syncScriptJobUI() {
   if (!job || S.watchedScriptJobId !== job.id) return;
   S.watchedScriptJobId = null;
   if (job.status === 'done') {
-    $('genScriptStatus').textContent = 'Narration ready - fix any wrong boxes, then export.';
+    $('genScriptStatus').textContent = job.message + ' Fix any wrong boxes, then export.';
     showToast('Claude narration ready.', null, null, 'ok');
     loadEditorState(false, false, true);
   } else if (job.status === 'failed') {
@@ -2305,20 +2334,24 @@ function setZoom(z, cx, cy) {
   stage.scrollTop  = truePt[1] * S.vscale - vy;
 }
 
+const isStripLocked = () => document.body.classList.contains('stripLocked');
+// Zoom requested by the user; the strip ignores it while a Claude job owns the viewer.
+function userZoom(z, cx, cy) { if (!isStripLocked()) setZoom(z, cx, cy); }
+
 $('zoom').addEventListener('input', e => {
   const t = (+e.target.value) / 100;
-  setZoom(S.minZoom + t * (S.maxZoom - S.minZoom));
+  userZoom(S.minZoom + t * (S.maxZoom - S.minZoom));
 });
-$('zoomIn').onclick  = () => setZoom(S.zoom * 1.25);
-$('zoomOut').onclick = () => setZoom(S.zoom / 1.25);
-$('fitBtn').onclick  = () => { computeZoomRange(); setZoom(S.fitZoom); };
-$('oneBtn').onclick  = () => setZoom(1);
+$('zoomIn').onclick  = () => userZoom(S.zoom * 1.25);
+$('zoomOut').onclick = () => userZoom(S.zoom / 1.25);
+$('fitBtn').onclick  = () => { computeZoomRange(); userZoom(S.fitZoom); };
+$('oneBtn').onclick  = () => userZoom(1);
 
 stage.addEventListener('wheel', e => {
   if (!(e.ctrlKey || e.metaKey)) return;     // plain wheel = scroll
   e.preventDefault();
   const factor = e.deltaY < 0 ? 1.12 : 1/1.12;
-  setZoom(S.zoom * factor, e.clientX, e.clientY);
+  userZoom(S.zoom * factor, e.clientX, e.clientY);
 }, { passive:false });
 
 window.addEventListener('resize', () => { if (S.preview_w) { computeZoomRange(); layout(); } });
@@ -2386,7 +2419,7 @@ window.addEventListener('pointermove', ev => {
     const pts = [...activePointers.values()];
     const dist = ptDist(pts[0], pts[1]);
     const mid = ptMid(pts[0], pts[1]);
-    if (pinch.startDist > 0) setZoom(pinch.startZoom * (dist / pinch.startDist), mid[0], mid[1]);
+    if (pinch.startDist > 0) userZoom(pinch.startZoom * (dist / pinch.startDist), mid[0], mid[1]);
     return;
   }
   if (!dragging) return;
@@ -3311,6 +3344,7 @@ function scrollActiveRowIntoView() {
   if (r) r.scrollIntoView({ block:'nearest' });
 }
 function scrollToActiveFrame() {
+  if (isStripLocked()) return;
   const ln = activeLine();
   if (!ln || !ln.frames.length || !S.tiles.length) return;
   const b = ln.frames[0].bbox;
@@ -4401,6 +4435,8 @@ function fillSettingsForm() {
   $('claudeBrief').value = cl.series_brief || '';
   $('claudeComprehensionModel').value = cl.comprehension_model || 'opus';
   $('claudeNarrationModel').value = cl.narration_model || 'sonnet';
+  $('claudeTargetMinutes').value = cl.target_minutes || 10;
+  $('claudeMinFrame').value = cl.min_frame_s || 3;
   paintScriptEngine();
 
   updateSliderLabels();
@@ -4484,6 +4520,8 @@ function currentSettingsFromForm() {
       series_brief: $('claudeBrief').value,
       comprehension_model: $('claudeComprehensionModel').value,
       narration_model: $('claudeNarrationModel').value,
+      target_minutes: parseFloat($('claudeTargetMinutes').value) || 10,
+      min_frame_s: parseFloat($('claudeMinFrame').value) || 3,
     },
   };
 }
@@ -4654,7 +4692,8 @@ function resetEditorState() {
   S.preview_w = 0; S.preview_h = 0; S.tiles = [];
   S.lines = []; S.active = -1; S.activeFrame = -1;
   closeClaudeFeed();
-  readState.panels = []; readState.read = new Set(); readState.current = null;
+  setStripLocked(false);
+  readState.panels = []; readState.read = new Set(); readState.dropped = new Set(); readState.current = null;
   $('claudeFeed').hidden = true;
   discardPendingAutosave();
   undoStack = []; redoStack = []; updateUndoUI();
@@ -4896,6 +4935,8 @@ $('scriptEngine').onchange = () => { paintScriptEngine(); saveSettingsDebounced(
 $('claudeBrief').oninput = saveSettingsDebounced;
 $('claudeComprehensionModel').onchange = saveSettingsDebounced;
 $('claudeNarrationModel').onchange = saveSettingsDebounced;
+$('claudeTargetMinutes').oninput = saveSettingsDebounced;
+$('claudeMinFrame').oninput = saveSettingsDebounced;
 $('geminiKeySaveBtn').onclick = saveGeminiKey;
 $('geminiKeyClearBtn').onclick = clearGeminiKey;
 $('geminiKeyLinkBtn').onclick = () => window.open('https://aistudio.google.com/apikey', '_blank');

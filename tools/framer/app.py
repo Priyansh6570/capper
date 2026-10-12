@@ -67,7 +67,8 @@ import gpu  # noqa: E402
 
 import projects  # noqa: E402 - the project system (this package: tools/framer/projects.py)
 import branding  # noqa: E402 - intro/outro for merged videos
-import claude_engine  # noqa: E402 - script engine on the local Claude Code CLI
+import claude_cli  # noqa: E402 - the local Claude Code CLI
+import claude_engine  # noqa: E402 - Claude script engine: panels -> narration blocks
 import panel_split  # noqa: E402 - strip -> reading-order panels
 import library  # noqa: E402 - per-project media library (sizes, deletion)
 import sites  # noqa: E402 - per-site adapters (tools/framer/sites/): metadata + chapter download
@@ -1449,6 +1450,7 @@ _RENDER_HISTORY_CAP = 20
 # Jobs whose length isn't per-beat: a branded join is a copy once the clips are
 # cached; a script is two Claude calls over a whole chapter (a rough guess).
 FIXED_ESTIMATE_S = {"brand": 15.0, "script": 600.0}
+MIN_RATE_CHARS = 20           # shorter clips are mostly pauses and say little about speaking rate
 
 
 class Job:
@@ -1860,6 +1862,21 @@ def _ensure_panels(chapter_id: str) -> list[Panel]:
     return panels
 
 
+def _speech_rate(slug: str) -> float | None:
+    """Characters per second of the project's generated narration audio, else None."""
+    chars = seconds = 0.0
+    for chapter in projects.load(slug)["chapters"]:
+        try:
+            beats = Manifest.load(projects.chapter_work_dir(slug, chapter["n"])).beats
+        except (OSError, ValueError, KeyError):
+            continue
+        for beat in beats:
+            if beat.duration_s and beat.audio and Path(beat.audio).is_file() and len(beat.script_line or "") >= MIN_RATE_CHARS:
+                chars += len(beat.script_line)
+                seconds += beat.duration_s
+    return chars / seconds if seconds else None
+
+
 def _run_script_job(job: "Job") -> None:
     slug, ch_no, chapter_id = job.slug, job.ch_no, job.chapter_id
     read: set[str] = set()
@@ -1873,21 +1890,21 @@ def _run_script_job(job: "Job") -> None:
         if kind == "log":
             job.note(event["line"])
             return
-        if kind == "step":
+        if kind == "plan":
+            panel_ids[:] = event["sent"]
+            stats["panels_total"] = len(panel_ids)
+            job.note(f"Sending {len(panel_ids)} panels; {len(event['dropped'])} blank or uniform panels dropped locally")
+        elif kind == "step":
             stats["pass"] = event["pass"]
             job.message = event["label"]
             job.note(event["label"] + "…")
-            job.fraction = {1: 0.02, 2: 0.60, None: 0.95}[event["pass"]]
-            missing = [p for p in panel_ids if p not in read]
-            if event["pass"] == 2 and read and missing:
-                job.note(f"Pass 1 did not read {len(missing)} panel(s): {', '.join(missing[:20])}")
-        elif kind == "read":
+            job.fraction = max(job.fraction, {1: 0.02, 2: 0.60, None: 0.95}[event["pass"]])
+        elif kind == "read" and event["panel"] in panel_ids:
             read.add(event["panel"])
             stats["panels_read"] = len(read)
-            set_progress(0.02, 0.43, len(read))
-        elif kind == "cover":
-            floor, span = (0.45, 0.15) if event["pass"] == 1 else (0.60, 0.35)
-            set_progress(floor, span, int(event["panel"][1:]))
+            set_progress(0.02, 0.58, len(read))
+        elif kind == "cover" and event["panel"] in panel_ids:
+            set_progress(0.60, 0.35, panel_ids.index(event["panel"]) + 1)
         elif kind == "usage":
             stats[f"pass{event['pass']}"] = event["usage"]
         stats["current"] = event.get("panel", stats["current"])
@@ -1915,7 +1932,6 @@ def _run_script_job(job: "Job") -> None:
             split_started = time.monotonic()
             panels = _ensure_panels(chapter_id)
             job.note(f"{len(panels)} panels ready ({time.monotonic() - split_started:.0f}s)")
-            panel_ids[:] = [p.id for p in panels]
             job.claude = {"pass": None, "panels_read": 0, "panels_total": len(panels), "current": None,
                           "pass1": None, "pass2": None, "total": None}
             voice = settings["gemini"]
@@ -1923,8 +1939,12 @@ def _run_script_job(job: "Job") -> None:
             if voice["style_reference"].strip():
                 style.append(_style_reference_directive(voice["style_reference"]))
             state_path = _claude_state_path(chapter_id)
-            blocks = claude_engine.run_chapter(
-                panels_dir=chapter_work_dir(chapter_id) / "panels",
+            rate = _speech_rate(slug)
+            job.note(f"Speaking rate: {rate:.1f} chars/s, measured from this project's generated audio" if rate else
+                     f"No generated audio in this project yet; assuming {claude_engine.DEFAULT_CHARS_PER_SEC} chars/s")
+            narration = claude_engine.run_chapter(
+                panels=panels,
+                work_dir=state_path.parent,
                 state_path=state_path,
                 memory_path=projects.story_memory_path(slug),
                 ch_no=int(ch_no),
@@ -1932,7 +1952,9 @@ def _run_script_job(job: "Job") -> None:
                 style="\n\n".join(style),
                 models={"comprehension": settings["claude"]["comprehension_model"],
                         "narration": settings["claude"]["narration_model"]},
-                panel_ids=panel_ids,
+                target_minutes=settings["claude"]["target_minutes"],
+                min_frame_s=settings["claude"]["min_frame_s"],
+                chars_per_sec=rate or claude_engine.DEFAULT_CHARS_PER_SEC,
                 on_event=on_event, on_limit=on_limit, on_proc=on_proc)
             total = claude_engine.read_usage(state_path)["total"]
         job.claude["total"] = total
@@ -1940,8 +1962,12 @@ def _run_script_job(job: "Job") -> None:
         job.note(f"Chapter total: {total['input']:,} in, {total['output']:,} out, {total['cache_read']:,} cache read, "
                  f"{total['cache_write']:,} cache write; estimated API cost ${total['cost_usd']:.2f} "
                  "(not charged on subscription)")
+        blocks = narration["blocks"]
         job.status, job.ok, job.fraction = "done", True, 1.0
-        job.message = f"Narration ready - {len(blocks)} block(s)."
+        job.message = f"Narration ready - {len(blocks)} block(s), about {sum(b['duration_s'] for b in blocks) / 60:.1f} min."
+        if narration["shortfall"]:
+            job.message += (f" Short of the {narration['shortfall']['target_minutes']:g} min target: "
+                            "the chapter has no more material, so nothing was padded.")
     except Exception as e:  # noqa: BLE001 - report, don't crash the worker
         if job.cancel_requested:
             job.status, job.ok, job.message = "cancelled", False, "Stopped by user."
@@ -1965,9 +1991,11 @@ def _state_from_narration(chapter_id: str) -> dict | None:
         "saved_at": narration["saved_at"],
         "lines": [{
             "text": block["narration"],
-            "duration_s": 4,
+            "duration_s": block["duration_s"],
             "mode": "sequence",
-            "frames": [{"bbox": boxes[i], "flip": False, "blur": []} for i in block["panel_ids"] if i in boxes],
+            "frames": [{"bbox": boxes[i], "flip": False,
+                        "blur": [[*box, DEFAULT_BLUR_STYLE] for box in block["blur"].get(i, [])]}
+                       for i in block["panel_ids"] if i in boxes],
         } for block in narration["blocks"]],
     }
 
@@ -2009,7 +2037,7 @@ def api_claude_panels():
 
 @app.get("/api/claude/status")
 def api_claude_status():
-    return jsonify(claude_engine.cli_status())
+    return jsonify(claude_cli.cli_status())
 
 
 @app.post("/api/script/claude")
@@ -2020,7 +2048,7 @@ def api_script_claude():
     slug, ch_no = _scope_params()
     if not (slug and ch_no and projects.exists(slug)):
         return jsonify(error="Open a project chapter first."), 400
-    status = claude_engine.cli_status()
+    status = claude_cli.cli_status()
     if not status["ready"]:
         return jsonify(error=status["message"]), 409
     if not (_strip_path(chapter_id).exists() or _downloaded_pdf(chapter_id)):
@@ -2657,7 +2685,7 @@ def api_get_project(slug):
         ch["duration"] = branding.duration_of(video) if ch["status"] == "complete" and video.is_file() else None
     chapter_totals = [(claude_engine.read_usage(projects.chapter_work_dir(slug, ch["n"]) / "claude" / "state.json")
                        or {}).get("total") for ch in project["chapters"]]
-    project["claude_usage"] = claude_engine.sum_usage([t for t in chapter_totals if t])
+    project["claude_usage"] = claude_cli.sum_usage([t for t in chapter_totals if t])
     return jsonify(project=project)
 
 

@@ -18,6 +18,7 @@ MIN_PANEL_FRAC = 0.06       # panels shorter than this fraction of width are sli
 MIN_INK = 0.05              # panels with a smaller share of non-uniform rows are blank
 MAX_PANEL_FRAC = 2.0        # panels taller than this fraction of width get split
 BAND_ROWS = 2000            # rows measured at a time, to bound memory
+NEAR_UNIFORM_STD = 12.0      # panels whose overall pixel std is below this carry no content
 
 
 def _row_std(strip: Image.Image) -> np.ndarray:
@@ -78,3 +79,11 @@ def split_panels(strip_path: Path, out_dir: Path) -> list[Panel]:
         panels.append(Panel(id=panel_id, bbox=[0.0, float(top), float(width), float(bottom - top)],
                             order=order, crop=str(path)))
     return panels
+
+
+def near_uniform(panel_path: Path) -> bool:
+    """True when the panel is blank or a flat wash that no frame or narration could use."""
+    with Image.open(panel_path) as panel:
+        thumb = panel.convert("L")
+        thumb.thumbnail((256, 256))
+        return float(np.asarray(thumb).std()) < NEAR_UNIFORM_STD
