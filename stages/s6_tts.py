@@ -255,10 +255,26 @@ def _load_model(kind: str, device: str):
     if kind == "turbo":
         from chatterbox.tts_turbo import ChatterboxTurboTTS
         model = ChatterboxTurboTTS.from_pretrained(device=device)
+        if device == "cuda":
+            _halve_t3(model.t3)
     else:
         from chatterbox.tts import ChatterboxTTS
         model = ChatterboxTTS.from_pretrained(device=device)
     return model
+
+
+def _halve_t3(t3) -> None:
+    """Run the T3 token decoder with fp16 weights. Its per-token step is bound by GPU
+    memory bandwidth (it re-reads every weight), so half-width weights cut the step time
+    by about 40% while the token logits stay within ~1e-2 of fp32 (identical top-1, KL
+    < 1e-4). Embeddings are cast in and logits cast back out so sampling stays fp32."""
+    t3.tfmr.half()
+    t3.speech_head.half()
+    t3.speech_emb.half()
+    t3.tfmr.register_forward_pre_hook(
+        lambda _mod, _args, kwargs: ((), {**kwargs, "inputs_embeds": kwargs["inputs_embeds"].half()}),
+        with_kwargs=True)
+    t3.speech_head.register_forward_hook(lambda _mod, _args, out: out.float())
 
 
 def _build_engine():
@@ -298,30 +314,24 @@ def _build_engine():
 
 
 def _generate(model, device: str, text: str, exaggeration: float,
-              cfg_weight: float, ref: str | None):
-    """One synth under inference_mode, freeing CUDA cache afterwards. Turbo may
-    not accept the prosody kwargs; fall back to a plain call if so.
+              cfg_weight: float, autocast: bool):
+    """One synth under inference_mode, freeing CUDA cache afterwards. Turbo may not
+    accept the prosody kwargs; fall back to a plain call if so.
 
-    Autocast caveat: the fp16 autocast region corrupts reference-audio
-    conditioning -- the ref wav loads as float64/double and s3tokenizer's
-    log_mel_spectrogram then crashes with "expected scalar type Half but found
-    Double". The conditioning runs inside model.generate, so we run the WHOLE
-    ref call in native fp32 (no autocast). Autocast fp16 is kept only for the
-    no-ref path on cuda, where casting stays consistent."""
+    The reference conditioning was computed once up front (`_Engine.prepare_ref`), in
+    fp32 and outside autocast: running it inside the fp16 region crashes s3tokenizer's
+    log_mel_spectrogram with "expected scalar type Half but found Double". `autocast`
+    is therefore only on for the no-reference path on cuda."""
     import torch
     import contextlib
 
-    base = {"audio_prompt_path": ref} if ref else {}
-    # fp16 autocast only when there is no ref clip; the ref path runs fp32 so the
-    # reference-conditioning math keeps consistent dtypes.
-    autocast = (torch.autocast("cuda", dtype=torch.float16)
-                if device == "cuda" and not ref else contextlib.nullcontext())
-    with torch.inference_mode(), autocast:
+    region = (torch.autocast("cuda", dtype=torch.float16)
+              if autocast else contextlib.nullcontext())
+    with torch.inference_mode(), region:
         try:
-            wav = model.generate(text, exaggeration=exaggeration,
-                                 cfg_weight=cfg_weight, **base)
+            wav = model.generate(text, exaggeration=exaggeration, cfg_weight=cfg_weight)
         except TypeError:
-            wav = model.generate(text, **base)
+            wav = model.generate(text)
     if device == "cuda":
         torch.cuda.empty_cache()
     return wav
@@ -333,18 +343,23 @@ class _Engine:
     def __init__(self):
         self.model, self.device, self.sr, self.label = _build_engine()
         self._cpu = None  # lazy full-Chatterbox-on-CPU for OOM recovery
-        self._ref = None  # cached float32/mono/24k temp ref wav (once per run)
+        self._ref = None  # float32/mono/24k voice-reference wav the models are conditioned on
 
-    def prepare_ref(self, ref_path: str | None, chapter_id: str) -> str | None:
-        """Preprocess the voice-reference clip ONCE per run and cache the result.
-        Returns the path to the float32 temp wav (or None when no ref is set)."""
+    def prepare_ref(self, ref_path: str | None, chapter_id: str) -> None:
+        """Preprocess the voice-reference clip and condition the model on it, ONCE per
+        run; every line then clones the voice without re-reading the clip."""
         if not ref_path:
-            return None
-        if self._ref is None:
-            tmp = chapter_work_dir(chapter_id) / "_voice_ref_f32.wav"
-            self._ref = _preprocess_ref(ref_path, tmp)
-            print(f"    prepared float32 voice ref -> {tmp}")
-        return self._ref
+            return
+        tmp = chapter_work_dir(chapter_id) / "_voice_ref_f32.wav"
+        self._ref = _preprocess_ref(ref_path, tmp)
+        print(f"    prepared float32 voice ref -> {tmp}")
+        self._condition(self.model)
+
+    def _condition(self, model) -> None:
+        import torch
+
+        with torch.inference_mode():
+            model.prepare_conditionals(self._ref)
 
     def _cpu_model(self):
         if self._cpu is None:
@@ -353,21 +368,23 @@ class _Engine:
             else:
                 print("    loading CPU fallback model (full Chatterbox) ...")
                 self._cpu = _load_model("full", "cpu")
+                if self._ref:
+                    self._condition(self._cpu)
         return self._cpu
 
-    def synth(self, text, exaggeration, cfg_weight, ref):
+    def synth(self, text, exaggeration, cfg_weight):
         """Returns (wav_tensor, sample_rate, device_used)."""
         import torch
 
         try:
-            wav = _generate(self.model, self.device, text,
-                            exaggeration, cfg_weight, ref)
+            wav = _generate(self.model, self.device, text, exaggeration, cfg_weight,
+                            autocast=self.device == "cuda" and not self._ref)
             return wav, self.sr, self.device
         except torch.cuda.OutOfMemoryError:
             print("    CUDA OOM on this line; retrying it on CPU")
             torch.cuda.empty_cache()
             cpu = self._cpu_model()
-            wav = _generate(cpu, "cpu", text, exaggeration, cfg_weight, ref)
+            wav = _generate(cpu, "cpu", text, exaggeration, cfg_weight, autocast=False)
             return wav, cpu.sr, "cpu(oom-fallback)"
 
 
@@ -501,7 +518,7 @@ def run(m: Manifest) -> Manifest:
     engine = _Engine()
     # Pre-bake the reference to float32/mono/24k once; passing the raw clip lets
     # Chatterbox's loader widen it to float64 and crash log_mel_spectrogram.
-    ref = engine.prepare_ref(ref, m.chapter_id)
+    engine.prepare_ref(ref, m.chapter_id)
     panels = m.kept_panels()  # the matched narration beats (STAGE B)
     spoken = 0
     for panel in panels:
@@ -511,7 +528,7 @@ def run(m: Manifest) -> Manifest:
             continue
 
         ex, cfg = _emotion_params(panel.emotion)
-        wav, sr, used = engine.synth(line, ex, cfg, ref)
+        wav, sr, used = engine.synth(line, ex, cfg)
         out = audio_dir / f"{panel.id}.wav"
         dur = _save_wav(wav, sr, out)
 

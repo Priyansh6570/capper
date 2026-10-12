@@ -18,6 +18,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Callable
 
+import claude_usage
 from config import NO_CONSOLE
 
 MODELS = ("opus", "sonnet", "haiku")
@@ -99,6 +100,7 @@ class _StreamReader:
         if kind == "stream_event":
             self._stream(event["event"])
         elif kind == "rate_limit_event":
+            claude_usage.record(event["rate_limit_info"])
             status = event["rate_limit_info"].get("status")
             if status != "allowed":
                 self.on_event({"type": "log", "line": f"Claude rate limit: {status}"})
@@ -176,11 +178,14 @@ def _run(content: list[dict], schema: dict, model: str, cwd: Path, session_id: s
 
 def call(content: list[dict], schema: dict, model: str, cwd: Path, *, usage: dict, mention_event: str,
          panel_ids: set[str], on_proc: Callable[[subprocess.Popen], None], on_event: Callable[[dict], None],
-         on_limit: Callable[[datetime], None]) -> dict:
+         on_limit: Callable[[datetime], None], before_call: Callable[[], None] | None = None) -> dict:
     """Run one call and return its structured answer, adding its tokens, cost and
     seconds to `usage`. A usage limit waits via `on_limit`, then continues the session.
+    `before_call` runs before the call starts and may block or raise to hold it back.
     Only ids in `panel_ids` are reported as mentions."""
     session_id = None
+    if before_call:
+        before_call()
     while True:
         started = time.monotonic()
         try:

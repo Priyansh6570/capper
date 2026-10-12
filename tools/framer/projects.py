@@ -165,6 +165,9 @@ def _default_settings() -> dict:
         # time any one frame stays on screen (caps frames per block).
         "claude": {"series_brief": "", "comprehension_model": "opus", "narration_model": "sonnet",
                    "target_minutes": 10, "min_frame_s": 3},
+        # Batch automation (batch.py): wait for the user's review of each chapter's frames
+        # before audio; Claude work is held once subscription usage reaches these percentages.
+        "batch": {"review_before_audio": False, "five_hour_pct": 70, "seven_day_pct": 60},
     }
 
 
@@ -400,6 +403,10 @@ def update_settings(slug: str, settings: dict) -> dict:
                 cl[key] = _default_settings()["claude"][key]
         cl["target_minutes"] = max(1.0, min(30.0, float(cl.get("target_minutes") or 10)))
         cl["min_frame_s"] = max(1.0, min(10.0, float(cl.get("min_frame_s") or 3)))
+        bt = settings["batch"]
+        bt["review_before_audio"] = bool(bt.get("review_before_audio"))
+        for key, default in (("five_hour_pct", 70), ("seven_day_pct", 60)):
+            bt[key] = max(1, min(100, int(bt.get(key) or default)))
         save(project)
     write_all_media_snapshots(slug)
     return project

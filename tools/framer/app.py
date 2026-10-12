@@ -28,6 +28,7 @@ stitch (imported, not reimplemented) and the Manifest schema for the export.
 """
 from __future__ import annotations
 
+import contextlib
 import difflib
 import io
 import json
@@ -47,6 +48,7 @@ import uuid
 import webbrowser
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Callable
 
 # --- make the project root importable so we can REUSE stage 1 + the manifest --
 ROOT = Path(__file__).resolve().parents[2]
@@ -67,7 +69,9 @@ import gpu  # noqa: E402
 
 import projects  # noqa: E402 - the project system (this package: tools/framer/projects.py)
 import branding  # noqa: E402 - intro/outro for merged videos
+import batch  # noqa: E402 - pipelined multi-chapter automation
 import claude_cli  # noqa: E402 - the local Claude Code CLI
+import claude_usage  # noqa: E402 - subscription usage read from the CLI's rate-limit events
 import claude_engine  # noqa: E402 - Claude script engine: panels -> narration blocks
 import panel_split  # noqa: E402 - strip -> reading-order panels
 import library  # noqa: E402 - per-project media library (sizes, deletion)
@@ -477,29 +481,24 @@ def app_asset(name):
     return send_from_directory(str(ROOT / "assets"), name)
 
 
-@app.post("/download")
-def download():
-    """Download ONE chapter as a PDF from whichever site adapter (see
-    tools/framer/sites/) matches the pasted URL. Gemini-part splitting/
-    compression is a SEPARATE step (see /gemini_parts_stream) so its progress
-    can stream.
+class Refused(Exception):
+    """A request the app will not run; `status` is the HTTP status a route reports for it."""
 
-    Body: JSON {url, chapter_no?, chapter_id?}. Returns {chapter_id, pdf,
-    page_count, steps:[...]} - `pdf` is the full chapter PDF that feeds BOTH
-    Stitch PDF (unchanged) and Gemini-part prep."""
-    data = request.get_json(silent=True) or {}
-    url = (data.get("url") or "").strip().strip('"')
-    raw_id = (data.get("chapter_id") or "").strip()
-    chapter_no = str(data.get("chapter_no") or "").strip()
+    def __init__(self, message: str, status: int = 400):
+        super().__init__(message)
+        self.status = status
 
+
+def _download_chapter(url: str, chapter_no: str, raw_id: str, slug: str | None, ch_no: str | None) -> dict:
+    """Download ONE chapter as a PDF from whichever site adapter (see tools/framer/sites/)
+    matches `url`. Returns {chapter_id, pdf, page_count, steps}."""
     if not url:
-        return jsonify(error="Paste a webtoons.com or kingofshojo.com chapter URL."), 400
+        raise Refused("Paste a webtoons.com or kingofshojo.com chapter URL.")
     adapter = sites.detect(url)
     if adapter is None:
-        return jsonify(error="That doesn't look like a webtoons.com or "
-                             "kingofshojo.com URL."), 400
+        raise Refused("That doesn't look like a webtoons.com or kingofshojo.com URL.")
     if not raw_id and not chapter_no:
-        return jsonify(error="Enter the chapter number (or a chapter id)."), 400
+        raise Refused("Enter the chapter number (or a chapter id).")
     chapter_id = _sanitize_chapter(raw_id or chapter_no)
 
     dest = _download_dir(chapter_id)
@@ -508,23 +507,32 @@ def download():
     try:
         pdf = adapter.download_chapter(url, chapter_no, dest, log=steps.append)
     except sites.DownloadTimeout as e:
-        return jsonify(error=str(e)), 504
+        raise Refused(str(e), 504) from e
     except Exception as e:  # noqa: BLE001 - surface the adapter's own message to the UI
-        return jsonify(error=str(e)), 500
+        raise Refused(str(e), 500) from e
 
     pages = _pdf_page_count(pdf)
     steps.append(f"Downloaded {pdf.name} — {pages} page(s):\n    {pdf}")
-
-    slug, ch_no = _scope_params()
     if slug and ch_no:
         projects.set_status(slug, ch_no, "downloaded")
+    return {"chapter_id": chapter_id, "pdf": str(pdf), "page_count": pages, "steps": steps}
 
-    return jsonify(
-        chapter_id=chapter_id,
-        pdf=str(pdf),
-        page_count=pages,
-        steps=steps,
-    )
+
+@app.post("/download")
+def download():
+    """Download ONE chapter as a PDF. Gemini-part splitting/compression is a SEPARATE step
+    (see /gemini_parts_stream) so its progress can stream.
+
+    Body: JSON {url, chapter_no?, chapter_id?}. Returns {chapter_id, pdf, page_count,
+    steps:[...]} - `pdf` is the full chapter PDF that feeds BOTH Stitch PDF (unchanged)
+    and Gemini-part prep."""
+    data = request.get_json(silent=True) or {}
+    try:
+        return jsonify(_download_chapter((data.get("url") or "").strip().strip('"'),
+                                         str(data.get("chapter_no") or "").strip(),
+                                         (data.get("chapter_id") or "").strip(), *_scope_params()))
+    except Refused as e:
+        return jsonify(error=str(e)), e.status
 
 
 @app.get("/gemini_parts_stream")
@@ -1017,13 +1025,17 @@ def load_pdf():
         chapter_id = _sanitize_chapter(data.get("chapter_id") or pdf_path.stem)
 
     try:
-        strip = _stitch_pdf(pdf_path, chapter_id)
+        payload = _stitch_chapter(pdf_path, chapter_id)
     except Exception as e:  # noqa: BLE001 - report stitch failures to the UI
         return jsonify(error=f"Stitch failed: {type(e).__name__}: {e}"), 500
-
-    payload = _make_preview(strip, chapter_id)
-    payload["source_pdf"] = str(pdf_path)
     return jsonify(payload)
+
+
+def _stitch_chapter(pdf_path: Path, chapter_id: str) -> dict:
+    """Stitch a PDF into the chapter's one strip; returns the preview payload."""
+    payload = _make_preview(_stitch_pdf(pdf_path, chapter_id), chapter_id)
+    payload["source_pdf"] = str(pdf_path)
+    return payload
 
 
 @app.get("/tiles/<chapter_id>/<name>")
@@ -1320,14 +1332,21 @@ def export():
     "What s7 must change").
     """
     data = request.get_json(silent=True) or {}
-    chapter_id = _sanitize_chapter(data.get("chapter_id") or "")
-    entries = data.get("entries") or []
+    try:
+        return jsonify(_export_chapter(_sanitize_chapter(data.get("chapter_id") or ""),
+                                       data.get("entries") or [], *_scope_params()))
+    except Refused as e:
+        return jsonify(error=str(e)), e.status
+
+
+def _export_chapter(chapter_id: str, entries: list[dict], slug: str | None, ch_no: str | None) -> dict:
+    """Render every frame of `entries` and write the chapter's mapping.json and manifest."""
     if not entries:
-        return jsonify(error="No entries to export."), 400
+        raise Refused("No entries to export.")
 
     strip_path = _strip_path(chapter_id)
     if not strip_path.exists():
-        return jsonify(error=f"No strip for {chapter_id}; load a PDF first."), 400
+        raise Refused(f"No strip for {chapter_id}; load a PDF first.")
     strip = Image.open(strip_path).convert("RGB")
 
     frames_dir = chapter_work_dir(chapter_id) / "frames"
@@ -1382,7 +1401,7 @@ def export():
         ))
 
     if not beats:
-        return jsonify(error="No line had a frame bound. Draw a box first."), 400
+        raise Refused("No line had a frame bound. Draw a box first.")
 
     framer_dir = _framer_dir(chapter_id)
     mapping_path = framer_dir / "mapping.json"
@@ -1404,20 +1423,19 @@ def export():
     )
     m.save()
 
-    slug, ch_no = _scope_params()
     if slug and ch_no:
         projects.set_status(slug, ch_no, "boxed")
         projects.write_media_snapshot(slug, ch_no)
 
-    return jsonify(
-        chapter_id=chapter_id,
-        lines_written=len(beats),
-        frames_written=total_frames,
-        frames_dir=str(frames_dir),
-        mapping_path=str(mapping_path),
-        manifest_path=str(m.path),
-        next_command=f"python orchestrator.py --chapter {chapter_id} --from audio",
-    )
+    return {
+        "chapter_id": chapter_id,
+        "lines_written": len(beats),
+        "frames_written": total_frames,
+        "frames_dir": str(frames_dir),
+        "mapping_path": str(mapping_path),
+        "manifest_path": str(m.path),
+        "next_command": f"python orchestrator.py --chapter {chapter_id} --from audio",
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -1487,6 +1505,7 @@ class Job:
         self.proc: subprocess.Popen | None = None
         self.cancel_requested = False
         self.claude: dict | None = None    # script: live pass / panel / token stats
+        self.before_claude_call: Callable[[], None] | None = None   # script: a batch's usage-limit gate
         self.events: list[dict] = []       # script: pushed to the browser by /api/jobs/<id>/events
         self._events_cond = threading.Condition()
 
@@ -1615,17 +1634,35 @@ def _job_worker() -> None:
 threading.Thread(target=_job_worker, daemon=True).start()
 
 
+# Hardware that must never serve two jobs at once, whether they come from the queue or from
+# a batch's lanes: each job holds the locks for the resources it uses while it runs.
+_HARDWARE = {name: threading.Lock() for name in ("claude", "audio", "video")}
+_HARDWARE_USED = {"script": ("claude",), "voice": ("audio",), "video": ("video",),
+                  "both": ("audio", "video"), "brand": ("video",)}
+
+
 def _run_job(job: "Job") -> None:
-    job.status = "running"
-    job.started_at = _now_iso()
-    try:
-        {"brand": _run_brand_job, "script": _run_script_job}.get(job.what, _run_pipeline_job)(job)
-    finally:
-        job.finished_at = _now_iso()
-        job.emit({"type": "end"})
-        _record_history(job)
-        with _JOBS_LOCK:
-            _ACTIVE_CHAPTERS.discard(job.chapter_id)
+    with contextlib.ExitStack() as held:
+        for name in _HARDWARE_USED[job.what]:
+            held.enter_context(_HARDWARE[name])
+        job.status = "running"
+        job.started_at = _now_iso()
+        try:
+            {"brand": _run_brand_job, "script": _run_script_job}.get(job.what, _run_pipeline_job)(job)
+        finally:
+            job.finished_at = _now_iso()
+            job.emit({"type": "end"})
+            _record_history(job)
+            with _JOBS_LOCK:
+                _ACTIVE_CHAPTERS.discard(job.chapter_id)
+
+
+def _run_now(job: "Job") -> None:
+    """Run `job` on the calling thread (a batch lane) instead of the queue's worker."""
+    with _JOBS_LOCK:
+        _JOBS[job.id] = job
+        _ACTIVE_CHAPTERS.add(job.chapter_id)
+    _run_job(job)
 
 
 _FFMPEG_PROGRESS_LINE = re.compile(r"^\w+=\s*\S*$")
@@ -1782,33 +1819,39 @@ def api_generate():
     chapter at a time; a second request for the SAME chapter is rejected,
     but a DIFFERENT chapter queues behind whatever's already running."""
     data = request.get_json(silent=True) or {}
-    chapter_id = _sanitize_chapter(data.get("chapter") or "")
     what = (data.get("what") or "both").strip().lower()
-    if what not in ("both", "voice", "video"):
-        what = "both"
-    slug, ch_no = _scope_params()
+    try:
+        job = _new_render_job(_sanitize_chapter(data.get("chapter") or ""),
+                              what if what in ("both", "voice", "video") else "both", *_scope_params())
+    except Refused as e:
+        return jsonify(error=str(e)), e.status
+    _enqueue(job)
+    return jsonify(ok=True, job_id=job.id, job=job.public())
 
+
+def _new_render_job(chapter_id: str, what: str, slug: str | None, ch_no: str | None) -> "Job":
+    """A not-yet-started audio+video / voice / video job for a chapter whose frames are exported."""
     work_dir = projects.chapter_work_dir(slug, ch_no) if slug and ch_no else chapter_work_dir(chapter_id)
     with config.chapter_scope(work_dir, projects.chapter_output_dir(slug, ch_no)
                                if slug and ch_no else chapter_output_dir(chapter_id)):
         total = _beat_count(chapter_id)
     if not total:
-        return jsonify(error=f"No narration lines for {chapter_id}. Export from the Framer first."), 400
+        raise Refused(f"No narration lines for {chapter_id}. Export from the Framer first.")
     blockers = library.render_blockers(work_dir, what)
     if blockers:
-        return jsonify(error=" ".join(blockers)), 409
-
-    with _JOBS_LOCK:
-        if chapter_id in _ACTIVE_CHAPTERS:
-            return jsonify(error=f"A generate job is already queued or running for "
-                                  f"{chapter_id}."), 409
+        raise Refused(" ".join(blockers), 409)
+    _refuse_if_busy(chapter_id, "A generate job")
 
     job = Job(chapter_id, what, slug, ch_no, total)
     label = {"both": "audio + video", "voice": "audio (voice only)", "video": "video"}[what]
     job.append_log(f"Queued {label} for {chapter_id} ({total or '?'} line(s))…")
-    _enqueue(job)
+    return job
 
-    return jsonify(ok=True, job_id=job.id, job=job.public())
+
+def _refuse_if_busy(chapter_id: str, what: str) -> None:
+    with _JOBS_LOCK:
+        if chapter_id in _ACTIVE_CHAPTERS:
+            raise Refused(f"{what} is already queued or running for {chapter_id}.", 409)
 
 
 def _beat_count(chapter_id: str) -> int:
@@ -1955,7 +1998,8 @@ def _run_script_job(job: "Job") -> None:
                 target_minutes=settings["claude"]["target_minutes"],
                 min_frame_s=settings["claude"]["min_frame_s"],
                 chars_per_sec=rate or claude_engine.DEFAULT_CHARS_PER_SEC,
-                on_event=on_event, on_limit=on_limit, on_proc=on_proc)
+                on_event=on_event, on_limit=on_limit, on_proc=on_proc,
+                before_call=job.before_claude_call)
             total = claude_engine.read_usage(state_path)["total"]
         job.claude["total"] = total
         job.emit({"type": "total", "usage": total})
@@ -2015,10 +2059,10 @@ def api_job_events(job_id):
             with job._events_cond:
                 if next_id >= len(job.events):
                     job._events_cond.wait(timeout=15)
-                batch = job.events[next_id:]
-            if not batch:
+                pending = job.events[next_id:]
+            if not pending:
                 yield ": keepalive\n\n"
-            for event in batch:
+            for event in pending:
                 yield f"id: {next_id}\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
                 next_id += 1
                 if event["type"] == "end":
@@ -2044,22 +2088,27 @@ def api_claude_status():
 def api_script_claude():
     """Enqueue Claude script generation for a project chapter. Body: JSON
     {chapter, project, ch_no}. Returns {job_id}; poll /api/jobs for progress."""
-    chapter_id = _sanitize_chapter((request.get_json(silent=True) or {}).get("chapter") or "")
-    slug, ch_no = _scope_params()
-    if not (slug and ch_no and projects.exists(slug)):
-        return jsonify(error="Open a project chapter first."), 400
-    status = claude_cli.cli_status()
-    if not status["ready"]:
-        return jsonify(error=status["message"]), 409
-    if not (_strip_path(chapter_id).exists() or _downloaded_pdf(chapter_id)):
-        return jsonify(error="Download the chapter first."), 400
-    with _JOBS_LOCK:
-        if chapter_id in _ACTIVE_CHAPTERS:
-            return jsonify(error=f"A job is already queued or running for {chapter_id}."), 409
-    job = Job(chapter_id, "script", slug, ch_no, 0)
-    job.append_log(f"Queued Claude script for {chapter_id}…")
+    try:
+        job = _new_script_job(_sanitize_chapter((request.get_json(silent=True) or {}).get("chapter") or ""),
+                              *_scope_params())
+    except Refused as e:
+        return jsonify(error=str(e)), e.status
     _enqueue(job)
     return jsonify(ok=True, job_id=job.id, job=job.public())
+
+
+def _new_script_job(chapter_id: str, slug: str | None, ch_no: str | None) -> "Job":
+    if not (slug and ch_no and projects.exists(slug)):
+        raise Refused("Open a project chapter first.")
+    status = claude_cli.cli_status()
+    if not status["ready"]:
+        raise Refused(status["message"], 409)
+    if not (_strip_path(chapter_id).exists() or _downloaded_pdf(chapter_id)):
+        raise Refused("Download the chapter first.")
+    _refuse_if_busy(chapter_id, "A job")
+    job = Job(chapter_id, "script", slug, ch_no, 0)
+    job.append_log(f"Queued Claude script for {chapter_id}…")
+    return job
 
 
 @app.get("/api/jobs")
@@ -2120,14 +2169,18 @@ def api_job_cancel(job_id):
             _ACTIVE_CHAPTERS.discard(job.chapter_id)
             return jsonify(ok=True, job=job.public())
         if job.status == "running":
-            job.cancel_requested = True
-            if job.proc and job.proc.poll() is None:
-                try:
-                    job.proc.terminate()
-                except Exception:  # noqa: BLE001
-                    pass
+            _stop_running(job)
             return jsonify(ok=True, job=job.public())
     return jsonify(error=f"Job already {job.status}."), 409
+
+
+def _stop_running(job: "Job") -> None:
+    job.cancel_requested = True
+    if job.proc and job.proc.poll() is None:
+        try:
+            job.proc.terminate()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def _video_url(chapter_id: str, mp4: Path, slug: str | None, ch_no: str | None) -> str | None:
@@ -3275,6 +3328,192 @@ def api_library_delete(slug):
     return jsonify(ok=True, freed=freed, statuses=statuses)
 
 
+# --------------------------------------------------------------------------- #
+# Batch automation (batch.py): the whole pipeline for several chapters of a project. Each
+# stage runner calls the same functions the matching button's route does.
+# --------------------------------------------------------------------------- #
+_BATCHES: dict[str, batch.Batch] = {}
+_BATCH_LOCK = threading.Lock()
+
+
+def _entries_from_state(state: dict) -> list[dict]:
+    """Export entries for editor-state lines, as the editor's Export button builds them."""
+    return [{"line_text": line["text"], "duration_s": line.get("duration_s") or 4, "mode": line.get("mode"),
+             "frames": [{"bbox": f["bbox"], "flip": bool(f.get("flip")), "blur": f.get("blur") or []}
+                        for f in line.get("frames", [])]} for line in state["lines"]]
+
+
+def _chapter_pdf(chapter_id: str) -> Path:
+    pdf = _downloaded_pdf(chapter_id)
+    if pdf is None:
+        raise Refused("Download the chapter first.")
+    return pdf
+
+
+def _voiced(chapter_id: str) -> bool:
+    beats = Manifest.load(chapter_work_dir(chapter_id)).beats
+    return bool(beats) and all(beat.audio and Path(beat.audio).is_file() for beat in beats)
+
+
+def _stages_on_disk(chapter_id: str) -> list[str]:
+    """The leading pipeline stages whose output the chapter already has. Call inside its scope."""
+    exists = {
+        "download": lambda: _downloaded_pdf(chapter_id) is not None,
+        "split": lambda: bool(_existing_gemini_parts(chapter_id)),
+        "stitch": lambda: _strip_path(chapter_id).exists(),
+        "script": lambda: claude_engine.read_narration(_claude_state_path(chapter_id)) is not None,
+        "export": lambda: (_framer_dir(chapter_id) / "mapping.json").is_file(),
+        "audio": lambda: _voiced(chapter_id),
+        "video": lambda: (chapter_output_dir(chapter_id) / "recap.mp4").is_file(),
+    }
+    done = []
+    for stage in batch.LANE_STAGES:
+        if not exists[stage]():
+            break
+        done.append(stage)
+    return done
+
+
+def _cancel_job(job_id: str) -> None:
+    job = _JOBS.get(job_id)
+    if job and job.status == "running":
+        _stop_running(job)
+
+
+def _batch_env(slug: str) -> batch.BatchEnv:
+    def chapter_id(n: int) -> str:
+        return f"{slug}_ch{n}"
+
+    def batch_settings() -> dict:
+        return projects.load(slug)["settings"]["batch"]
+
+    def run_job(b: batch.Batch, n: int, job: Job) -> None:
+        b.attach(n, job.id)
+        _run_now(job)
+        if job.status != "done":
+            raise RuntimeError(job.message or f"job {job.status}")
+
+    def download(b: batch.Batch, n: int) -> None:
+        _download_chapter(projects.load(slug)["url"], str(n), chapter_id(n), slug, str(n))
+
+    def split(b: batch.Batch, n: int) -> None:
+        for event in _build_gemini_parts_stream(_chapter_pdf(chapter_id(n)), chapter_id(n)):
+            if event["type"] == "log":
+                b.report(n, event["line"])
+
+    def stitch(b: batch.Batch, n: int) -> None:
+        _stitch_chapter(_chapter_pdf(chapter_id(n)), chapter_id(n))
+
+    def script(b: batch.Batch, n: int) -> None:
+        b.gate()
+        job = _new_script_job(chapter_id(n), slug, str(n))
+        job.before_claude_call = b.gate
+        run_job(b, n, job)
+
+    def export(b: batch.Batch, n: int) -> None:
+        state = _resolve_editor_state(chapter_id(n))
+        if not state or not state.get("lines"):
+            raise Refused("There are no narration lines to export.")
+        _export_chapter(chapter_id(n), _entries_from_state(state), slug, str(n))
+
+    def render(what: str) -> Callable[[batch.Batch, int], None]:
+        return lambda b, n: run_job(b, n, _new_render_job(chapter_id(n), what, slug, str(n)))
+
+    return batch.BatchEnv(
+        runners={"download": download, "split": split, "stitch": stitch, "script": script,
+                 "export": export, "audio": render("voice"), "video": render("video")},
+        scope=lambda n: config.chapter_scope(projects.chapter_work_dir(slug, n), projects.chapter_output_dir(slug, n)),
+        done_stages=lambda n: _stages_on_disk(chapter_id(n)),
+        review_enabled=lambda: batch_settings()["review_before_audio"],
+        thresholds=lambda: {"five_hour": batch_settings()["five_hour_pct"],
+                            "seven_day": batch_settings()["seven_day_pct"]},
+        cancel_job=_cancel_job)
+
+
+def _batch_path(slug: str) -> Path:
+    return projects.project_dir(slug) / "batch.json"
+
+
+def _resume_batches() -> None:
+    """Pick up each project's batch where the last run left it."""
+    for folder in sorted(PROJECTS_DIR.iterdir()) if PROJECTS_DIR.is_dir() else []:
+        if (folder / "batch.json").is_file() and (resumed := batch.Batch.load(_batch_path(folder.name),
+                                                                            _batch_env(folder.name))):
+            _BATCHES[folder.name] = resumed
+
+
+def _job_summary(job_id: str) -> dict | None:
+    job = _JOBS.get(job_id)
+    return {k: v for k, v in job.public().items() if k != "log"} if job else None
+
+
+@app.get("/api/projects/<slug>/batch")
+def api_batch(slug):
+    """The project's batch (or null) with each chapter's live job, plus subscription usage."""
+    if not projects.exists(slug):
+        return jsonify(error=f"No such project: {slug}"), 404
+    current = _BATCHES.get(slug)
+    return jsonify(batch=current.view(_job_summary) if current else None, usage=claude_usage.snapshot(),
+                   thresholds=projects.load(slug)["settings"]["batch"])
+
+
+@app.post("/api/projects/<slug>/batch")
+def api_batch_start(slug):
+    """Body: JSON {chapters: [n, ...]}. Runs the full pipeline for each, pipelined in order."""
+    if not projects.exists(slug):
+        return jsonify(error=f"No such project: {slug}"), 404
+    known = {c["n"] for c in projects.load(slug)["chapters"]}
+    numbers = sorted({int(n) for n in (request.get_json(silent=True) or {}).get("chapters") or []})
+    if not numbers or not set(numbers) <= known:
+        return jsonify(error="Select chapters of this project."), 400
+    status = claude_cli.cli_status()
+    if not status["ready"]:
+        return jsonify(error=status["message"]), 409
+    with _BATCH_LOCK:
+        previous = _BATCHES.get(slug)
+        if previous and previous.active:
+            return jsonify(error="A batch is already running for this project."), 409
+        if previous:
+            previous.close()
+        _BATCHES[slug] = batch.Batch.create(_batch_path(slug), _batch_env(slug), numbers)
+    return jsonify(ok=True)
+
+
+def _batch_do(slug: str, action: Callable[[batch.Batch], None]):
+    current = _BATCHES.get(slug)
+    if current is None:
+        return jsonify(error="This project has no batch."), 404
+    try:
+        action(current)
+    except ValueError as e:
+        return jsonify(error=str(e)), 409
+    return jsonify(ok=True)
+
+
+@app.post("/api/projects/<slug>/batch/<control>")
+def api_batch_control(slug, control):
+    """control: pause | resume | cancel, for the whole batch."""
+    if control not in ("pause", "resume", "cancel"):
+        return jsonify(error="Unknown control."), 404
+    return _batch_do(slug, lambda b: getattr(b, control)())
+
+
+@app.post("/api/projects/<slug>/batch/chapters/<int:n>/<control>")
+def api_batch_chapter(slug, n, control):
+    """control: retry (from the failed stage) | continue (after frame review)."""
+    actions = {"retry": lambda b: b.retry(n), "continue": lambda b: b.continue_review(n)}
+    if control not in actions:
+        return jsonify(error="Unknown control."), 404
+    return _batch_do(slug, actions[control])
+
+
+@app.post("/api/projects/<slug>/batch/usage")
+def api_batch_usage(slug):
+    """Body: JSON {choice: 'wait' | 'continue'} for the usage limit the batch is holding at."""
+    choice = (request.get_json(silent=True) or {}).get("choice")
+    return _batch_do(slug, lambda b: b.choose(choice))
+
+
 def _port_open(host: str, port: int, timeout: float = 0.3) -> bool:
     """True if something is already accepting connections on host:port."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -3398,6 +3637,7 @@ def main() -> None:
     if not os.environ.pop("RECAPPER_SKIP_BROWSER_OPEN", None):
         threading.Thread(target=lambda: (time.sleep(1.0), webbrowser.open(url)),
                           daemon=True).start()
+    _resume_batches()
     # threaded: a generate job holds an SSE connection open for minutes; other
     # requests (thumbnails, the result video, a second tab) must still be served.
     app.run(host=host, port=port, debug=False, threaded=True)

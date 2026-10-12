@@ -344,11 +344,13 @@ def run_chapter(*, panels: list[Panel], work_dir: Path, state_path: Path, memory
                 brief: str, style: str, models: dict, target_minutes: float, min_frame_s: float,
                 chars_per_sec: float, on_event: Callable[[dict], None],
                 on_limit: Callable[[datetime], None],
-                on_proc: Callable[[subprocess.Popen], None]) -> dict:
+                on_proc: Callable[[subprocess.Popen], None],
+                before_call: Callable[[], None] | None = None) -> dict:
     """Run (or resume) both passes for one chapter and return its narration
     ({blocks, saved_at, shortfall}).
     `on_event` receives a plan event, a step event as each stage starts, and the stream
-    events of each call, all tagged with their pass (None for the story update)."""
+    events of each call, all tagged with their pass (None for the story update).
+    `before_call` runs before every Claude call (see claude_cli.call)."""
     try:
         state = read_json_with_backup_fallback(state_path)
     except (OSError, ValueError):
@@ -369,7 +371,8 @@ def run_chapter(*, panels: list[Panel], work_dir: Path, state_path: Path, memory
             on_event({**event, "pass": number})
 
         return claude_cli.call(content, schema, model, work_dir, usage=usage, mention_event=mention,
-                               panel_ids=set(ids), on_proc=on_proc, on_limit=on_limit, on_event=forward)
+                               panel_ids=set(ids), on_proc=on_proc, on_limit=on_limit, on_event=forward,
+                               before_call=before_call)
 
     if "breakdown" not in state:
         batches = _batches(list(by_id))
