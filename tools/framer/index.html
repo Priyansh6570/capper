@@ -200,7 +200,7 @@
      an overflowing child clips scroll to its start in most browsers. */
   #world { position:relative; transform-origin:0 0; cursor:crosshair; margin:0 auto; }
   img.tile { position:absolute; left:0; display:block; pointer-events:none; user-select:none; }
-  #boxes, #rubber { position:absolute; left:0; top:0; pointer-events:none; }
+  #readmarks, #boxes, #rubber { position:absolute; left:0; top:0; pointer-events:none; }
   .box { position:absolute; pointer-events:none; box-sizing:border-box; }
   .box.frame { border:2px solid var(--frame); background:var(--frame-fill); }
   .box.frame.cur { border-width:3px; background:var(--frame-fill2); }
@@ -209,6 +209,14 @@
     font-weight:700; text-transform:uppercase; letter-spacing:.06em; color:var(--accent-ink);
     background:var(--frame); padding:1px 5px; }
   .box.blur { border:2px solid var(--blur); background:var(--blur-fill); }
+  .box.read { border:1px solid var(--frame); background:var(--frame-fill); opacity:.55; }
+  .box.reading { border:3px solid var(--accent); background:var(--frame-fill2); }
+  .box.skipped { border:2px dashed var(--blur); background:var(--blur-fill); }
+  #claudeFeed { margin:0 0 8px; }
+  #claudeFeed .cfstats { font-size:11px; color:var(--muted); line-height:1.5; }
+  #claudeFeed .cfstats b { color:var(--text); font-weight:600; }
+  #claudeFeed .cftext { margin-top:6px; max-height:150px; overflow:auto; white-space:pre-wrap; word-break:break-word;
+    font-size:12px; line-height:1.45; padding:8px; border:1px solid var(--line); border-radius:var(--r); background:var(--surface); }
   #rubber { display:none; border:2px dashed var(--frame); background:var(--frame-fill); }
   #rubber.blur { border-color:var(--blur); background:var(--blur-fill2); }
 
@@ -916,6 +924,7 @@
       <div class="sidebarcard">
         <div class="sctop"><span class="hint">Progress</span><b id="pjSideProgress"></b></div>
         <div class="sctrack"><div class="scfill" id="pjSideProgressFill"></div></div>
+        <div class="hint" id="pjClaudeUsage" style="margin-top:8px"></div>
       </div>
     </aside>
     <main class="appmain">
@@ -1432,6 +1441,7 @@
       <div class="stage" id="stage">
         <div id="world">
           <div id="tiles"></div>
+          <div id="readmarks"></div>
           <div id="boxes"></div>
           <div id="rubber"></div>
         </div>
@@ -1467,6 +1477,7 @@
           <span class="hint" id="genScriptStatus"></span>
         </div>
         <div id="genScriptResult"></div>
+        <div id="claudeFeed" hidden><div class="cfstats" id="cfStats"></div><div class="cftext" id="cfText"></div></div>
         <textarea id="scriptText" placeholder="Paste the narration script - long paragraphs are auto-split into short segments at sentence boundaries"></textarea>
         <div class="rmeta">
           <input id="txtPath" type="text" placeholder="or a .txt path" style="flex:1; min-width:120px" />
@@ -2000,10 +2011,96 @@ async function startClaudeScript() {
   }
 }
 
+const fmtTokens = n => n >= 1e6 ? (n / 1e6).toFixed(2) + 'M' : n >= 1e3 ? (n / 1e3).toFixed(1) + 'k' : String(n);
+const tokenLine = u => `${fmtTokens(u.input)} in · ${fmtTokens(u.output)} out · ${fmtTokens(u.cache_read)} cache read · ${fmtTokens(u.cache_write)} cache write`;
+const costLine = u => `$${u.cost_usd.toFixed(2)} estimated API cost (not charged on subscription)`;
+const clockSeconds = s => s >= 60 ? `${Math.floor(s / 60)}m ${Math.round(s % 60)}s` : `${Math.round(s)}s`;
+
+// One line per pass for the activity feed, widget and project view alike.
+function claudeStatsHtml(j) {
+  const c = j.claude;
+  if (!c) return '';
+  const elapsed = j.started_at ? clockSeconds((Date.now() - new Date(j.started_at).getTime()) / 1000) : '';
+  const rows = [`<b>${escHtml(j.message || '')}</b> · ${elapsed} elapsed · panels read <b>${c.panels_read}/${c.panels_total}</b>` +
+                (c.current ? ` · now ${escHtml(c.current)}` : '')];
+  [['Pass 1', c.pass1], ['Pass 2', c.pass2]].forEach(([label, u]) => {
+    if (u) rows.push(`${label}: ${tokenLine(u)}` + (u.cost_usd ? ` · ${costLine(u)}` : ''));
+  });
+  if (c.total) rows.push(`<b>Chapter total</b>: ${tokenLine(c.total)} · ${costLine(c.total)}`);
+  return rows.join('<br>');
+}
+
+// Strip viewer marks: panels read so far, the one being read, and any skipped.
+const readState = { panels: [], read: new Set(), current: null, done: false, es: null, jobId: null };
+
+async function loadReadPanels() {
+  const d = await (await fetch(`/api/claude/panels?chapter=${encodeURIComponent(S.chapter_id)}${scopeQS()}`)).json();
+  readState.panels = d.panels;
+  redrawReadMarks();
+}
+
+function redrawReadMarks() {
+  const layer = $('readmarks');
+  layer.innerHTML = '';
+  const newest = Math.max(-1, ...readState.panels.map((p, i) => readState.read.has(p.id) ? i : -1));
+  readState.panels.forEach((p, i) => {
+    const read = readState.read.has(p.id);
+    const skipped = !read && (readState.done || i < newest - READ_BATCH_SLACK);
+    const cls = p.id === readState.current ? 'reading' : read ? 'read' : skipped ? 'skipped' : '';
+    if (cls) layer.appendChild(boxEl(p.bbox, cls, p.id));
+  });
+}
+const READ_BATCH_SLACK = 10;
+
+function scrollToPanel(id) {
+  const p = readState.panels.find(x => x.id === id);
+  if (p) $('stage').scrollTop = trueToWorld(p.bbox[1]) - $('stage').clientHeight / 3;
+}
+
+function openClaudeFeed(job) {
+  if (readState.jobId === job.id) return;
+  closeClaudeFeed();
+  readState.jobId = job.id;
+  readState.read = new Set(); readState.current = null; readState.done = false;
+  $('claudeFeed').hidden = false;
+  $('cfText').textContent = '';
+  loadReadPanels();
+  readState.es = new EventSource(`/api/jobs/${encodeURIComponent(job.id)}/events`);
+  readState.es.onmessage = e => handleClaudeEvent(JSON.parse(e.data));
+}
+
+function closeClaudeFeed() {
+  if (readState.es) readState.es.close();
+  readState.es = null; readState.jobId = null;
+}
+
+function handleClaudeEvent(ev) {
+  const text = $('cfText');
+  if (ev.type === 'read') {
+    readState.read.add(ev.panel);
+    readState.current = ev.panel;
+    redrawReadMarks();
+    scrollToPanel(ev.panel);
+    text.textContent += `\nReading ${ev.panel}\n`;
+  } else if (ev.type === 'text') {
+    text.textContent += ev.text;
+  } else if (ev.type === 'step') {
+    text.textContent += `\n— ${ev.label} —\n`;
+    if (ev.pass === 2) { readState.done = true; readState.current = null; redrawReadMarks(); }
+  } else if (ev.type === 'log') {
+    setStatus(ev.line, ev.line.startsWith('ERROR'));
+    text.textContent += `\n${ev.line}\n`;
+  } else if (ev.type === 'end') {
+    readState.done = true; readState.current = null; redrawReadMarks();
+    closeClaudeFeed();
+    return;
+  }
+  text.scrollTop = text.scrollHeight;
+}
+
 function scriptJobText(j) {
   if (j.status === 'queued') return 'Queued…';
-  const pct = Math.round((j.progress || 0) * 100);
-  return j.resume_at ? j.message : `${j.message} (${pct}%)`;
+  return j.resume_at ? j.message : `${j.message} (${Math.round((j.progress || 0) * 100)}%)`;
 }
 
 function syncScriptJobUI() {
@@ -2015,8 +2112,11 @@ function syncScriptJobUI() {
     S.watchedScriptJobId = job.id;
     $('genScriptStatus').innerHTML = escHtml(scriptJobText(job)) +
       ` <button type="button" class="small ghost" onclick="cancelScriptJob('${job.id}')">Stop</button>`;
+    $('cfStats').innerHTML = claudeStatsHtml(job);
+    if (job.status === 'running') openClaudeFeed(job);
     return;
   }
+  if (job && job.claude) $('cfStats').innerHTML = claudeStatsHtml(job);
   if (!job || S.watchedScriptJobId !== job.id) return;
   S.watchedScriptJobId = null;
   if (job.status === 'done') {
@@ -2346,6 +2446,7 @@ function boxEl(box, cls, lbl) {
 }
 
 function redrawBoxes() {
+  redrawReadMarks();
   boxesDiv.innerHTML = '';
   const ln = activeLine();
   if (!ln) return;
@@ -2883,10 +2984,12 @@ function renderJobWidget() {
     <div class="jwjob running">
       <div class="jwrow"><span class="jwname">${escHtml(jobLabel(j))}</span></div>
       <div class="jwrow"><span class="jwname" style="font-weight:400">${escHtml(j.message || 'Downloading voice model…')}</span></div>
+      ${j.claude ? `<div class="jwrow" style="font-size:11px;font-weight:400;display:block">${claudeStatsHtml(j)}</div>` : ''}
     </div>` : `
     <div class="jwjob running">
       <div class="jwrow"><span class="jwname">${escHtml(jobLabel(j))}</span><span class="jweta">${fmtEtaOrElapsed(j)}</span></div>
       <div class="jwtrack"><div class="jwfill" style="width:${Math.round((j.progress || 0) * 100)}%"></div></div>
+      ${j.claude ? `<div class="jwrow" style="font-size:11px;font-weight:400;display:block">${claudeStatsHtml(j)}</div>` : ''}
     </div>`).join('');
   if (queued.length) {
     html += `<div class="jwqlabel">Queued (${queued.length})</div>` + queued.map(j => `
@@ -3476,6 +3579,9 @@ function paintProjectChrome() {
   ['pjSideTitle', 'stSideTitle', 'hubSideTitle'].forEach(id => { const el = $(id); if (el) el.textContent = p.name; });
   ['pjChapNavCount', 'stChapNavCount', 'hubChapNavCount'].forEach(id => { const el = $(id); if (el) el.textContent = String(chapters.length); });
   if ($('pjSideProgress')) $('pjSideProgress').textContent = `${done}/${chapters.length}`;
+  const usage = p.claude_usage;
+  if ($('pjClaudeUsage')) $('pjClaudeUsage').innerHTML = usage && usage.output
+    ? `Claude tokens: ${tokenLine(usage)}<br>${costLine(usage)}` : '';
   if ($('pjSideProgressFill')) $('pjSideProgressFill').style.width = (chapters.length ? Math.round(100 * done / chapters.length) : 0) + '%';
   const src = $('pjSourceLink');
   if (src) {
@@ -4547,6 +4653,9 @@ function resetEditorState() {
   S.chapter_id = null; S.source_pdf = null; S.strip_w = 0; S.strip_h = 0;
   S.preview_w = 0; S.preview_h = 0; S.tiles = [];
   S.lines = []; S.active = -1; S.activeFrame = -1;
+  closeClaudeFeed();
+  readState.panels = []; readState.read = new Set(); readState.current = null;
+  $('claudeFeed').hidden = true;
   discardPendingAutosave();
   undoStack = []; redoStack = []; updateUndoUI();
   tilesDiv.innerHTML = ''; boxesDiv.innerHTML = '';

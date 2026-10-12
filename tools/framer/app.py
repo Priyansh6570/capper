@@ -1484,11 +1484,23 @@ class Job:
         self.finished_at: str | None = None
         self.proc: subprocess.Popen | None = None
         self.cancel_requested = False
+        self.claude: dict | None = None    # script: live pass / panel / token stats
+        self.events: list[dict] = []       # script: pushed to the browser by /api/jobs/<id>/events
+        self._events_cond = threading.Condition()
 
     def append_log(self, line: str) -> None:
         self.log.append(line)
         if len(self.log) > 500:
             self.log.pop(0)
+
+    def emit(self, event: dict) -> None:
+        with self._events_cond:
+            self.events.append(event)
+            self._events_cond.notify_all()
+
+    def note(self, line: str) -> None:
+        self.append_log(line)
+        self.emit({"type": "log", "line": line})
 
     def progress_fraction(self) -> float:
         """Mirrors the old client-side estimate, now computed server-side so
@@ -1517,6 +1529,10 @@ class Job:
         """Seconds until THIS job finishes: remaining run time, plus (for a
         queued job) however long everything ahead of it in line is estimated
         to still take - see _jobs_with_eta()."""
+        if self.status == "running" and self.what == "script":
+            elapsed = (datetime.now(timezone.utc) - datetime.fromisoformat(self.started_at)).total_seconds()
+            done = self.progress_fraction()
+            return elapsed * (1.0 - done) / done if done > 0.05 else None
         if self.status == "running":
             return max(0.0, self.estimated_total_s() * (1.0 - self.progress_fraction()))
         if self.status == "queued":
@@ -1532,7 +1548,7 @@ class Job:
             "progress": round(self.progress_fraction(), 4) if self.status == "running" else
                         (1.0 if self.status == "done" else 0.0),
             "message": self.message, "video_url": self.video_url, "ok": self.ok,
-            "resume_at": self.resume_at,
+            "resume_at": self.resume_at, "claude": self.claude,
             "downloading_model": self.downloading_model,
             "log": list(self.log), "created_at": self.created_at,
             "started_at": self.started_at, "finished_at": self.finished_at,
@@ -1604,6 +1620,7 @@ def _run_job(job: "Job") -> None:
         {"brand": _run_brand_job, "script": _run_script_job}.get(job.what, _run_pipeline_job)(job)
     finally:
         job.finished_at = _now_iso()
+        job.emit({"type": "end"})
         _record_history(job)
         with _JOBS_LOCK:
             _ACTIVE_CHAPTERS.discard(job.chapter_id)
@@ -1845,20 +1862,47 @@ def _ensure_panels(chapter_id: str) -> list[Panel]:
 
 def _run_script_job(job: "Job") -> None:
     slug, ch_no, chapter_id = job.slug, job.ch_no, job.chapter_id
+    read: set[str] = set()
+    panel_ids: list[str] = []
 
-    def on_step(label: str, fraction: float) -> None:
-        job.message, job.fraction = label + "…", fraction
-        job.append_log(job.message)
+    def set_progress(floor: float, span: float, done: int) -> None:
+        job.fraction = floor + span * min(1.0, done / job.claude["panels_total"])
+
+    def on_event(event: dict) -> None:
+        stats, kind = job.claude, event["type"]
+        if kind == "log":
+            job.note(event["line"])
+            return
+        if kind == "step":
+            stats["pass"] = event["pass"]
+            job.message = event["label"]
+            job.note(event["label"] + "…")
+            job.fraction = {1: 0.02, 2: 0.60, None: 0.95}[event["pass"]]
+            missing = [p for p in panel_ids if p not in read]
+            if event["pass"] == 2 and read and missing:
+                job.note(f"Pass 1 did not read {len(missing)} panel(s): {', '.join(missing[:20])}")
+        elif kind == "read":
+            read.add(event["panel"])
+            stats["panels_read"] = len(read)
+            set_progress(0.02, 0.43, len(read))
+        elif kind == "cover":
+            floor, span = (0.45, 0.15) if event["pass"] == 1 else (0.60, 0.35)
+            set_progress(floor, span, int(event["panel"][1:]))
+        elif kind == "usage":
+            stats[f"pass{event['pass']}"] = event["usage"]
+        stats["current"] = event.get("panel", stats["current"])
+        job.emit(event)
 
     def on_limit(resume_at: datetime) -> None:
         job.resume_at = resume_at.isoformat(timespec="seconds")
         job.message = f"Usage limit reached - resumes at {resume_at:%H:%M}"
-        job.append_log(job.message)
+        job.note(job.message)
         while datetime.now().astimezone() < resume_at:
             if job.cancel_requested:
                 raise RuntimeError("Stopped by user.")
             time.sleep(1)
         job.resume_at = None
+        job.note("Usage limit reset - resuming.")
 
     def on_proc(proc: subprocess.Popen) -> None:
         job.proc = proc
@@ -1866,23 +1910,36 @@ def _run_script_job(job: "Job") -> None:
     try:
         with config.chapter_scope(projects.chapter_work_dir(slug, ch_no), projects.chapter_output_dir(slug, ch_no)):
             settings = projects.load(slug)["settings"]
-            on_step("Splitting the strip into panels", 0.02)
+            job.message = "Splitting the strip into panels"
+            job.fraction = 0.02
+            split_started = time.monotonic()
             panels = _ensure_panels(chapter_id)
+            job.note(f"{len(panels)} panels ready ({time.monotonic() - split_started:.0f}s)")
+            panel_ids[:] = [p.id for p in panels]
+            job.claude = {"pass": None, "panels_read": 0, "panels_total": len(panels), "current": None,
+                          "pass1": None, "pass2": None, "total": None}
             voice = settings["gemini"]
             style = [_narration_voice(voice["tone"], voice["narration_type"])]
             if voice["style_reference"].strip():
                 style.append(_style_reference_directive(voice["style_reference"]))
+            state_path = _claude_state_path(chapter_id)
             blocks = claude_engine.run_chapter(
                 panels_dir=chapter_work_dir(chapter_id) / "panels",
-                state_path=_claude_state_path(chapter_id),
+                state_path=state_path,
                 memory_path=projects.story_memory_path(slug),
                 ch_no=int(ch_no),
                 brief=settings["claude"]["series_brief"],
                 style="\n\n".join(style),
                 models={"comprehension": settings["claude"]["comprehension_model"],
                         "narration": settings["claude"]["narration_model"]},
-                panel_ids=[p.id for p in panels],
-                on_step=on_step, on_limit=on_limit, on_proc=on_proc)
+                panel_ids=panel_ids,
+                on_event=on_event, on_limit=on_limit, on_proc=on_proc)
+            total = claude_engine.read_usage(state_path)["total"]
+        job.claude["total"] = total
+        job.emit({"type": "total", "usage": total})
+        job.note(f"Chapter total: {total['input']:,} in, {total['output']:,} out, {total['cache_read']:,} cache read, "
+                 f"{total['cache_write']:,} cache write; estimated API cost ${total['cost_usd']:.2f} "
+                 "(not charged on subscription)")
         job.status, job.ok, job.fraction = "done", True, 1.0
         job.message = f"Narration ready - {len(blocks)} block(s)."
     except Exception as e:  # noqa: BLE001 - report, don't crash the worker
@@ -1891,7 +1948,7 @@ def _run_script_job(job: "Job") -> None:
         else:
             job.status, job.ok = "failed", False
             job.message = f"{type(e).__name__}: {e}"
-            job.append_log(f"ERROR: {job.message}")
+            job.note(f"ERROR: {job.message}")
     finally:
         job.resume_at = None
 
@@ -1913,6 +1970,41 @@ def _state_from_narration(chapter_id: str) -> dict | None:
             "frames": [{"bbox": boxes[i], "flip": False, "blur": []} for i in block["panel_ids"] if i in boxes],
         } for block in narration["blocks"]],
     }
+
+
+@app.get("/api/jobs/<job_id>/events")
+def api_job_events(job_id):
+    """Server-sent stream of a script job's events (see Job.emit), replayed from
+    Last-Event-ID so a reconnect or a reload picks up where it left off."""
+    job = _JOBS.get(job_id)
+    if job is None:
+        return jsonify(error="job not found"), 404
+    next_id = int(request.headers.get("Last-Event-ID", -1)) + 1
+
+    def stream():
+        nonlocal next_id
+        while True:
+            with job._events_cond:
+                if next_id >= len(job.events):
+                    job._events_cond.wait(timeout=15)
+                batch = job.events[next_id:]
+            if not batch:
+                yield ": keepalive\n\n"
+            for event in batch:
+                yield f"id: {next_id}\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
+                next_id += 1
+                if event["type"] == "end":
+                    return
+
+    return Response(stream(), mimetype="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@app.get("/api/claude/panels")
+def api_claude_panels():
+    """The chapter's panel ids and strip boxes, for the strip viewer's read marks."""
+    chapter_id = _sanitize_chapter(request.args.get("chapter", ""))
+    return jsonify(panels=[{"id": p.id, "bbox": p.bbox} for p in _manifest_panels(chapter_id)])
 
 
 @app.get("/api/claude/status")
@@ -2563,6 +2655,9 @@ def api_get_project(slug):
     for ch in project["chapters"]:
         video = projects.chapter_video_path(slug, ch["n"])
         ch["duration"] = branding.duration_of(video) if ch["status"] == "complete" and video.is_file() else None
+    chapter_totals = [(claude_engine.read_usage(projects.chapter_work_dir(slug, ch["n"]) / "claude" / "state.json")
+                       or {}).get("total") for ch in project["chapters"]]
+    project["claude_usage"] = claude_engine.sum_usage([t for t in chapter_totals if t])
     return jsonify(project=project)
 
 

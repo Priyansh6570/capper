@@ -1,19 +1,15 @@
-# Work log - Claude Code script engine + automatic panel splitting
+# Work log - live Claude Code activity, token totals, stall fix
 
-- New `tools/framer/panel_split.py`: cuts the stitched strip at near-uniform gutter rows into full-width
-  `work/<ch>/panels/P001.png…`, drops blank/sliver panels, splits very tall ones at the most uniform row
-  near the middle, records them as `Page.panels` in the chapter manifest.
-- New `tools/framer/claude_engine.py`: drives the `claude` CLI (`-p --output-format json --json-schema
-  --allowedTools Read`, cwd = panel folder, no `--bare`). Pass 1 = factual breakdown, pass 2 = narration
-  blocks via `--resume`. State saved after each pass in `work/<ch>/claude/state.json`; story-so-far +
-  character sheet in `projects/<slug>/story_memory.json`. Usage limit -> job pauses until reset, resumes itself.
-- `app.py`: `script` job type on the existing queue, `POST /api/script/claude`, `GET /api/claude/status`,
-  narration pre-fills the framer (one full-panel box per panel id; newest of saved state / pre-fill wins).
-  Export keeps the panels in the manifest; `/api/generate` now requires exported narration lines.
-  Gemini prompt helpers split into `_narration_voice` / `_style_reference_directive` (Gemini output unchanged).
-- `projects.py` + `index.html`: settings `script_engine` (gemini|claude), `claude.{series_brief,
-  comprehension_model, narration_model}`; the script button and Settings card follow the chosen engine.
-- Tone / narration type / style reference still live under `settings.gemini` and apply to both engines.
+- Diagnosis (ch4): the claude call was not hung - `--output-format json` prints nothing until the end, so the UI sat on a
+  fixed 10% / fixed-estimate ETA while Claude read one panel per turn (152 panels in 23 min, tens of millions of cache tokens).
+- `claude_engine.py`: calls now use `--output-format stream-json --verbose --include-partial-messages` (+ `--json-schema`),
+  parsed live into events: panel reads, streamed text, per-pass token usage (summed from `message_delta`, matches the final
+  result), rate-limit and API-retry notices. Prompt asks for 8 Reads per turn. After a usage limit the interrupted session is
+  resumed instead of restarted. Per-pass and chapter totals (+ `total_cost_usd`, seconds) saved in `claude/state.json`.
+- `app.py`: script jobs expose `claude` stats (pass, panels read/total, tokens) in `/api/jobs`, progress/ETA from real work,
+  SSE push at `/api/jobs/<id>/events`, `/api/claude/panels`, project `claude_usage` total.
+- `index.html`: live feed under the script button (Reading Pxxx, streamed text), strip marks (read / reading / skipped, auto-scroll),
+  stats in the editor, corner widget and project sidebar; "estimated API cost (not charged on subscription)".
 
-Next: restart the app, pick "Claude Code" under Settings -> Script generation, then "Generate script with Claude"
-in a chapter. Then `git add tools/framer work_log.md` and commit.
+Next: restart done; run "Generate script with Claude" on a chapter (ch4 pass 1 was never saved - the earlier run hit the
+usage limit, then lost the network).
