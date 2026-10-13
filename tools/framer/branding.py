@@ -99,6 +99,9 @@ def clip_source(slug: str, kind: str) -> Path:
     return path
 
 
+AUDIO_BITRATE = "64k"   # narration only; the merge's audio is re-encoded once here
+
+
 def _normalize_cmd(ffmpeg: str, src: Path, out: Path, target: dict, info: dict) -> list:
     w, h, rate = target["width"], target["height"], target["sample_rate"]
     layout = "stereo" if target["channels"] == 2 else "mono"
@@ -122,7 +125,7 @@ def _encode_args(target: dict) -> list:
     args = ["-c:v", "libx264", "-preset", "medium", "-crf", "18"]
     if target["profile"]:
         args += ["-profile:v", target["profile"]]
-    return args + ["-c:a", "aac", "-b:a", "192k", "-ar", str(target["sample_rate"]),
+    return args + ["-c:a", "aac", "-b:a", AUDIO_BITRATE, "-ar", str(target["sample_rate"]),
                    "-ac", str(target["channels"])]
 
 
@@ -179,7 +182,7 @@ def _fade_in_cmd(ffmpeg: str, raw: Path, out: Path, target: dict) -> list:
     return [ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-nostats", "-progress", "pipe:1",
             "-i", str(raw), "-map", "0:v:0", "-map", "0:a:0", "-c:v", "copy",
             "-af", f"volume='{ramp}':eval=frame,aformat=channel_layouts={layout}",
-            "-c:a", "aac", "-b:a", "192k", "-ar", str(target["sample_rate"]),
+            "-c:a", "aac", "-b:a", AUDIO_BITRATE, "-ar", str(target["sample_rate"]),
             "-ac", str(target["channels"]), "-f", "mp4", str(out)]
 
 

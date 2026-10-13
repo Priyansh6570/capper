@@ -14,8 +14,8 @@ overhead. This stage skips it:
      hardcoded here before that setting existed; "cut" uses a plain `concat`
      instead, since a 0-duration xfade isn't a reliable no-op); the per-beat
      narration is delayed onto the timeline and mixed; a looped music bed is
-     sidechain-DUCKED under the narration. Encoded with h264_nvenc when
-     available, else libx264.
+     sidechain-DUCKED under the narration. Encoded with libx264 at a constant quality
+     chosen by the project's `video.quality` preset (see QUALITY).
   3. MoviePy is kept only as a FALLBACK if the ffmpeg path fails (it reuses the
      same precomposed stills, so it never re-composites in Python either) -
      it only distinguishes cut vs. a plain crossfade, see _assemble_moviepy().
@@ -55,7 +55,7 @@ from pathlib import Path
 from config import ROOT, chapter_output_dir, chapter_work_dir, NO_CONSOLE
 from manifest import Manifest, Panel
 from atomic_io import read_json_with_backup_fallback
-from gpu import ffmpeg_path, nvenc_works, nvidia_gpu, record_usage
+from gpu import ffmpeg_path, record_usage
 
 # --- frame + template constants ------------------------------------------- #
 W, H = 1920, 1080
@@ -83,6 +83,19 @@ BG_BRIGHTNESS = 0.40   # darken background to ~40% brightness
 MUSIC_VOL = 0.06       # static music bed volume (low; ducked further under speech)
 NARRATION_VOL = 1.15   # slight narration boost so speech sits above the bed
 AUDIO_SR = 48000       # common sample rate for the audio graph
+# Output size presets (project setting `video.quality`). x264 at a constant quality (crf): the
+# stills barely change, so it spends bits only where the picture moves. A lower height and a
+# blurred background (a looping video is full-screen motion, the most expensive thing in the
+# frame) are what bring a chapter down to tens of megabytes.
+QUALITY = {
+    "tiny":     {"height": 720,  "crf": 38, "preset": "medium", "audio_kbps": 40,  "audio_channels": 1, "blur_bg": True},
+    "small":    {"height": 720,  "crf": 33, "preset": "medium", "audio_kbps": 48,  "audio_channels": 1, "blur_bg": True},
+    "standard": {"height": 1080, "crf": 29, "preset": "medium", "audio_kbps": 64,  "audio_channels": 1, "blur_bg": False},
+    "high":     {"height": 1080, "crf": 23, "preset": "medium", "audio_kbps": 128, "audio_channels": 2, "blur_bg": False},
+}
+DEFAULT_QUALITY = "tiny"
+BG_BLUR_DIVISOR = 10   # a blurred background is rendered at 1/10 size and scaled back up
+FFMPEG_PROGRESS_EVERY_S = 3.0   # how often ffmpeg's progress line is passed on to the log
 
 MUSIC_DIR = ROOT / "assets" / "music"
 MUSIC_EXTS = {".mp3", ".wav", ".m4a", ".ogg", ".oga", ".aac", ".flac"}
@@ -150,33 +163,21 @@ def _load_media_settings(chapter_id: str) -> dict:
 _SLIDE_XFADE = {"left": "slideleft", "right": "slideright", "up": "slideup", "down": "slidedown"}
 
 
-def _zoompan_filter(dur: float, zoom_in: bool) -> str:
-    """One still's `zoompan` filter for the alternating Ken Burns effect:
-    `zoom_in` eases 1.0 -> KEN_BURNS_MAX_ZOOM over the still's on-screen time,
-    `zoom_in=False` starts there and eases back to 1.0 - run() alternates
-    this per item (odd position zooms in, even zooms out) so consecutive
-    beats visibly alternate direction. `x`/`y` keep the crop centered as zoom
-    changes, so it never samples outside the still's own canvas (zoom is
-    always >= 1.0, never revealing undefined edges).
-
-    `d=1` (one output frame per input frame) is required: the upstream
-    `-loop 1 -framerate FPS -t dur` input already emits one (identical) frame
-    per output tick, so zoompan's own `d` would otherwise multiply that
-    further. `on` is zoompan's per-instance output-frame counter - a
-    CLOSED-FORM function of it (not the self-referential `zoom` variable) is
-    used deliberately, so "zoom out" can start already-zoomed without
-    depending on any previous frame's state; `on` resets to 0 for each still
-    because every item gets its own zoompan filter instance in the graph
-    (see _build_filtergraph), each processing only that one still's frames."""
-    n = max(1, round(dur * FPS))
-    denom = max(1, n - 1)
-    span = KEN_BURNS_MAX_ZOOM - 1.0
-    if zoom_in:
-        z = f"1+{span:.4f}*on/{denom}"
-    else:
-        z = f"{KEN_BURNS_MAX_ZOOM:.4f}-{span:.4f}*on/{denom}"
-    return (f"zoompan=z='{z}':d=1:s={W}x{H}:fps={FPS}:"
-            f"x='(iw-iw/zoom)/2':y='(ih-ih/zoom)/2'")
+def _zoom_filter(dur: float, zoom_in: bool, width: int, height: int) -> str:
+    """One still's Ken Burns filter: `zoom_in` eases the scale from 1.0 to KEN_BURNS_MAX_ZOOM
+    over the still's on-screen time, otherwise from there back to 1.0, and render alternates
+    them per still. The picture is resampled with `perspective`, which takes fractional
+    coordinates; ffmpeg's `zoompan` crops at whole pixels, so its zoom visibly shivers. The
+    window stays centred and inside the canvas (zoom >= 1). `on` is the output-frame counter
+    of this still's own filter instance, so the curve is a closed form of it and "zoom out"
+    can start already zoomed. Smoothstep easing keeps the start and end of each move gentle."""
+    last = max(1, round(dur * FPS) - 1)
+    progress = f"(on/{last})"
+    eased = f"({progress}*{progress}*(3-2*{progress}))"
+    zoom = f"(1+{KEN_BURNS_MAX_ZOOM - 1.0:.4f}*{eased if zoom_in else f'(1-{eased})'})"
+    x0, y0 = f"{width / 2}*(1-1/{zoom})", f"{height / 2}*(1-1/{zoom})"
+    return (f"perspective=x0='{x0}':y0='{y0}':x1='{width}-{x0}':y1='{y0}':x2='{x0}':y2='{height}-{y0}':"
+            f"x3='{width}-{x0}':y3='{height}-{y0}':sense=source:interpolation=cubic:eval=frame")
 
 
 def _resolve_animation(settings: dict) -> tuple[str, float, bool]:
@@ -598,7 +599,7 @@ def _precompose(items: list[dict], stills_dir: Path, wm=None, bg=None,
 def _build_filtergraph(items: list[dict], music_in: int | None, total: float,
                        transition: str = "fade", crossfade: float = CROSSFADE,
                        ken_burns: bool = False, bg_in: int | None = None,
-                       bg_dim: float = 0.85
+                       bg_dim: float = 0.85, out_height: int = H, blur_bg: bool = False
                        ) -> tuple[str, str, str | None]:
     """Build the ffmpeg filter_complex for the video transition chain + audio
     mix. Image inputs are 0..n-1; narration audio inputs follow; the video
@@ -610,7 +611,7 @@ def _build_filtergraph(items: list[dict], music_in: int | None, total: float,
     with - see _resolve_animation()/run(). Returns (filter_complex,
     video_label, audio_label|None).
 
-    `ken_burns` applies a per-still zoompan (see _zoompan_filter) BEFORE the
+    `ken_burns` applies a per-still zoom (see _zoom_filter) BEFORE the
     transition chain, alternating zoom direction by each item's position.
 
     `bg_in` (set only when a video background is configured - see
@@ -619,8 +620,11 @@ def _build_filtergraph(items: list[dict], music_in: int | None, total: float,
     background the stills were precomposed with a TRANSPARENT background
     (see _precompose(..., transparent=True)) - the transition chain's output
     is then `overlay`'d onto the looped/dimmed background video as this
-    function's last step, and THAT combined result becomes `vlabel`."""
+    function's last step, and THAT combined result becomes `vlabel`. `blur_bg` renders that
+    background blurred (cheap to encode); `out_height` is the size the whole video chain runs at
+    (stills are scaled down first, so a 720p render does well under half the work of 1080p)."""
     n = len(items)
+    out_w = round(out_height * W / H / 2) * 2
     parts: list[str] = []
     fg_pix_fmt = "yuva420p" if bg_in is not None else "yuv420p"
     fg_out = "[vout_fg]" if bg_in is not None else "[vout]"
@@ -628,8 +632,10 @@ def _build_filtergraph(items: list[dict], music_in: int | None, total: float,
     # --- video: normalize each still (+ optional Ken Burns), then chain transitions ---
     for i in range(n):
         chain = f"[{i}:v]fps={FPS}"
+        if out_height != H:
+            chain += f",scale={out_w}:{out_height}:flags=lanczos"
         if ken_burns:
-            chain += "," + _zoompan_filter(items[i]["dur"], zoom_in=(i % 2 == 0))
+            chain += "," + _zoom_filter(items[i]["dur"], (i % 2 == 0), out_w, out_height)
         chain += f",format={fg_pix_fmt},setsar=1[v{i}]"
         parts.append(chain)
     if n == 1:
@@ -652,9 +658,11 @@ def _build_filtergraph(items: list[dict], music_in: int | None, total: float,
     # --- video background: loop it under the (transparent) foreground track ---
     if bg_in is not None:
         brightness = max(-1.0, min(1.0, float(bg_dim) - 1.0))
+        soften = (f"scale={out_w // BG_BLUR_DIVISOR}:{out_height // BG_BLUR_DIVISOR},"
+                  f"scale={out_w}:{out_height}:flags=bilinear," if blur_bg else "")
         parts.append(
-            f"[{bg_in}:v]scale={W}:{H}:force_original_aspect_ratio=increase,"
-            f"crop={W}:{H},fps={FPS},eq=brightness={brightness:.3f},"
+            f"[{bg_in}:v]scale={out_w}:{out_height}:force_original_aspect_ratio=increase,"
+            f"crop={out_w}:{out_height},{soften}fps={FPS},eq=brightness={brightness:.3f},"
             f"format=yuv420p,setsar=1[bgv]"
         )
         parts.append(f"[bgv]{vlabel}overlay=x=0:y=0:format=auto,format=yuv420p[vout]")
@@ -707,7 +715,7 @@ def _build_filtergraph(items: list[dict], music_in: int | None, total: float,
 
 
 def _build_cmd(ffmpeg: str, items: list[dict], music_path: Path | None,
-               total: float, out: Path, codec: str,
+               total: float, out: Path, quality: dict,
                transition: str = "fade", crossfade: float = CROSSFADE,
                ken_burns: bool = False, video_bg: Path | None = None,
                bg_dim: float = 0.85) -> list[str]:
@@ -735,40 +743,56 @@ def _build_cmd(ffmpeg: str, items: list[dict], music_path: Path | None,
         cmd += ["-stream_loop", "-1", "-i", str(music_path)]
 
     fc, vlabel, alabel = _build_filtergraph(items, music_in, total, transition, crossfade,
-                                            ken_burns, bg_in, bg_dim)
+                                            ken_burns, bg_in, bg_dim, quality["height"], quality["blur_bg"])
     # the graph goes through a file: inline, a long chapter overflows Windows' command-line limit
     script = Path(items[0]["still"]).with_name("filtergraph.txt")
     script.write_text(fc, encoding="utf-8")
     cmd += ["-/filter_complex", str(script), "-map", vlabel]
     if alabel is not None:
-        cmd += ["-map", alabel, "-c:a", "aac", "-b:a", "192k"]
+        cmd += ["-map", alabel, "-c:a", "aac", "-b:a", f"{quality['audio_kbps']}k", "-ac", str(quality["audio_channels"])]
 
-    if codec == "h264_nvenc":
-        cmd += ["-c:v", "h264_nvenc", "-preset", "p4", "-b:v", "8M"]
-    else:
-        cmd += ["-c:v", "libx264", "-preset", "medium", "-crf", "20"]
+    cmd += ["-c:v", "libx264", "-preset", quality["preset"], "-crf", str(quality["crf"]), "-movflags", "+faststart"]
     cmd += ["-pix_fmt", "yuv420p", "-r", str(FPS), "-t", f"{total:.3f}", str(out)]
     return cmd
 
 
+def _run_ffmpeg(cmd: list[str]) -> tuple[int, list[str]]:
+    """Run ffmpeg, printing its progress (at most every few seconds) and any error as they
+    appear. stderr must be piped explicitly: with no console, an inherited one goes nowhere.
+    Returns (exit code, the non-progress lines it printed)."""
+    proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
+                            encoding="utf-8", errors="replace", **NO_CONSOLE)
+    errors, shown = [], 0.0
+    for line in proc.stderr:
+        line = line.strip()
+        if line.startswith("frame="):
+            if time.monotonic() - shown >= FFMPEG_PROGRESS_EVERY_S:
+                shown = time.monotonic()
+                print(f"  {line}", flush=True)
+        elif line:
+            errors.append(line)
+            print(f"  {line}", flush=True)
+    return proc.wait(), errors
+
+
 def _assemble_ffmpeg(items: list[dict], music_path: Path | None, total: float, out: Path,
-                     transition: str = "fade", crossfade: float = CROSSFADE,
+                     quality: dict, transition: str = "fade", crossfade: float = CROSSFADE,
                      ken_burns: bool = False, video_bg: Path | None = None,
                      bg_dim: float = 0.85) -> str:
-    """Render with ffmpeg directly. Tries h264_nvenc (if present) then libx264.
-    Returns the codec used; raises if every attempt fails."""
-    ffmpeg = ffmpeg_path()
-    codecs = ["h264_nvenc", "libx264"] if nvenc_works(ffmpeg) else ["libx264"]
-    last = ""
-    for codec in codecs:
-        cmd = _build_cmd(ffmpeg, items, music_path, total, out, codec, transition, crossfade,
-                         ken_burns, video_bg, bg_dim)
-        proc = subprocess.run(cmd, **NO_CONSOLE)
-        if proc.returncode == 0:
-            return codec
-        last = f"ffmpeg exited {proc.returncode} ({codec})"
-        print(f"  {codec} failed ({last}); trying next encoder")
-    raise RuntimeError(last or "ffmpeg produced no output")
+    """Render with ffmpeg directly. Returns the codec used; raises if ffmpeg fails."""
+    cmd = _build_cmd(ffmpeg_path(), items, music_path, total, out, quality, transition, crossfade,
+                     ken_burns, video_bg, bg_dim)
+    returncode, errors = _run_ffmpeg(cmd)
+    if returncode != 0:
+        raise RuntimeError(f"ffmpeg exited {returncode}: {errors[-1] if errors else 'no message'}")
+    return "libx264"
+
+
+def _resolve_quality(settings: dict) -> tuple[str, dict]:
+    """(name, preset) of the project's output quality; anything unknown falls back to the default."""
+    name = settings.get("quality")
+    name = name if name in QUALITY else DEFAULT_QUALITY
+    return name, QUALITY[name]
 
 
 # --------------------------------------------------------------------------- #
@@ -846,6 +870,7 @@ def run(m: Manifest) -> Manifest:
     mapping = _load_mapping(m.chapter_id)  # framer's multi-frame + mode plan
     settings = _load_media_settings(m.chapter_id)  # framer's per-project media settings
     transition, crossfade, ken_burns = _resolve_animation(settings)
+    quality_name, quality = _resolve_quality(settings)
     items, total, lines = _plan(beats, mapping, crossfade)
     music_path = _resolve_music(settings)
     wm_cfg = settings.get("watermark")
@@ -903,7 +928,7 @@ def run(m: Manifest) -> Manifest:
               f"{' + watermark' if watermark else ''}{' + custom background' if background else ''}"
               f"{' + video background' if video_bg else ''}")
         try:
-            codec = _assemble_ffmpeg(items, music_path, total, out, transition, crossfade,
+            codec = _assemble_ffmpeg(items, music_path, total, out, quality, transition, crossfade,
                                      ken_burns, video_bg, bg_dim)
             path = "ffmpeg"
         except Exception as e:  # noqa: BLE001 - fall back to MoviePy
@@ -919,13 +944,11 @@ def run(m: Manifest) -> Manifest:
         shutil.rmtree(stills_dir, ignore_errors=True)
 
     dt = time.perf_counter() - t0
-    record_usage("video", codec, codec == "h264_nvenc")
-    if codec != "h264_nvenc" and nvidia_gpu():
-        print("  WARNING: an NVIDIA GPU is present but the video was encoded on the CPU "
-              "(h264_nvenc failed or is missing from this ffmpeg build)")
+    record_usage("video", codec, False)
     if music_path:
         print(f"  music bed: {music_path.name} @ vol {MUSIC_VOL} (ducked)")
     print(f"  rendered {len(lines)} lines / {len(items)} stills ({total:.1f}s, "
-          f"{FPS}fps, {codec} via {path}) in {dt:.1f}s -> {out}")
+          f"{FPS}fps, {quality_name} {quality['height']}p, {codec} via {path}, "
+          f"{out.stat().st_size / 1e6:.1f} MB) in {dt:.1f}s -> {out}")
     m.stage = "video"
     return m

@@ -2210,12 +2210,11 @@ def api_job_cancel(job_id):
 
 
 def _stop_running(job: "Job") -> None:
+    """Stop a running job's process and everything it started (a render's ffmpeg outlives
+    its parent otherwise)."""
     job.cancel_requested = True
     if job.proc and job.proc.poll() is None:
-        try:
-            job.proc.terminate()
-        except Exception:  # noqa: BLE001
-            pass
+        subprocess.run(["taskkill", "/F", "/T", "/PID", str(job.proc.pid)], capture_output=True, **NO_CONSOLE)
 
 
 def _video_url(chapter_id: str, mp4: Path, slug: str | None, ch_no: str | None) -> str | None:
@@ -3076,9 +3075,9 @@ def _build_merge_cmd_copy(ffmpeg: str, list_file: Path, out: Path) -> list[str]:
             "-c", "copy", str(out)]
 
 
-def _build_merge_cmd_reencode(ffmpeg: str, codec: str, paths: list[Path], out: Path) -> list[str]:
+def _build_merge_cmd_reencode(ffmpeg: str, size: tuple[int, int], paths: list[Path], out: Path) -> list[str]:
     """Safe path for mismatched inputs: scale/letterbox every video to
-    1920x1080@24fps (never cropped or stretched) and resample audio to a
+    the first video's size @24fps (never cropped or stretched) and resample audio to a
     common format before concatenating, so a stray non-standard render can't
     corrupt or desync the merge."""
     cmd = [ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-stats"]
@@ -3086,19 +3085,16 @@ def _build_merge_cmd_reencode(ffmpeg: str, codec: str, paths: list[Path], out: P
         cmd += ["-i", str(p)]
     parts, vlabels, alabels = [], [], []
     for i in range(len(paths)):
-        parts.append(f"[{i}:v]scale=1920:1080:force_original_aspect_ratio=decrease,"
-                     f"pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=24,format=yuv420p[v{i}]")
-        parts.append(f"[{i}:a]aresample=48000,aformat=channel_layouts=stereo[a{i}]")
+        parts.append(f"[{i}:v]scale={size[0]}:{size[1]}:force_original_aspect_ratio=decrease,"
+                     f"pad={size[0]}:{size[1]}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=24,format=yuv420p[v{i}]")
+        parts.append(f"[{i}:a]aresample=48000,aformat=channel_layouts=mono[a{i}]")
         vlabels.append(f"[v{i}]")
         alabels.append(f"[a{i}]")
     concat_inputs = "".join(v + a for v, a in zip(vlabels, alabels))
     parts.append(f"{concat_inputs}concat=n={len(paths)}:v=1:a=1[vout][aout]")
     cmd += ["-filter_complex", ";".join(parts), "-map", "[vout]", "-map", "[aout]"]
-    if codec == "h264_nvenc":
-        cmd += ["-c:v", "h264_nvenc", "-preset", "p4", "-b:v", "8M"]
-    else:
-        cmd += ["-c:v", "libx264", "-preset", "medium", "-crf", "20"]
-    cmd += ["-c:a", "aac", "-b:a", "192k", "-pix_fmt", "yuv420p", str(out)]
+    cmd += ["-c:v", "libx264", "-preset", "medium", "-crf", "30", "-c:a", "aac", "-b:a", "64k",
+            "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(out)]
     return cmd
 
 
@@ -3175,7 +3171,6 @@ def merge_stream(slug):
             uniform = (
                 len({(i["video"].get("width"), i["video"].get("height"), i["video"].get("codec_name"))
                      for i in infos}) == 1
-                and infos[0]["video"].get("width") == 1920 and infos[0]["video"].get("height") == 1080
                 and len({(i.get("audio") or {}).get("codec_name") for i in infos}) == 1
                 and len({(i.get("audio") or {}).get("sample_rate") for i in infos}) == 1
             )
@@ -3186,17 +3181,17 @@ def merge_stream(slug):
             ffmpeg = gpu.ffmpeg_path()
 
             if uniform:
-                yield _sse({"type": "log", "line": "All inputs are 1920x1080 with matching codecs - "
+                yield _sse({"type": "log", "line": "All inputs share one size and codec - "
                                                     "fast stream-copy merge (no re-encode)."})
                 list_file = out_dir / "_concat_list.txt"
                 _write_concat_list(paths, list_file)
                 cmd = _build_merge_cmd_copy(ffmpeg, list_file, out)
             else:
-                codec = "h264_nvenc" if gpu.nvenc_works(ffmpeg) else "libx264"
+                size = (infos[0]["video"]["width"], infos[0]["video"]["height"])
                 yield _sse({"type": "log",
                             "line": f"Inputs differ in resolution/codec - normalizing every clip to "
-                                    f"1920x1080@24fps before merging ({codec}, slower)."})
-                cmd = _build_merge_cmd_reencode(ffmpeg, codec, paths, out)
+                                    f"{size[0]}x{size[1]}@24fps before merging (slower)."})
+                cmd = _build_merge_cmd_reencode(ffmpeg, size, paths, out)
 
             yield _sse({"type": "log", "line": "$ " + " ".join(cmd)})
             proc = subprocess.Popen(cmd, cwd=str(ROOT), stdout=subprocess.PIPE,

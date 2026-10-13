@@ -46,3 +46,12 @@ The ffmpeg command for a 73-still chapter exceeded the Windows command-line limi
 - `preflight.py`: checks run when you press Run pipeline (Claude login, source URL, ffmpeg/NVENC, disk, voice engine, GPU memory, battery, current usage).
 - Claude tokens/time/cost per chapter and in total. Queue card redesigned (stat tiles, usage meters with limit markers, lane strip).
 - Not tested: the page in a real browser; a full real chapter through auto-wait.
+
+## Render progress + cancel fix
+ffmpeg was started without an explicit stderr, so with the hidden console its progress and errors went nowhere (log stopped at "precomposed", bar stuck at 5%). `_run_ffmpeg` now pipes stderr, prints progress every 3s and reports the real error on failure. Cancel now kills the whole process tree (taskkill /T): a cancelled render used to leave ffmpeg running to completion. Video bitrate is fixed at 8 Mbps (about 1 MB/s, 680 MB for 11 min).
+
+## Video size + smooth zoom (stages/s7_assemble.py)
+- Size: renders were h264_nvenc at a fixed 8 Mbps (~1 MB/s, 1.3 GB for 22 min). Now libx264 constant quality via `QUALITY` presets (project setting Video size: tiny/small/standard/high, default tiny = 720p crf 38, 40 kbps mono audio, blurred background video). Measured on a 67 s sample, per 22 min: tiny 29-37 MB, small ~57, standard ~189. Chapter 6 real render: 14.1 MB for 10 min (565 s).
+- Zoom: `zoompan` crops at whole pixels, so it shivers (frame-to-frame jitter 0.52). Replaced by `perspective` with fractional coordinates and smoothstep easing (jitter 0.002).
+- Merge keeps the stream-copy path for any matching size (it required 1920x1080 before); branding re-encodes the merged audio at 64k instead of 192k.
+- Re-render chapter 5 (and re-merge) to get the small files.

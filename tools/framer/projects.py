@@ -34,6 +34,7 @@ from typing import Optional
 import claude_cli
 from config import PROJECTS_DIR
 from stages import tts_kokoro
+from stages.s7_assemble import DEFAULT_QUALITY, QUALITY
 from atomic_io import atomic_write_text, read_json_with_backup_fallback
 
 # Status rank - forward-only transitions (never downgraded automatically).
@@ -148,6 +149,8 @@ def _default_settings() -> dict:
         # independent of the transition style above; see s7_assemble.
         "animation": {"style": "fade", "direction": "left", "duration": 0.35,
                      "ken_burns": False},
+        # Output size preset for the render, one of s7_assemble.QUALITY.
+        "video": {"quality": DEFAULT_QUALITY},
         # Intro/outro joined onto MERGED videos only (see branding.py). `file`
         # is a custom upload; None means the bundled recapper_intro/outro.mp4.
         # The flags are the project's remembered choice for its next merge.
@@ -395,6 +398,8 @@ def update_settings(slug: str, settings: dict) -> dict:
             anim["direction"] = "left"
         anim["duration"] = max(0.05, min(1.0, float(anim.get("duration", 0.35))))
         anim["ken_burns"] = bool(anim.get("ken_burns"))
+        if project["settings"]["video"].get("quality") not in QUALITY:
+            project["settings"]["video"]["quality"] = DEFAULT_QUALITY
         for clip in project["settings"]["branding"].values():
             clip["enabled"] = bool(clip.get("enabled"))
         gm = project["settings"]["gemini"]
@@ -509,6 +514,7 @@ def media_settings_snapshot(slug: str) -> dict:
         # this key exists even for a project.json saved before this setting
         # existed, so stage 7 always gets a value, never a missing key.
         "animation": s["animation"],
+        "quality": s["video"]["quality"],
     }
     return out
 
