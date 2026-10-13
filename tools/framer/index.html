@@ -533,24 +533,47 @@
 
   .batchcard { background:var(--panel); border:1px solid var(--line); border-radius:var(--r); overflow:hidden; flex-shrink:0; }
   .batchcard[hidden], .batchhold[hidden] { display:none; }
-  .batchhead { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:14px 18px;
-               border-bottom:1px solid var(--line); flex-wrap:wrap; }
-  .batchhead h2 { margin:0 0 3px; text-transform:none; letter-spacing:0; font-size:14px; color:var(--txt); }
-  .batchhead .hint { margin:0; }
+  .batchhead { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:14px 18px; flex-wrap:wrap; }
+  .batchhead .bhtitle { display:flex; align-items:center; gap:10px; }
+  .batchhead h2 { margin:0; text-transform:none; letter-spacing:0; font-size:15px; color:var(--txt); }
   .batchhead .macts { display:flex; gap:8px; }
-  .batchusage { font-family:ui-monospace,Consolas,monospace; font-size:11px; color:var(--muted); }
-  .batchusage b { color:var(--txt); }
-  .batchhold { padding:12px 18px; background:var(--surface); border-bottom:1px solid var(--line); display:flex;
-               align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }
-  .batchhold .holdtext { color:var(--warn); font-size:12.5px; line-height:1.5; }
-  .bchap { padding:12px 18px; border-bottom:1px solid var(--line); display:flex; flex-direction:column; gap:8px; }
-  .bchap:last-child { border-bottom:0; }
+  .bpill { font-size:10px; padding:2px 9px; border-radius:999px; border:1px solid var(--line); color:var(--muted);
+           text-transform:uppercase; letter-spacing:.08em; font-weight:700; }
+  .bpill.running { color:var(--accent-ink); background:var(--accent); border-color:var(--accent); }
+  .bpill.paused { color:var(--warn); border-color:var(--warn); }
+  .bpill.finished { color:var(--ok); border-color:var(--ok); }
+  .bstats { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px; padding:0 18px 14px; }
+  .bstat { background:var(--surface); border:1px solid var(--line); border-radius:var(--r2); padding:10px 12px;
+           display:flex; flex-direction:column; gap:3px; min-width:0; }
+  .bstat .k { font-size:10px; letter-spacing:.1em; text-transform:uppercase; color:var(--muted); }
+  .bstat .v { font-size:20px; font-weight:800; font-variant-numeric:tabular-nums; }
+  .bstat .s { font-size:11px; color:var(--muted); }
+  .bmeters { display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:16px; padding:0 18px 14px; }
+  .bmeter .top { display:flex; justify-content:space-between; gap:8px; font-size:12px; flex-wrap:wrap; }
+  .bmeter .top span:last-child { color:var(--muted); }
+  .bmeter .track { position:relative; height:8px; border-radius:999px; background:var(--input2); margin-top:7px; }
+  .bmeter .fill { height:100%; border-radius:999px; background:var(--ok); transition:width .5s; }
+  .bmeter .fill.hot { background:var(--blur); }
+  .bmeter .limit { position:absolute; top:-3px; bottom:-3px; width:2px; background:var(--txt); opacity:.75; border-radius:2px; }
+  .blanes { display:flex; flex-wrap:wrap; gap:6px; padding:0 18px 14px; }
+  .blane { font-size:11px; padding:3px 10px; border:1px solid var(--line); border-radius:999px; color:var(--muted); }
+  .blane b { font-weight:700; color:var(--txt); }
+  .blane.busy { border-color:var(--accent); color:var(--txt); }
+  .batchhold { padding:12px 18px; background:var(--surface); border-top:1px solid var(--line); border-bottom:1px solid var(--line);
+               display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }
+  .batchhold .holdtext { color:var(--warn); font-size:12.5px; line-height:1.5; flex:1; min-width:240px; }
+  .batchhold .macts { display:flex; gap:8px; }
+  .bchap { padding:14px 18px; border-top:1px solid var(--line); display:flex; flex-direction:column; gap:8px; }
   .bchaphead { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
   .bchaphead .chno { font-family:ui-monospace,Consolas,monospace; font-weight:700; color:var(--accent); font-size:12px; }
   .bchaphead .btitle { font-weight:600; font-size:13.5px; flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .bchaphead .belapsed { font-family:ui-monospace,Consolas,monospace; font-size:11px; color:var(--muted); }
+  .bchaphead .btime { font-family:ui-monospace,Consolas,monospace; font-size:11px; color:var(--muted); }
+  .bchaphead .btime b { color:var(--txt); font-weight:600; }
   .bstages { display:flex; flex-wrap:wrap; gap:4px; }
-  .bstage { font-size:10.5px; padding:2px 8px; border-radius:999px; border:1px solid var(--line); color:var(--muted); }
+  .bstage { font:inherit; font-size:10.5px; padding:2px 8px; border-radius:999px; border:1px solid var(--line);
+            color:var(--muted); background:none; cursor:default; font-variant-numeric:tabular-nums; }
+  .bstage.rerun { cursor:pointer; }
+  .bstage.rerun:hover { border-color:var(--accent); color:var(--txt); }
   .bstage.done { color:var(--ok); border-color:var(--ok); }
   .bstage.running { color:var(--accent-ink); background:var(--accent); border-color:var(--accent); }
   .bstage.waiting { color:var(--warn); border-color:var(--warn); }
@@ -558,8 +581,19 @@
   .btrack { height:5px; background:var(--input2); border-radius:999px; overflow:hidden; }
   .btrack > div { height:100%; background:var(--accent); transition:width .4s; }
   .bdetail { font-size:12px; color:var(--muted); line-height:1.5; }
+  .bwarn { font-size:12px; color:var(--warn); border:1px solid var(--warn); border-radius:var(--r2); padding:6px 10px; line-height:1.45; }
   .berror { font-size:12px; color:var(--blur); word-break:break-word; }
+  .bclaude { font-size:11px; color:var(--muted); }
   .bacts { display:flex; gap:8px; flex-wrap:wrap; }
+  .blog summary { cursor:pointer; font-size:11.5px; color:var(--muted); }
+  .blog pre { margin:6px 0 0; max-height:240px; overflow:auto; padding:8px; background:var(--surface);
+              border:1px solid var(--line); border-radius:var(--r2); font:11px/1.5 ui-monospace,Consolas,monospace;
+              white-space:pre-wrap; word-break:break-word; }
+  .pfrow { display:flex; gap:10px; padding:6px 0; font-size:12.5px; line-height:1.45; border-bottom:1px solid var(--line); }
+  .pfrow:last-child { border-bottom:0; }
+  .pfrow .pfmark { width:18px; font-weight:800; flex:none; }
+  .pfrow.ok .pfmark { color:var(--ok); } .pfrow.warn .pfmark { color:var(--warn); } .pfrow.fail .pfmark { color:var(--blur); }
+  .pfrow span span { display:block; color:var(--muted); }
 
   .chaptercard { background:var(--panel); border:1px solid var(--line); border-radius:var(--r); overflow:hidden; flex-shrink:0; }
   .chaptercardhead { display:flex; align-items:center; justify-content:space-between; padding:14px 18px;
@@ -979,13 +1013,15 @@
         </div>
         <div class="batchcard" id="batchCard" hidden>
           <div class="batchhead">
-            <div><h2>Pipeline queue</h2><p class="hint" id="batchSummary"></p></div>
-            <div class="batchusage" id="batchUsage"></div>
+            <div class="bhtitle"><h2>Pipeline</h2><span class="bpill" id="batchPill"></span></div>
             <div class="macts">
               <button id="batchPauseBtn" class="small ghost"><span>Pause</span></button>
               <button id="batchCancelBtn" class="small danger" data-icon="stop" data-ic-size="13"><span>Cancel</span></button>
             </div>
           </div>
+          <div class="bstats" id="batchStats"></div>
+          <div class="bmeters" id="batchMeters"></div>
+          <div class="blanes" id="batchLanes"></div>
           <div class="batchhold" id="batchHold" hidden>
             <span class="holdtext" id="batchHoldText"></span>
             <div class="macts">
@@ -1241,6 +1277,10 @@
             <div class="setbody">
               <label class="togglesw"><input type="checkbox" id="batchReview" style="position:absolute;opacity:0;width:1px;height:1px" /><span class="tk"></span>Pause for frame review before audio</label>
               <span class="hint">When on, each chapter waits after its frames are exported until you have reviewed it in the editor and clicked Continue.</span>
+              <label class="togglesw"><input type="checkbox" id="batchAutoWait" style="position:absolute;opacity:0;width:1px;height:1px" /><span class="tk"></span>Wait out the 5-hour limit automatically</label>
+              <span class="hint">When the 5-hour limit below is reached, Claude work waits for the window to reset and then resumes by itself; chapters already past Claude keep going. The weekly limit always asks you first.</span>
+              <label class="togglesw"><input type="checkbox" id="batchNotify" style="position:absolute;opacity:0;width:1px;height:1px" /><span class="tk"></span>Desktop notifications</label>
+              <span class="hint">A Windows notification when a chapter finishes or fails, the pipeline finishes, or a usage limit holds it.</span>
               <div class="setgridpair">
                 <label class="field" style="margin:0"><span class="lbl" style="text-transform:none;letter-spacing:0;font-weight:400;color:var(--muted)">Hold Claude work at 5-hour usage (%)</span>
                   <input id="batchFiveHour" type="number" min="1" max="100" step="1" />
@@ -3716,7 +3756,7 @@ async function openProjectScreen(slug) {
   $('pjTitle').textContent = 'Loading…';
   $('chList').innerHTML = '<div class="empty">Loading…</div>';
   MERGE_SELECTION.clear();
-  BATCH_SELECTION.clear(); batchAnchor = null; BATCH = null;
+  BATCH_SELECTION.clear(); batchAnchor = null; BATCH = null; batchDoneCount = 0; BATCH_LOG_VIEW.clear();
   $('batchCard').hidden = true;
   $('mergeStatus').textContent = ''; $('mergeResult').innerHTML = '';
   try {
@@ -3756,31 +3796,131 @@ async function batchCall(path, body) {
   return ok;
 }
 
-function usageLine(usage) {
-  const part = w => usage[w] ? `${WINDOW_LABELS[w]} <b>${Math.round(usage[w].percent)}%</b> (resets ${new Date(usage[w].resets_at * 1000).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' })})` : `${WINDOW_LABELS[w]} -`;
-  const seen = usage.seen_at ? ` · as of ${timeAgo(new Date(usage.seen_at * 1000).toISOString())}` : '';
-  return `Claude usage: ${part('five_hour')} · ${part('seven_day')}${seen}`;
+// Clocks tick every second without redrawing the card: data-since/-until/-base count up,
+// data-left counts down to an epoch time.
+function tickBatchClocks() {
+  document.querySelectorAll('#batchCard [data-since]').forEach(el => {
+    const until = el.dataset.until ? Date.parse(el.dataset.until) : Date.now();
+    el.textContent = fmtClock(Math.max(0, (until - Date.parse(el.dataset.since)) / 1000 + Number(el.dataset.base || 0)));
+  });
+  document.querySelectorAll('#batchCard [data-left]').forEach(el => {
+    el.textContent = fmtClock(Math.max(0, Number(el.dataset.left) - Date.now() / 1000));
+  });
+}
+setInterval(tickBatchClocks, 1000);
+
+const timeOfDay = epoch => new Date(epoch * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+function dayAndTime(epoch) {
+  const when = new Date(epoch * 1000);
+  return when.toDateString() === new Date().toDateString() ? timeOfDay(epoch)
+    : when.toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' });
+}
+
+function statTile(label, value, sub) {
+  return `<div class="bstat"><span class="k">${label}</span><span class="v">${value}</span><span class="s">${sub || '&nbsp;'}</span></div>`;
+}
+
+function claudeTotals(chapters) {
+  return chapters.reduce((sum, c) => {
+    if (c.claude) for (const k of ['input', 'output', 'seconds', 'cost_usd']) sum[k] += c.claude[k] || 0;
+    return sum;
+  }, { input: 0, output: 0, seconds: 0, cost_usd: 0 });
+}
+
+function batchStatsHtml(data) {
+  const live = ['running', 'paused'].includes(data.status);
+  const done = data.chapters.filter(c => c.state === 'done').length;
+  const failed = data.chapters.filter(c => c.state === 'failed').length;
+  const claude = claudeTotals(data.chapters);
+  const clock = `<span data-since="${data.created_at}" data-until="${data.finished_at || ''}"></span>`;
+  const left = live && data.finish_at
+    ? statTile('Time left', `<span data-left="${data.finish_at}"></span>`,
+        `done about ${dayAndTime(data.finish_at)}${data.hold ? ' · includes the usage wait' : ''}`)
+    : statTile('Time left', '-', live ? 'working it out' : '');
+  return statTile('Pipeline clock', clock, live ? 'since you started it' : 'total time') + left +
+    statTile('Chapters', `${done}/${data.chapters.length}`, failed ? `${failed} failed` : 'complete') +
+    statTile('Claude', fmtTokens(claude.input + claude.output), claude.seconds
+      ? `${fmtTokens(claude.output)} out · ${clockSeconds(claude.seconds)} of Claude time` : 'tokens so far');
+}
+
+function meterHtml(window, usage, limit) {
+  const u = usage[window];
+  if (!u) return `<div class="bmeter"><div class="top"><span><b>${WINDOW_LABELS[window]}</b> usage</span><span>no reading yet</span></div><div class="track"></div></div>`;
+  const hot = u.percent >= limit;
+  return `<div class="bmeter"><div class="top"><span><b>${WINDOW_LABELS[window]}</b> usage ${Math.round(u.percent)}%</span>` +
+    `<span>limit ${limit}% · resets ${dayAndTime(u.resets_at)} (in <span data-left="${u.resets_at}"></span>)</span></div>` +
+    `<div class="track"><div class="fill ${hot ? 'hot' : ''}" style="width:${Math.min(100, u.percent)}%"></div>` +
+    `<div class="limit" style="left:${limit}%"></div></div></div>`;
+}
+
+function lanesHtml(data) {
+  return BATCH_STAGES.map(stage => {
+    const here = data.chapters.filter(c => c.stage === stage);
+    const running = here.find(c => c.state === 'running' || c.state === 'waiting');
+    const queued = here.filter(c => c.state === 'queued').length;
+    return `<span class="blane ${running ? 'busy' : ''}"><b>${stage}</b> ${running ? '#' + running.n : '-'}${queued ? ` · ${queued} waiting` : ''}</span>`;
+  }).join('');
 }
 
 function holdText(hold) {
-  const reached = hold.windows.map(w => `${WINDOW_LABELS[w.window]} usage is ${Math.round(w.percent)}% (limit ${w.threshold}%, resets ${new Date(w.resets_at * 1000).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' })})`).join('; ');
-  const waiting = hold.choice === 'wait' ? ` Waiting for the reset at ${new Date(hold.resume_at * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}; the batch resumes by itself.` : '';
-  return `Claude work is on hold: ${reached}. Chapters already past the Claude stage keep going.${waiting}`;
+  const reached = hold.windows.map(w => `${WINDOW_LABELS[w.window]} usage is ${Math.round(w.percent)}% (limit ${w.threshold}%)`).join('; ');
+  const resumes = `<span data-left="${hold.resume_at}"></span> (at ${dayAndTime(hold.resume_at)})`;
+  return hold.choice === 'wait'
+    ? `Claude work is on hold: ${reached}. ${hold.automatic ? 'Waiting automatically' : 'Waiting'} for the reset; the pipeline resumes by itself in ${resumes}. Chapters already past Claude keep going.`
+    : `Claude work is on hold: ${reached}. Wait for the reset (in ${resumes}) or continue anyway?`;
 }
 
-function chapterElapsed(c) {
-  if (!c.started_at) return '';
-  const end = c.finished_at ? new Date(c.finished_at) : new Date();
-  return clockSeconds((end - new Date(c.started_at)) / 1000);
+function stageSeconds(c, stage) {
+  return c.stage_seconds[stage] || 0;
 }
 
 function stageChips(c) {
   const stages = BATCH_STAGES.filter(s => s !== 'review' || c.stage === 'review' || c.completed.includes('review'));
   return stages.map(s => {
+    const running = c.state === 'running' && s === c.stage && c.stage_started_at;
     const cls = c.completed.includes(s) ? 'done' : s === c.stage ? ({ running: 'running', waiting: 'waiting', failed: 'failed' }[c.state] || '') : '';
-    const seconds = c.stage_seconds[s] ? ` · ${clockSeconds(c.stage_seconds[s])}` : '';
-    return `<span class="bstage ${cls}">${s}${cls === 'done' ? seconds : ''}</span>`;
+    const time = running ? ` · <span data-since="${c.stage_started_at}" data-base="${stageSeconds(c, s)}"></span>`
+      : stageSeconds(c, s) ? ` · ${clockSeconds(stageSeconds(c, s))}` : '';
+    if (s === 'review' || c.state === 'running') return `<span class="bstage ${cls}">${s}${time}</span>`;
+    return `<button class="bstage rerun ${cls}" data-stage="${s}" title="Run ${s} again, then the steps after it">${s}${time} ↻</button>`;
   }).join('');
+}
+
+const BATCH_LOG_VIEW = new Map();   // chapter -> {open, scrollTop, stick}: survives the card being redrawn
+
+function batchLogHtml(c) {
+  const view = BATCH_LOG_VIEW.get(c.n);
+  const open = view ? view.open : ['running', 'failed'].includes(c.state);
+  return `<details class="blog" ${open ? 'open' : ''}><summary>Log (${c.log.length} lines)</summary>` +
+         `<pre>${escHtml(c.log.join('\n'))}</pre></details>`;
+}
+
+function rememberBatchLogs() {
+  $('batchList').querySelectorAll('.bchap').forEach(row => {
+    const details = row.querySelector('.blog'), pre = row.querySelector('.blog pre');
+    BATCH_LOG_VIEW.set(+row.dataset.n, { open: details.open, scrollTop: pre.scrollTop,
+      stick: pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 8 });
+  });
+}
+
+function restoreBatchLogs() {
+  $('batchList').querySelectorAll('.bchap').forEach(row => {
+    const view = BATCH_LOG_VIEW.get(+row.dataset.n), pre = row.querySelector('.blog pre');
+    pre.scrollTop = !view || view.stick ? pre.scrollHeight : view.scrollTop;
+  });
+}
+
+function chapterTimeHtml(c) {
+  const spent = Object.values(c.stage_seconds).reduce((a, b) => a + b, 0);
+  const active = c.state === 'running' && c.stage_started_at
+    ? `<span data-since="${c.stage_started_at}" data-base="${spent}"></span>` : clockSeconds(spent);
+  const eta = c.finish_at && c.state !== 'done' ? ` · done about ${dayAndTime(c.finish_at)}` : '';
+  return `<span class="btime">working time <b>${active}</b>${eta}</span>`;
+}
+
+function claudeLine(u) {
+  return u ? `<div class="bclaude">Claude: ${fmtTokens(u.input)} in · ${fmtTokens(u.output)} out · ${clockSeconds(u.seconds)}` +
+    ` · about $${u.cost_usd.toFixed(2)} at API prices (not charged on a subscription)</div>` : '';
 }
 
 function batchChapterHtml(c) {
@@ -3791,19 +3931,22 @@ function batchChapterHtml(c) {
     : c.state === 'done' ? 'Done.' : c.state === 'cancelled' ? 'Cancelled.' : c.state === 'queued' ? `Waiting for ${c.stage}.` : '';
   const progress = c.state === 'running' && job && job.status === 'running' ? Math.round((job.progress || 0) * 100) : null;
   const acts = [];
-  if (c.state === 'failed') acts.push(`<button class="small primary" data-act="retry">Retry from ${escHtml(c.stage)}</button>`);
+  if (c.state === 'failed') acts.push(`<button class="small primary" data-act="rerun" data-stage="${c.stage}">Retry ${escHtml(c.stage)}</button>`);
   if (c.state === 'waiting') acts.push(`<button class="small primary" data-act="continue">Continue to audio</button>`);
   if (['waiting', 'failed'].includes(c.state) || (c.state === 'running' && job && job.claude)) {
     acts.push(`<button class="small ghost" data-act="open">${c.state === 'running' ? 'Watch live' : 'Open editor'}</button>`);
   }
   return `<div class="bchap" data-n="${c.n}">
     <div class="bchaphead"><span class="chno">#${c.n}</span><span class="btitle">${escHtml(ch ? ch.title : '')}</span>
-      <span class="belapsed">${chapterElapsed(c)}</span></div>
+      <span class="stpill st-${c.state === 'done' ? 'complete' : 'downloaded'}">${c.state === 'waiting' ? 'awaiting review' : c.state}</span>${chapterTimeHtml(c)}</div>
     <div class="bstages">${stageChips(c)}</div>
     ${progress === null ? '' : `<div class="btrack"><div style="width:${progress}%"></div></div>`}
     <div class="bdetail">${detail}</div>
+    ${c.warnings.map(w => `<div class="bwarn">⚠ ${escHtml(w)}</div>`).join('')}
     ${c.error ? `<div class="berror">${escHtml(c.error)}</div>` : ''}
+    ${claudeLine(c.claude)}
     ${acts.length ? `<div class="bacts">${acts.join('')}</div>` : ''}
+    ${batchLogHtml(c)}
   </div>`;
 }
 
@@ -3812,23 +3955,48 @@ function renderBatch() {
   $('batchCard').hidden = !data;
   paintBatchRunButton();
   if (!data) return;
-  const counts = s => data.chapters.filter(c => c.state === s).length;
-  $('batchSummary').textContent = `${data.status === 'paused' ? 'Paused' : data.status === 'running' ? 'Running' : data.status === 'cancelled' ? 'Cancelled' : 'Finished'}: ` +
-    `${counts('done')} of ${data.chapters.length} done` + (counts('failed') ? `, ${counts('failed')} failed` : '') + (counts('waiting') ? `, ${counts('waiting')} awaiting review` : '');
-  $('batchUsage').innerHTML = usageLine(BATCH.usage);
+  const pill = $('batchPill');
+  pill.textContent = data.hold ? 'waiting for usage reset' : data.status;
+  pill.className = `bpill ${data.hold ? 'paused' : data.status}`;
+  $('batchStats').innerHTML = batchStatsHtml(data);
+  $('batchMeters').innerHTML = ['five_hour', 'seven_day'].map(w => meterHtml(w, BATCH.usage, BATCH.thresholds[w === 'five_hour' ? 'five_hour_pct' : 'seven_day_pct'])).join('');
+  $('batchLanes').innerHTML = lanesHtml(data);
   $('batchPauseBtn').querySelector('span').textContent = data.status === 'paused' ? 'Resume' : 'Pause';
   $('batchPauseBtn').disabled = $('batchCancelBtn').disabled = !batchActive();
   $('batchHold').hidden = !data.hold;
   if (data.hold) {
-    $('batchHoldText').textContent = holdText(data.hold);
-    $('batchWaitBtn').disabled = data.hold.choice === 'wait';
+    $('batchHoldText').innerHTML = holdText(data.hold);
+    $('batchWaitBtn').hidden = data.hold.choice === 'wait';
   }
+  rememberBatchLogs();
   $('batchList').innerHTML = data.chapters.map(batchChapterHtml).join('');
+  restoreBatchLogs();
+  tickBatchClocks();
   $('batchList').querySelectorAll('[data-act]').forEach(btn => {
     const n = +btn.closest('.bchap').dataset.n;
     btn.onclick = () => btn.dataset.act === 'open' ? navTo({ project: CURRENT_PROJECT.slug, chapter: n })
-      : batchCall(`/chapters/${n}/${btn.dataset.act}`);
+      : batchCall(`/chapters/${n}/${btn.dataset.act}`, { stage: btn.dataset.stage });
   });
+  $('batchList').querySelectorAll('.bstage.rerun').forEach(chip => {
+    const n = +chip.closest('.bchap').dataset.n, stage = chip.dataset.stage;
+    chip.onclick = async () => {
+      const costly = stage === 'script' ? ' This asks Claude to read the chapter again and uses subscription usage.' : '';
+      if (await askConfirm({ title: `Run ${stage} again?`, body: `Chapter ${n} runs ${stage} and every step after it again.${costly}`, confirmLabel: 'Run again' })) {
+        batchCall(`/chapters/${n}/rerun`, { stage });
+      }
+    };
+  });
+  refreshProjectWhenChaptersFinish(data);
+}
+
+let batchDoneCount = 0;
+async function refreshProjectWhenChaptersFinish(data) {
+  const done = data.chapters.filter(c => c.state === 'done').length;
+  if (done > batchDoneCount) {
+    await loadCurrentProject(CURRENT_PROJECT.slug);
+    renderChapterList();
+  }
+  batchDoneCount = done;
 }
 
 function paintBatchRunButton() {
@@ -3837,19 +4005,32 @@ function paintBatchRunButton() {
   $('batchRunBtn').querySelector('span').textContent = picked ? `Run pipeline for ${picked}` : 'Run pipeline';
 }
 
+const PREFLIGHT_MARKS = { ok: '✓', warn: '!', fail: '✕' };
+
 async function startBatch() {
   const chapters = [...BATCH_SELECTION].sort((a, b) => a - b);
+  const { ok, data } = await apiJson(projectApi(`/batch/preflight?chapters=${chapters.join(',')}`), 'GET');
+  if (!ok) { showToast(data.error || 'Preflight check failed.', null, null, 'warn'); return; }
+  if (data.checks.some(c => c.status !== 'ok')) {
+    const blocked = data.checks.some(c => c.status === 'fail');
+    const rows = data.checks.map(c => `<div class="pfrow ${c.status}"><span class="pfmark">${PREFLIGHT_MARKS[c.status]}</span>` +
+      `<span><b>${escHtml(c.name)}</b><span>${escHtml(c.detail)}</span></span></div>`).join('');
+    const go = await askConfirm({ title: blocked ? 'Fix these before starting' : 'Check before you start', body: rows,
+                                  confirmLabel: blocked ? 'Close' : 'Run anyway' });
+    if (blocked || !go) return;
+  }
   if (await batchCall('', { chapters })) {
     BATCH_SELECTION.clear(); batchAnchor = null;
     renderChapterList();
   }
 }
 
+$('batchList').addEventListener('toggle', rememberBatchLogs, true);
 $('batchRunBtn').onclick = startBatch;
 $('batchSelectAllBtn').onclick = selectAllBatch;
 $('batchPauseBtn').onclick = () => batchCall(BATCH.batch.status === 'paused' ? '/resume' : '/pause');
 $('batchCancelBtn').onclick = async () => {
-  if (await askConfirm({ title: 'Cancel the pipeline?', body: 'Running stages are stopped. Finished stages are kept, so a later run resumes from them.', confirmLabel: 'Cancel pipeline' })) batchCall('/cancel');
+  if (await askConfirm({ title: 'Cancel the pipeline?', body: 'Running steps are stopped. Finished steps are kept, and you can run any step again from the chapter cards.', confirmLabel: 'Cancel pipeline' })) batchCall('/cancel');
 };
 $('batchWaitBtn').onclick = () => batchCall('/usage', { choice: 'wait' });
 $('batchContinueBtn').onclick = () => batchCall('/usage', { choice: 'continue' });
@@ -4670,6 +4851,8 @@ function fillSettingsForm() {
   $('claudeMinFrame').value = cl.min_frame_s || 3;
   const bt = s.batch || {};
   $('batchReview').checked = !!bt.review_before_audio;
+  $('batchAutoWait').checked = bt.auto_wait_five_hour !== false;
+  $('batchNotify').checked = bt.notifications !== false;
   $('batchFiveHour').value = bt.five_hour_pct || 70;
   $('batchSevenDay').value = bt.seven_day_pct || 60;
   paintScriptEngine();
@@ -4789,6 +4972,8 @@ function currentSettingsFromForm() {
     },
     batch: {
       review_before_audio: $('batchReview').checked,
+      auto_wait_five_hour: $('batchAutoWait').checked,
+      notifications: $('batchNotify').checked,
       five_hour_pct: parseInt($('batchFiveHour').value, 10) || 70,
       seven_day_pct: parseInt($('batchSevenDay').value, 10) || 60,
     },
@@ -5211,6 +5396,8 @@ $('claudeNarrationModel').onchange = saveSettingsDebounced;
 $('claudeTargetMinutes').oninput = saveSettingsDebounced;
 $('claudeMinFrame').oninput = saveSettingsDebounced;
 $('batchReview').onchange = saveSettingsDebounced;
+$('batchAutoWait').onchange = saveSettingsDebounced;
+$('batchNotify').onchange = saveSettingsDebounced;
 $('batchFiveHour').oninput = saveSettingsDebounced;
 $('batchSevenDay').oninput = saveSettingsDebounced;
 $('geminiKeySaveBtn').onclick = saveGeminiKey;

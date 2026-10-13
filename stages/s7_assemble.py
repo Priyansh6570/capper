@@ -736,7 +736,10 @@ def _build_cmd(ffmpeg: str, items: list[dict], music_path: Path | None,
 
     fc, vlabel, alabel = _build_filtergraph(items, music_in, total, transition, crossfade,
                                             ken_burns, bg_in, bg_dim)
-    cmd += ["-filter_complex", fc, "-map", vlabel]
+    # the graph goes through a file: inline, a long chapter overflows Windows' command-line limit
+    script = Path(items[0]["still"]).with_name("filtergraph.txt")
+    script.write_text(fc, encoding="utf-8")
+    cmd += ["-/filter_complex", str(script), "-map", vlabel]
     if alabel is not None:
         cmd += ["-map", alabel, "-c:a", "aac", "-b:a", "192k"]
 

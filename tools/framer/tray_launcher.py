@@ -114,6 +114,7 @@ def main() -> None:
         return  # another instance is already running - see _resolve_port()
     url = f"http://{HOST}:{port}/"
 
+    framer_app._resume_batches()
     server_thread = threading.Thread(
         target=lambda: framer_app.app.run(host=HOST, port=port, debug=False, threaded=True),
         daemon=True,

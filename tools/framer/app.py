@@ -70,6 +70,8 @@ import gpu  # noqa: E402
 import projects  # noqa: E402 - the project system (this package: tools/framer/projects.py)
 import branding  # noqa: E402 - intro/outro for merged videos
 import batch  # noqa: E402 - pipelined multi-chapter automation
+import notify  # noqa: E402 - desktop notifications
+import preflight  # noqa: E402 - checks before a batch starts
 import claude_cli  # noqa: E402 - the local Claude Code CLI
 import claude_usage  # noqa: E402 - subscription usage read from the CLI's rate-limit events
 import claude_engine  # noqa: E402 - Claude script engine: panels -> narration blocks
@@ -490,9 +492,11 @@ class Refused(Exception):
         self.status = status
 
 
-def _download_chapter(url: str, chapter_no: str, raw_id: str, slug: str | None, ch_no: str | None) -> dict:
+def _download_chapter(url: str, chapter_no: str, raw_id: str, slug: str | None, ch_no: str | None,
+                      log: Callable[[str], None] | None = None) -> dict:
     """Download ONE chapter as a PDF from whichever site adapter (see tools/framer/sites/)
-    matches `url`. Returns {chapter_id, pdf, page_count, steps}."""
+    matches `url`; `log` also receives each step as it happens. Returns {chapter_id, pdf,
+    page_count, steps}."""
     if not url:
         raise Refused("Paste a webtoons.com or kingofshojo.com chapter URL.")
     adapter = sites.detect(url)
@@ -506,7 +510,7 @@ def _download_chapter(url: str, chapter_no: str, raw_id: str, slug: str | None, 
     steps = [f"Downloading {adapter.SITE_NAME} chapter {chapter_no or '(from URL)'} "
              f"into {dest} …"]
     try:
-        pdf = adapter.download_chapter(url, chapter_no, dest, log=steps.append)
+        pdf = adapter.download_chapter(url, chapter_no, dest, log=lambda line: (steps.append(line), log and log(line)))
     except sites.DownloadTimeout as e:
         raise Refused(str(e), 504) from e
     except Exception as e:  # noqa: BLE001 - surface the adapter's own message to the UI
@@ -1507,15 +1511,22 @@ class Job:
         self.cancel_requested = False
         self.claude: dict | None = None    # script: live pass / panel / token stats
         self.before_claude_call: Callable[[], None] | None = None   # script: a batch's usage-limit gate
+        self.mirror: Callable[[str], None] | None = None   # a batch's per-chapter log
+        self.last_activity = time.time()   # when the job last logged or emitted anything
+        self.render = 0.0                  # video: share of the frames encoded, read from ffmpeg / MoviePy output
         self.events: list[dict] = []       # script: pushed to the browser by /api/jobs/<id>/events
         self._events_cond = threading.Condition()
 
     def append_log(self, line: str) -> None:
+        self.last_activity = time.time()
         self.log.append(line)
         if len(self.log) > 500:
             self.log.pop(0)
+        if self.mirror:
+            self.mirror(line)
 
     def emit(self, event: dict) -> None:
+        self.last_activity = time.time()
         with self._events_cond:
             self.events.append(event)
             self._events_cond.notify_all()
@@ -1532,15 +1543,15 @@ class Job:
         combined run."""
         if self.what in FIXED_ESTIMATE_S:
             return self.fraction
-        if self.total_beats <= 0 or (self.audio == 0 and self.video == 0):
+        if self.total_beats <= 0 or (self.audio == 0 and self.video == 0 and self.render == 0):
             return 0.0
         a = min(1.0, self.audio / self.total_beats)
         v = min(1.0, self.video / self.total_beats)
         if self.what == "video":
-            return min(1.0, 0.05 + 0.90 * v)
+            return min(1.0, 0.05 * v + 0.90 * self.render)
         if self.what == "voice":
             return min(1.0, 0.05 + 0.90 * a)
-        return min(1.0, 0.05 + 0.70 * a + 0.22 * v)
+        return min(1.0, 0.05 + 0.70 * a + 0.03 * v + 0.22 * self.render)
 
     def estimated_total_s(self) -> float:
         if self.what in FIXED_ESTIMATE_S:
@@ -1711,6 +1722,24 @@ def _run_brand_job(job: "Job") -> None:
             job.append_log(f"ERROR: {job.message}")
 
 
+_FFMPEG_TIME = re.compile(r"\btime=(\d+):(\d+):(\d+(?:\.\d+)?)")
+_MOVIEPY_FRAMES = re.compile(r"frame_index:.*?(\d+)/(\d+)")
+
+
+def _render_fraction(line: str, output_dir: Path) -> float | None:
+    """How far a render has got, from one line of s7's output: ffmpeg's `time=` progress
+    against the planned length, or MoviePy's frame counter. None for any other line."""
+    if frames := _MOVIEPY_FRAMES.search(line):
+        return int(frames[1]) / max(1, int(frames[2]))
+    if clock := _FFMPEG_TIME.search(line):
+        try:
+            total = json.loads((output_dir / "video_plan.json").read_text(encoding="utf-8"))["total_s"]
+        except (OSError, ValueError, KeyError):
+            return None
+        return (int(clock[1]) * 3600 + int(clock[2]) * 60 + float(clock[3])) / max(1.0, total)
+    return None
+
+
 def _run_pipeline_job(job: "Job") -> None:
     slug, ch_no, chapter_id = job.slug, job.ch_no, job.chapter_id
     work_dir = projects.chapter_work_dir(slug, ch_no) if slug and ch_no else chapter_work_dir(chapter_id)
@@ -1760,6 +1789,8 @@ def _run_pipeline_job(job: "Job") -> None:
                 elif re.match(r"^\s*line \d+:", line):
                     job.video += 1
                     job.downloading_model = False
+                elif (done := _render_fraction(line, output_dir)) is not None:
+                    job.render = max(job.render, done)
                 elif "[voice-model]" in line:
                     # see stages/s6_tts.py._ensure_model_cached - surfaces a
                     # not-yet-cached model download with a live message instead
@@ -3408,14 +3439,20 @@ def _batch_env(slug: str) -> batch.BatchEnv:
     def batch_settings() -> dict:
         return projects.load(slug)["settings"]["batch"]
 
+    def mirror(b: batch.Batch, n: int, line: str) -> None:
+        b.log(n, line)
+        if "falling back to MoviePy" in line:
+            b.warn(n, "The fast ffmpeg render failed, so MoviePy is rendering instead: much slower, no Ken Burns.")
+
     def run_job(b: batch.Batch, n: int, job: Job) -> None:
         b.attach(n, job.id)
+        job.mirror = lambda line: mirror(b, n, line)
         _run_now(job)
         if job.status != "done":
             raise RuntimeError(job.message or f"job {job.status}")
 
     def download(b: batch.Batch, n: int) -> None:
-        _download_chapter(projects.load(slug)["url"], str(n), chapter_id(n), slug, str(n))
+        _download_chapter(projects.load(slug)["url"], str(n), chapter_id(n), slug, str(n), lambda line: b.log(n, line))
 
     def split(b: batch.Batch, n: int) -> None:
         for event in _build_gemini_parts_stream(_chapter_pdf(chapter_id(n)), chapter_id(n)):
@@ -3440,15 +3477,23 @@ def _batch_env(slug: str) -> batch.BatchEnv:
     def render(what: str) -> Callable[[batch.Batch, int], None]:
         return lambda b, n: run_job(b, n, _new_render_job(chapter_id(n), what, slug, str(n)))
 
+    def video(b: batch.Batch, n: int) -> None:
+        render("video")(b, n)
+        projects.set_status(slug, str(n), "complete")
+
     return batch.BatchEnv(
         runners={"download": download, "split": split, "stitch": stitch, "script": script,
-                 "export": export, "audio": render("voice"), "video": render("video")},
+                 "export": export, "audio": render("voice"), "video": video},
         scope=lambda n: config.chapter_scope(projects.chapter_work_dir(slug, n), projects.chapter_output_dir(slug, n)),
         done_stages=lambda n: _stages_on_disk(chapter_id(n)),
         review_enabled=lambda: batch_settings()["review_before_audio"],
         thresholds=lambda: {"five_hour": batch_settings()["five_hour_pct"],
                             "seven_day": batch_settings()["seven_day_pct"]},
-        cancel_job=_cancel_job)
+        auto_wait=lambda: batch_settings()["auto_wait_five_hour"],
+        cancel_job=_cancel_job,
+        notify=lambda title, message: notify.toast(title, message) if batch_settings()["notifications"] else None,
+        claude_total=lambda n: (claude_engine.read_usage(projects.chapter_work_dir(slug, n) / "claude" / "state.json")
+                                or {}).get("total"))
 
 
 def _batch_path(slug: str) -> Path:
@@ -3465,7 +3510,7 @@ def _resume_batches() -> None:
 
 def _job_summary(job_id: str) -> dict | None:
     job = _JOBS.get(job_id)
-    return {k: v for k, v in job.public().items() if k != "log"} if job else None
+    return {**{k: v for k, v in job.public().items() if k != "log"}, "last_activity": job.last_activity} if job else None
 
 
 @app.get("/api/projects/<slug>/batch")
@@ -3476,6 +3521,15 @@ def api_batch(slug):
     current = _BATCHES.get(slug)
     return jsonify(batch=current.view(_job_summary) if current else None, usage=claude_usage.snapshot(),
                    thresholds=projects.load(slug)["settings"]["batch"])
+
+
+@app.get("/api/projects/<slug>/batch/preflight")
+def api_batch_preflight(slug):
+    """Checks to run before a batch of `?chapters=1,2,3` starts."""
+    if not projects.exists(slug):
+        return jsonify(error=f"No such project: {slug}"), 404
+    numbers = [int(n) for n in request.args.get("chapters", "").split(",") if n.strip().isdigit()]
+    return jsonify(checks=preflight.check(projects.load(slug), numbers))
 
 
 @app.post("/api/projects/<slug>/batch")
@@ -3521,8 +3575,9 @@ def api_batch_control(slug, control):
 
 @app.post("/api/projects/<slug>/batch/chapters/<int:n>/<control>")
 def api_batch_chapter(slug, n, control):
-    """control: retry (from the failed stage) | continue (after frame review)."""
-    actions = {"retry": lambda b: b.retry(n), "continue": lambda b: b.continue_review(n)}
+    """control: rerun (body {stage}: that step and those after it) | continue (after frame review)."""
+    stage = (request.get_json(silent=True) or {}).get("stage")
+    actions = {"rerun": lambda b: b.rerun(n, stage), "continue": lambda b: b.continue_review(n)}
     if control not in actions:
         return jsonify(error="Unknown control."), 404
     return _batch_do(slug, actions[control])

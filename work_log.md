@@ -28,3 +28,21 @@ frames stay inside the visible window at every moment). `_compose_grid_still` is
   Torch is still +cu128 (cuda True). First Kokoro use downloads the model and spaCy's English model.
 
 Restart the app to pick everything up.
+
+## Hotfix: long chapters fell back to MoviePy (stages/s7_assemble.py)
+The ffmpeg command for a 73-still chapter exceeded the Windows command-line limit (WinError 206), so the render silently fell back to MoviePy (~10x slower, no Ken Burns). The filter graph now goes through `-/filter_complex <file>`. New renders pick it up without an app restart.
+
+## Queue card: per-step re-run, logs, auto-complete, resume fix
+- Click any step chip (e.g. video) to run it and the steps after it again; works on a cancelled batch too (`Batch.rerun`, `POST /batch/chapters/<n>/rerun {stage}`). Re-running script asks first (uses Claude usage).
+- Each chapter has a full log (stage markers, download/split output, job output); progress lines update in place.
+- A chapter is marked complete as soon as its video step finishes; the chapter list refreshes by itself.
+- Video progress now follows ffmpeg/MoviePy output instead of sitting at 95%.
+- Fix: the tray launcher never called `_resume_batches()`, so batches did not resume after a restart.
+
+## Pipeline upgrade: auto-wait, estimates, preflight, notifications, redesign
+- Auto-wait (batch setting, default on): a reached 5-hour limit waits for the reset (+60s) and resumes by itself; the weekly limit still asks. The queue shows a countdown and the finish estimate includes the wait.
+- Times: chapter cards show working time (sum of its steps, live on the running one) and per-step times; one pipeline clock for the whole run (`created_at` to `finished_at`). Time left comes from `Batch._estimate` (lane simulation over past step durations in `stage_times.json`).
+- Alerts: ffmpeg->MoviePy fallback and a step silent for 5 min show a warning on the chapter. Windows toasts (`notify.py`) for chapter complete/failed, review ready, pipeline finished, limit hold/resume.
+- `preflight.py`: checks run when you press Run pipeline (Claude login, source URL, ffmpeg/NVENC, disk, voice engine, GPU memory, battery, current usage).
+- Claude tokens/time/cost per chapter and in total. Queue card redesigned (stat tiles, usage meters with limit markers, lane strip).
+- Not tested: the page in a real browser; a full real chapter through auto-wait.
