@@ -671,9 +671,23 @@
     .chrow .chacts { justify-content:flex-start; }
   }
 
+  .bgopts { display:grid; grid-template-columns:repeat(auto-fill, minmax(150px,1fr)); gap:10px; margin-top:6px; }
+  .bgopt { display:flex; flex-direction:column; gap:6px; padding:6px; background:var(--surface); border:1px solid var(--line); border-radius:var(--r2); }
+  .bgopt.on { background:var(--sel); border-color:var(--accent); }
+  .bgopt video { width:100%; aspect-ratio:16/9; object-fit:cover; background:#000; border:2px solid var(--frame-line); border-radius:var(--r3); }
+  .bgopt .bgoptfoot { display:flex; align-items:center; justify-content:space-between; gap:6px; font-size:12px; font-weight:600; }
   .defchanges { max-height:50vh; overflow-y:auto; display:flex; flex-direction:column; gap:12px; }
   .defchanges b { display:block; margin-bottom:4px; }
   .defchanges div div { font-size:12.5px; padding:2px 0; color:var(--muted); }
+  .foldtitle, .bhtitle { display:flex; align-items:center; gap:10px; }
+  .chev svg { transition:transform .15s; }
+  .folded .chev svg { transform:rotate(-90deg); }
+  #batchCard.folded > :not(.batchhead), #chaptersCard.folded > :not(.chaptercardhead) { display:none; }
+  #chaptersCard.folded .chaptercardhead .hint, #chaptersCard.folded .viewtoggle { display:none; }
+  .workingnote { font-size:11.5px; font-weight:600; color:var(--accent-fg); animation:trkpulse 1.6s ease-in-out infinite; }
+  .workingnote[hidden] { display:none; }
+  #batchCard:not(.folded) [data-working], #chaptersCard:not(.folded) [data-working] { display:none; }
+  @media (prefers-reduced-motion: reduce) { .workingnote { animation:none; } }
   .pipemodal { width:min(780px,100%); max-height:calc(100vh - 40px); }
   .pipebody { display:flex; flex-direction:column; gap:14px; overflow-y:auto; min-height:0; padding-right:2px; }
   .pipehint { margin:0; font-size:12.5px; color:var(--muted); }
@@ -1090,7 +1104,10 @@
         </div>
         <div class="batchcard" id="batchCard" hidden>
           <div class="batchhead">
-            <div class="bhtitle"><h2>Pipeline</h2><span class="bpill" id="batchPill"></span></div>
+            <div class="bhtitle">
+              <button class="ghost icon small chev" data-fold="batchCard" data-icon="chevdown" data-ic-size="14" aria-expanded="true" title="Collapse the pipeline"></button>
+              <h2>Pipeline</h2><span class="bpill" id="batchPill"></span><span class="workingnote" data-working hidden></span>
+            </div>
             <div class="macts">
               <button id="batchPauseBtn" class="small ghost"><span>Pause</span></button>
               <button id="batchCancelBtn" class="small danger" data-icon="stop" data-ic-size="13"><span>Cancel</span></button>
@@ -1108,9 +1125,12 @@
           </div>
           <div id="batchList"></div>
         </div>
-        <div class="chaptercard">
+        <div class="chaptercard" id="chaptersCard">
           <div class="chaptercardhead">
-            <div><h2>Chapters</h2><p class="hint">Select chapters to run the pipeline or merge their videos; shift-click selects a range. Tracker order: download, split, stitch, script, export, audio, video. Filled is done, striped is out of date, pulsing is running.</p></div>
+            <div class="foldtitle">
+              <button class="ghost icon small chev" data-fold="chaptersCard" data-icon="chevdown" data-ic-size="14" aria-expanded="true" title="Collapse the chapters"></button>
+              <div><h2>Chapters</h2><span class="workingnote" data-working hidden></span><p class="hint">Select chapters to run the pipeline or merge their videos; shift-click selects a range. Tracker order: download, split, stitch, script, export, audio, video. Filled is done, striped is out of date, pulsing is running.</p></div>
+            </div>
             <div class="viewtoggle" role="group" aria-label="Chapter view">
               <button id="viewListBtn" class="small" data-icon="list" data-ic-size="13" aria-pressed="true"><span>List</span></button>
               <button id="viewCardsBtn" class="small" data-icon="grid" data-ic-size="13" aria-pressed="false"><span>Cards</span></button>
@@ -1495,6 +1515,11 @@
                   <label class="slider"><div class="slbl"><span>Dim background</span><span id="bgDimLbl"></span></div>
                     <input id="bgDim" type="range" min="10" max="100" value="85" /></label>
                   <div class="hint" id="bgVideoHint" hidden>The video plays looped, full-screen behind the frames, for the whole render.</div>
+                  <div id="bgOptionsBlock" hidden>
+                    <span class="lbl">Ready-made videos</span>
+                    <div class="bgopts" id="bgOptions"></div>
+                    <div class="hint">Hover a video to preview it, then use it as this project's background.</div>
+                  </div>
                 </div>
                 <div class="previewcol">
                   <div class="previewbox" id="bgPreviewBox"><span class="phmsg">Preview</span></div>
@@ -3738,6 +3763,30 @@ function timeAgo(iso) {
 }
 
 // --- project export / import (see api_export_project / api_import_project in app.py) ---
+async function loadBackgroundOptions() {
+  const { ok, data } = await apiJson(`/api/background_options?project=${enc(CURRENT_PROJECT.slug)}`, 'GET');
+  const options = ok ? data.options : [];
+  $('bgOptionsBlock').hidden = !options.length;
+  $('bgOptions').innerHTML = options.map(o => `<div class="bgopt ${o.id === data.current ? 'on' : ''}">` +
+    `<video muted loop playsinline preload="metadata" src="/api/background_options/${enc(o.id)}#t=0.1"></video>` +
+    `<div class="bgoptfoot"><span>${escHtml(o.label)}</span>` +
+    `<button type="button" class="small ${o.id === data.current ? '' : 'ghost'}" data-bgopt="${escHtml(o.id)}" ${o.id === data.current ? 'disabled' : ''}>${o.id === data.current ? 'In use' : 'Use'}</button></div></div>`).join('');
+}
+
+$('bgOptions').addEventListener('mouseover', e => { const v = e.target.closest('video'); if (v) v.play(); });
+$('bgOptions').addEventListener('mouseout', e => { const v = e.target.closest('video'); if (v) v.pause(); });
+$('bgOptions').addEventListener('click', async e => {
+  const video = e.target.closest('video'), use = e.target.closest('[data-bgopt]');
+  if (video) { video.paused ? video.play() : video.pause(); return; }
+  if (!use) return;
+  const { ok, data } = await apiJson(projectApi('/background'), 'POST', { option: use.dataset.bgopt });
+  if (!ok) { showToast(data.error || 'Could not use that video.', null, null, 'warn'); return; }
+  await loadCurrentProject(CURRENT_PROJECT.slug);
+  fillSettingsForm();
+  loadBackgroundOptions();
+  showToast('Background video changed.', null, null, 'ok');
+});
+
 async function saveDefaults() {
   if ($('pjSettingsSaved').classList.contains('saving')) { showToast('Wait until the settings finish saving.', null, null, 'warn'); return; }
   const body = "New projects will start with this project's settings and the custom files they use. The series brief is not included. " +
@@ -3929,6 +3978,7 @@ async function openProjectScreen(slug) {
     await loadCurrentProject(slug);
     $('pjTitle').textContent = CURRENT_PROJECT.name;
     paintProjectChrome();
+    paintFolds();
     renderChapterList();
     pollBatch();
   } catch (e) {
@@ -3941,6 +3991,38 @@ async function openProjectScreen(slug) {
 const BATCH_STAGES = ['download', 'split', 'stitch', 'script', 'export', 'review', 'audio', 'video'];
 const WINDOW_LABELS = { five_hour: '5-hour', seven_day: 'weekly' };
 let BATCH = null;   // the last /batch payload: {batch, usage, thresholds}
+
+const foldKey = () => `recapper.folded.${CURRENT_PROJECT.slug}`;
+
+function readFolded() {
+  try { return JSON.parse(localStorage.getItem(foldKey())) || []; } catch (_) { return []; }
+}
+
+function paintFolds() {
+  const folded = readFolded();
+  document.querySelectorAll('[data-fold]').forEach(btn => {
+    const card = $(btn.dataset.fold), isFolded = folded.includes(btn.dataset.fold);
+    card.classList.toggle('folded', isFolded);
+    btn.setAttribute('aria-expanded', String(!isFolded));
+    btn.title = `${isFolded ? 'Expand' : 'Collapse'} the ${btn.dataset.fold === 'batchCard' ? 'pipeline' : 'chapters'}`;
+  });
+}
+
+function toggleFold(id) {
+  const folded = readFolded();
+  const next = folded.includes(id) ? folded.filter(x => x !== id) : [...folded, id];
+  try { localStorage.setItem(foldKey(), JSON.stringify(next)); } catch (_) { /* the fold just isn't remembered */ }
+  paintFolds();
+}
+
+// A folded section still says the pipeline is working.
+function paintWorking() {
+  const data = BATCH && BATCH.batch;
+  const text = batchActive() ? `Pipeline ${data.status === 'paused' ? 'paused' : 'working'}: ${data.chapters.filter(c => c.state === 'done').length} of ${data.chapters.length} chapters done` : '';
+  document.querySelectorAll('[data-working]').forEach(el => { el.hidden = !text; el.textContent = text; });
+}
+
+document.querySelectorAll('[data-fold]').forEach(btn => { btn.onclick = () => toggleFold(btn.dataset.fold); });
 
 const batchActive = () => !!BATCH && !!BATCH.batch && ['running', 'paused'].includes(BATCH.batch.status);
 
@@ -4119,6 +4201,7 @@ function batchChapterHtml(c) {
 function renderBatch() {
   const data = BATCH && BATCH.batch;
   $('batchCard').hidden = !data;
+  paintWorking();
   paintActionStates();
   if (!data) return;
   const pill = $('batchPill');
@@ -4654,6 +4737,7 @@ async function openSettingsScreen(slug) {
     $('stCrumbProject').textContent = CURRENT_PROJECT.name;
     paintProjectChrome();
     fillSettingsForm();
+    loadBackgroundOptions();
     loadGeminiKeyStatus();
     loadGpuStatus();
   } catch (e) {

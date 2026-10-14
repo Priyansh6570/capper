@@ -2956,6 +2956,32 @@ def api_apply_defaults():
     return jsonify(ok=True)
 
 
+@app.get("/api/background_options")
+def api_background_options():
+    """The ready-made background videos; `?project=<slug>` also says which one that project uses."""
+    slug = request.args.get("project")
+    return jsonify(options=project_defaults.background_options(),
+                   current=project_defaults.current_background_option(slug) if slug and projects.exists(slug) else None)
+
+
+@app.get("/api/background_options/<option_id>")
+def api_background_option_video(option_id):
+    path = project_defaults.background_option(option_id)
+    return send_file(path, conditional=True) if path else (jsonify(error="No such background video."), 404)
+
+
+@app.post("/api/projects/<slug>/background")
+def api_select_background(slug):
+    """Body: JSON {option}. Use that ready-made video as the project's background."""
+    if not projects.exists(slug):
+        return jsonify(error=f"No such project: {slug}"), 404
+    try:
+        project_defaults.select_background(slug, (request.get_json(silent=True) or {}).get("option") or "")
+    except ValueError as e:
+        return jsonify(error=str(e)), 400
+    return jsonify(ok=True)
+
+
 @app.post("/api/projects/<slug>/asset")
 def api_upload_asset(slug):
     """Multipart: {kind: music|voice|watermark|background|intro|outro, file}. Saves the

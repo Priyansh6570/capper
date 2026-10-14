@@ -23,6 +23,8 @@ SETTINGS_FILE = DEFAULTS_DIR / "settings.json"
 ASSETS_DIR = DEFAULTS_DIR / "assets"
 
 NOT_SHARED = (("claude", "series_brief"),)
+VIDEO_EXTS = {".mp4", ".mov", ".webm", ".mkv", ".m4v"}
+OPTION_PREFIX = "bg_"
 ASSET_FIELDS = {
     "music": ("music",), "voice": ("voice",), "watermark": ("watermark",), "background": ("background",),
     "intro": ("branding", "intro"), "outro": ("branding", "outro"),
@@ -79,8 +81,10 @@ def _default_asset(rel: str | None) -> Path | None:
 def save_from(slug: str) -> dict:
     """Make `slug`'s settings, and the custom files they point at, the defaults."""
     settings = _shared_part(projects.load(slug)["settings"], projects.default_settings())
-    shutil.rmtree(ASSETS_DIR, ignore_errors=True)
-    ASSETS_DIR.mkdir(parents=True)
+    ASSETS_DIR.mkdir(parents=True, exist_ok=True)
+    for kind in ASSET_FIELDS:
+        for old in ASSETS_DIR.glob(f"{kind}.*"):
+            old.unlink()
     for path in ASSET_FIELDS.values():
         field = _lookup(settings, path)
         source = projects.resolve_asset_path(slug, field.get("file"))
@@ -131,6 +135,37 @@ def apply(slug: str) -> None:
                 old.unlink(missing_ok=True)
             shutil.copy2(shipped, projects.assets_dir(slug) / shipped.name)
     projects.update_settings(slug, wanted)
+
+
+def background_options() -> list[dict]:
+    """The ready-made background videos in `defaults/assets/`: `background.<ext>` (the default) and
+    every `bg_<name>.<ext>`."""
+    files = sorted(p for p in ASSETS_DIR.glob("*") if p.suffix.lower() in VIDEO_EXTS
+                   and (p.stem == "background" or p.stem.startswith(OPTION_PREFIX)))
+    return [{"id": p.name, "label": "Default" if p.stem == "background"
+             else p.stem[len(OPTION_PREFIX):].replace("-", " ").replace("_", " ").capitalize()} for p in files]
+
+
+def background_option(option_id: str) -> Path | None:
+    return next((ASSETS_DIR / o["id"] for o in background_options() if o["id"] == option_id), None)
+
+
+def current_background_option(slug: str) -> str | None:
+    mine = projects.resolve_asset_path(slug, projects.load(slug)["settings"]["background"].get("file"))
+    return next((o["id"] for o in background_options()
+                 if mine and filecmp.cmp(mine, ASSETS_DIR / o["id"], shallow=False)), None)
+
+
+def select_background(slug: str, option_id: str) -> None:
+    """Use a ready-made video as the project's background (replacing its own background file)."""
+    source = background_option(option_id)
+    if source is None:
+        raise ValueError(f"No such background video: {option_id}")
+    name = f"background{source.suffix.lower()}"
+    for old in projects.assets_dir(slug).glob("background.*"):
+        old.unlink(missing_ok=True)
+    shutil.copy2(source, projects.assets_dir(slug) / name)
+    projects.update_settings(slug, {"background": {"mode": "video", "file": f"assets/{name}"}})
 
 
 def create_project(name: str, url: str) -> dict:
