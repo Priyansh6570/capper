@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import threading
 import uuid
 from pathlib import Path
@@ -103,3 +104,14 @@ def read_json_with_backup_fallback(path: Path) -> Any:
             last_err = e
             continue
     raise FileNotFoundError(f"No readable JSON at {path} or its .bak") from last_err
+
+
+def clear_directory(directory: Path) -> None:
+    """Delete everything inside `directory` (created if missing), keeping the directory itself."""
+    directory = Path(directory)
+    directory.mkdir(parents=True, exist_ok=True)
+    for entry in directory.iterdir():
+        if entry.is_dir():
+            shutil.rmtree(entry, ignore_errors=True)
+        else:
+            entry.unlink(missing_ok=True)

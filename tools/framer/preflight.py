@@ -52,7 +52,7 @@ def _gpu_used_mb() -> int | None:
 
 def _claude() -> dict:
     status = claude_cli.cli_status()
-    return _result("Claude Code", "ok" if status["ready"] else "fail", status["message"])
+    return _result("Claude Code (writes the script)", "ok" if status["ready"] else "fail", status["message"])
 
 
 def _source(project: dict, numbers: list[int]) -> dict:

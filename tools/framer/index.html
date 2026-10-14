@@ -602,7 +602,7 @@
   .pfrow:last-child { border-bottom:0; }
   .pfrow .pfmark { width:18px; font-weight:800; flex:none; }
   .pfrow.ok .pfmark { color:var(--ok); } .pfrow.warn .pfmark { color:var(--warn); } .pfrow.fail .pfmark { color:var(--blur); }
-  .pfrow span span { display:block; color:var(--muted); }
+  .pfrow span span { display:block; color:var(--muted); white-space:pre-line; }
 
   .chaptercard { background:var(--panel); border:1px solid var(--line); border-radius:var(--r); overflow:hidden; flex-shrink:0; }
   .chaptercardhead { display:flex; align-items:center; justify-content:space-between; padding:14px 18px;
@@ -671,6 +671,9 @@
     .chrow .chacts { justify-content:flex-start; }
   }
 
+  .defchanges { max-height:50vh; overflow-y:auto; display:flex; flex-direction:column; gap:12px; }
+  .defchanges b { display:block; margin-bottom:4px; }
+  .defchanges div div { font-size:12.5px; padding:2px 0; color:var(--muted); }
   .pipemodal { width:min(780px,100%); max-height:calc(100vh - 40px); }
   .pipebody { display:flex; flex-direction:column; gap:14px; overflow-y:auto; min-height:0; padding-right:2px; }
   .pipehint { margin:0; font-size:12.5px; color:var(--muted); }
@@ -710,7 +713,7 @@
 
   /* --- merged videos + media library (scr-hub) ------------------------------ */
   :root { --k-video:var(--accent); --k-audio:var(--warn); --k-frames:var(--ok); --k-strips:#2bb3c0;
-          --k-pdfs:#6c8cff; --k-merged:#b07cff; --k-kept:var(--muted); }
+          --k-panels:#e58ab8; --k-pdfs:#6c8cff; --k-merged:#b07cff; --k-kept:var(--muted); }
   .mcard { display:grid; grid-template-columns:minmax(0,380px) minmax(0,1fr); gap:20px; padding:18px;
            border-bottom:1px solid var(--line); }
   .mcard:last-child { border-bottom:0; }
@@ -739,7 +742,7 @@
   .liblegend i { display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:6px; }
   .liblegend b { font-family:ui-monospace,Consolas,monospace; font-weight:600; margin-left:4px; }
   .k-video { background:var(--k-video); } .k-audio { background:var(--k-audio); }
-  .k-frames { background:var(--k-frames); } .k-strips { background:var(--k-strips); }
+  .k-frames { background:var(--k-frames); } .k-panels { background:var(--k-panels); } .k-strips { background:var(--k-strips); }
   .k-pdfs { background:var(--k-pdfs); } .k-merged { background:var(--k-merged); }
   .k-kept { background:var(--k-kept); }
   .libbulk { padding:14px 18px 16px; display:flex; flex-direction:column; gap:12px; }
@@ -1268,6 +1271,7 @@
           <a href="#s-anim">Frame animation</a>
           <span class="navlabel" style="margin-top:14px">System</span>
           <a href="#s-gpu">GPU acceleration</a>
+          <a href="#s-defaults">Default settings</a>
           <a href="#s-backup">Export project</a>
           <div class="settingsnote">Changes apply to every chapter rendered in this project. Already-rendered chapters need a re-render.</div>
         </nav>
@@ -1505,6 +1509,18 @@
             <div class="setbody">
               <div class="gplist" id="gpuRows"></div>
               <div class="filerow"><button type="button" id="gpuRecheckBtn" class="small ghost" data-icon="refresh" data-ic-size="14"><span>Re-check</span></button></div>
+            </div>
+          </div>
+
+          <div class="setcard" id="s-defaults">
+            <div class="setlabel"><b>Default settings</b><span>The settings every new project starts with: music, voice, watermark, background, animation, intro/outro, script style and batch limits. The series brief is never shared.</span></div>
+            <div class="setbody">
+              <div class="filerow">
+                <button type="button" id="saveDefaultsBtn" class="small ghost" data-icon="check" data-ic-size="14"><span>Make these my default settings</span></button>
+                <button type="button" id="applyDefaultsBtn" class="small ghost" data-icon="refresh" data-ic-size="14"><span>Apply default settings</span></button>
+                <button type="button" id="applyDefaultsAllBtn" class="small ghost" data-icon="refresh" data-ic-size="14"><span>Apply to all projects</span></button>
+              </div>
+              <div class="hint">Saved in the app's defaults folder together with the custom files they use. Commit and push that folder so other installs receive it through Check for updates. Applying shows what would change and waits for your confirmation.</div>
             </div>
           </div>
 
@@ -3722,6 +3738,30 @@ function timeAgo(iso) {
 }
 
 // --- project export / import (see api_export_project / api_import_project in app.py) ---
+async function saveDefaults() {
+  if ($('pjSettingsSaved').classList.contains('saving')) { showToast('Wait until the settings finish saving.', null, null, 'warn'); return; }
+  const body = "New projects will start with this project's settings and the custom files they use. The series brief is not included. " +
+    "The defaults are saved in the app's defaults folder; commit and push it to share them through Check for updates.";
+  if (!await askConfirm({ title: 'Make these your default settings?', body, confirmLabel: 'Save as defaults' })) return;
+  const { ok, data } = await apiJson(projectApi('/defaults'), 'POST');
+  showToast(ok ? 'Default settings saved.' : data.error || 'Could not save the defaults.', null, null, ok ? 'ok' : 'warn');
+}
+
+async function applyDefaults(allProjects) {
+  const { ok, data } = await apiJson(allProjects ? '/api/defaults/changes' : `/api/defaults/changes?project=${enc(CURRENT_PROJECT.slug)}`, 'GET');
+  if (!ok) { showToast(data.error || 'Could not compare with the defaults.', null, null, 'warn'); return; }
+  if (!data.projects.length) { showToast(allProjects ? 'Every project already uses the default settings.' : 'This project already uses the default settings.', null, null, 'ok'); return; }
+  const body = '<div class="defchanges">' + data.projects.map(p => `<div><b>${escHtml(p.name)}</b>` +
+    p.changes.map(c => `<div>${escHtml(c.group)}, ${escHtml(c.name)}: ${escHtml(String(c.current))} &rarr; ${escHtml(String(c.default))}</div>`).join('') + '</div>').join('') + '</div>';
+  const count = data.projects.length;
+  if (!await askConfirm({ title: `Apply the default settings to ${count} project${count === 1 ? '' : 's'}?`, body, confirmLabel: 'Apply' })) return;
+  const applied = await apiJson('/api/defaults/apply', 'POST', { projects: data.projects.map(p => p.slug) });
+  if (!applied.ok) { showToast(applied.data.error || 'Could not apply the defaults.', null, null, 'warn'); return; }
+  await loadCurrentProject(CURRENT_PROJECT.slug);
+  fillSettingsForm();
+  showToast('Default settings applied.', null, null, 'ok');
+}
+
 function exportProject() {
   const videos = $('exportVideos').checked ? 1 : 0;
   showToast('Preparing the export - the download starts when it is ready. Large projects can take a minute.', null, null, 'ok');
@@ -4008,7 +4048,7 @@ function stageChips(c) {
     const time = running ? ` · <span data-since="${c.stage_started_at}" data-base="${stageSeconds(c, s)}"></span>`
       : stageSeconds(c, s) ? ` · ${clockSeconds(stageSeconds(c, s))}` : '';
     if (s === 'review' || c.state === 'running') return `<span class="bstage ${cls}">${s}${time}</span>`;
-    return `<button class="bstage rerun ${cls}" data-stage="${s}" title="Run ${s} again, then the steps after it">${s}${time} ↻</button>`;
+    return `<button class="bstage rerun ${cls}" data-stage="${s}" title="Choose what to run, starting with ${s}">${s}${time} ↻</button>`;
   }).join('');
 }
 
@@ -4054,11 +4094,10 @@ function batchChapterHtml(c) {
   const job = c.job;
   const detail = c.state === 'waiting' ? 'Waiting for your frame review. Fix the boxes in the editor, export again if you changed anything, then continue.'
     : c.state === 'running' ? (job && job.claude ? claudeStatsHtml(job) : escHtml((job && job.message) || c.message || `${c.stage}…`))
-    : c.state === 'done' ? 'Done.' : c.state === 'cancelled' ? 'Cancelled.' : c.state === 'queued' ? `Waiting for ${c.stage}.`
-    : c.state === 'idle' ? `Not finished yet. Next step: ${c.stage}. Click a step to run it.` : '';
+    : c.state === 'done' ? 'Done.' : c.state === 'cancelled' ? 'Cancelled.' : c.state === 'queued' ? `Waiting for ${c.stage}.` : '';
   const progress = c.state === 'running' && job && job.status === 'running' ? Math.round((job.progress || 0) * 100) : null;
   const acts = [];
-  if (c.state === 'failed') acts.push(`<button class="small primary" data-act="rerun" data-stage="${c.stage}">Retry ${escHtml(c.stage)}</button>`);
+  if (c.state === 'failed') acts.push(`<button class="small primary" data-act="retry" data-stage="${c.stage}">Retry ${escHtml(c.stage)}</button>`);
   if (c.state === 'waiting') acts.push(`<button class="small primary" data-act="continue">Continue to audio</button>`);
   if (['waiting', 'failed'].includes(c.state) || (c.state === 'running' && job && job.claude)) {
     acts.push(`<button class="small ghost" data-act="open">${c.state === 'running' ? 'Watch live' : 'Open editor'}</button>`);
@@ -4101,20 +4140,15 @@ function renderBatch() {
   tickBatchClocks();
   $('batchList').querySelectorAll('[data-act]').forEach(btn => {
     const n = +btn.closest('.bchap').dataset.n;
-    btn.onclick = () => btn.dataset.act === 'open' ? navTo({ project: CURRENT_PROJECT.slug, chapter: n })
-      : batchCall(`/chapters/${n}/${btn.dataset.act}`, { stage: btn.dataset.stage });
+    btn.onclick = () => {
+      if (btn.dataset.act === 'open') navTo({ project: CURRENT_PROJECT.slug, chapter: n });
+      else if (btn.dataset.act === 'retry') openPipelineModal([n], PIPELINE_STEPS.indexOf(btn.dataset.stage));
+      else batchCall(`/chapters/${n}/continue`);
+    };
   });
   $('batchList').querySelectorAll('.bstage.rerun').forEach(chip => {
     const n = +chip.closest('.bchap').dataset.n, stage = chip.dataset.stage;
-    chip.onclick = async () => {
-      const costly = stage === 'script' ? ' This asks Claude to read the chapter again and uses subscription usage.' : '';
-      const body = `Chapter ${n} runs ${stage} again.${costly}` +
-        `<label style="display:flex;gap:8px;align-items:center;margin-top:12px"><input type="checkbox" id="rerunOnly" checked />` +
-        `Only this step (keep the output of the steps after it)</label>`;
-      if (await askConfirm({ title: `Run ${stage} again?`, body, confirmLabel: 'Run again' })) {
-        batchCall(`/chapters/${n}/rerun`, { stage, only: $('rerunOnly').checked });
-      }
-    };
+    chip.onclick = () => openPipelineModal([n], PIPELINE_STEPS.indexOf(stage));
   });
   refreshProjectWhenStepsFinish(data);
 }
@@ -4436,7 +4470,7 @@ function syncMergedJobs() {
 let LIB = null;                       // GET /library: sizes per type, chapter and project
 const LIB_OPEN = new Set();           // chapters whose folder is expanded
 const LIB_FILE_LIMIT = 30;
-const BULK_LABELS = { video: 'Videos', audio: 'Audio', frames: 'Frames', strips: 'Strips', pdfs: 'PDFs' };
+const BULK_LABELS = { video: 'Videos', audio: 'Audio', frames: 'Frames', panels: 'Panels', strips: 'Strips', pdfs: 'PDFs' };
 const bulk = { kind: 'video', selected: new Set() };
 
 async function loadLibrary() {
@@ -4765,7 +4799,7 @@ function chapterActionsHtml(ch) {
       ? '<button class="small ghost" data-act="toggle" data-icon="refresh" data-ic-size="13" title="Reset to rendered"><span>Reset</span></button>'
       : '<button class="small ghost" data-act="toggle" data-icon="check" data-ic-size="13" title="Mark complete"><span>Mark complete</span></button>',
     hasVideo(ch) ? '<button class="small ghost" data-act="preview" data-icon="play" data-ic-size="13" title="Play the rendered recap"><span>Preview</span></button>' : '',
-    '<button class="small ghost" data-act="pipeline" data-icon="layers" data-ic-size="13"><span>Pipeline</span></button>',
+    '<button class="small ghost" data-act="pipeline" data-icon="layers" data-ic-size="13" title="Choose which steps to run for this chapter"><span>Pipeline</span></button>',
   ];
   return buttons.join('');
 }
@@ -4840,7 +4874,6 @@ function paintSelection() {
 }
 
 function runBlocker() {
-  if (batchActive()) return 'A pipeline is already running for this project.';
   return SELECTION.size ? '' : 'Select at least one chapter to run the pipeline.';
 }
 
@@ -4851,10 +4884,6 @@ function paintActionStates() {
   $('batchRunBtn').title = blocker;
   $('runWhy').textContent = blocker;
   $('batchRunBtn').querySelector('span').textContent = SELECTION.size ? `Run pipeline for ${SELECTION.size}` : 'Run pipeline';
-  $('chList').querySelectorAll('[data-act="pipeline"]').forEach(btn => {
-    btn.disabled = batchActive();
-    btn.title = batchActive() ? 'A pipeline is already running for this project.' : 'Choose which steps to run for this chapter';
-  });
   paintTrackers();
 }
 
@@ -4910,7 +4939,7 @@ function updateMergeBar() {
 // to run: a missing or out-of-date prerequisite, or the first step when completed ones are redone.
 // Steps before `first` are reused. `last` is `target` plus the built steps after `first` that its
 // re-running makes out of date; the user can untick those to keep them.
-const PIPE = { rows: [], target: PIPELINE_STEPS.length - 1, redo: false, ticks: new Map(), open: new Set(), groups: [] };
+const PIPE = { rows: [], target: PIPELINE_STEPS.length - 1, redo: false, remember: true, ticks: new Map(), open: new Set(), groups: [] };
 const pipeChoiceKey = () => `recapper.pipeline.${CURRENT_PROJECT.slug}`;
 
 function stepStates(ch) {
@@ -5020,15 +5049,18 @@ function readPipeChoice() {
 }
 
 function savePipeChoice() {
+  if (!PIPE.remember) return;
   try { localStorage.setItem(pipeChoiceKey(), JSON.stringify({ target: PIPE.target, redo: PIPE.redo })); } catch (_) { /* not remembered */ }
 }
 
 const closePipeModal = () => $('pipeModal').classList.remove('on');
 
-async function openPipelineModal(numbers) {
+// `step` (an index) pre-ticks that step; without it the last used choice comes back.
+async function openPipelineModal(numbers, step) {
   await loadCurrentProject(CURRENT_PROJECT.slug);   // the steps shown must be what the disk has now
   renderChapterList();
-  const choice = readPipeChoice();
+  const choice = step === undefined ? readPipeChoice() : { target: step };
+  PIPE.remember = step === undefined;
   PIPE.rows = CURRENT_PROJECT.chapters.filter(c => numbers.includes(c.n));
   PIPE.target = choice.target >= 0 ? choice.target : PIPELINE_STEPS.length - 1;
   PIPE.redo = !!choice.redo;
@@ -5744,6 +5776,9 @@ $('themeBtnP').onclick = toggleTheme;
 $('importProjectBtn').onclick = () => $('importProjectFile').click();
 $('importProjectFile').onchange = importProject;
 $('exportProjectBtn').onclick = exportProject;
+$('saveDefaultsBtn').onclick = saveDefaults;
+$('applyDefaultsBtn').onclick = () => applyDefaults(false);
+$('applyDefaultsAllBtn').onclick = () => applyDefaults(true);
 $('npToggleBtn').onclick = () => $('npComposer').classList.toggle('on');
 $('npCloseBtn').onclick = () => $('npComposer').classList.remove('on');
 $('backToProjectsBtn').onclick = () => navTo({});

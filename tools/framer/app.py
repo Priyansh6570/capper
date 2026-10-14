@@ -64,7 +64,7 @@ from stages import s1_pdf_to_pages as s1  # noqa: E402
 import config  # noqa: E402 - module import so chapter_scope()/set_/clear_ are reachable
 from config import chapter_work_dir, chapter_output_dir, WORK_DIR, OUTPUT_DIR, PROJECTS_DIR, NO_CONSOLE  # noqa: E402
 from manifest import Manifest, Page, Panel  # noqa: E402
-from atomic_io import atomic_write_json, read_json_with_backup_fallback  # noqa: E402
+from atomic_io import atomic_write_json, clear_directory, read_json_with_backup_fallback  # noqa: E402
 import gpu  # noqa: E402
 
 import projects  # noqa: E402 - the project system (this package: tools/framer/projects.py)
@@ -77,6 +77,7 @@ import claude_usage  # noqa: E402 - subscription usage read from the CLI's rate-
 import claude_engine  # noqa: E402 - Claude script engine: panels -> narration blocks
 import panel_split  # noqa: E402 - strip -> reading-order panels
 import library  # noqa: E402 - per-project media library (sizes, deletion)
+import project_defaults  # noqa: E402 - the settings new projects start with
 import sites  # noqa: E402 - per-site adapters (tools/framer/sites/): metadata + chapter download
 from stages import s7_assemble as s7  # noqa: E402 - reused by the settings live-preview routes
 from stages import tts_kokoro  # noqa: E402 - the Kokoro voices and their preview
@@ -516,6 +517,9 @@ def _download_chapter(url: str, chapter_no: str, raw_id: str, slug: str | None, 
     except Exception as e:  # noqa: BLE001 - surface the adapter's own message to the UI
         raise Refused(str(e), 500) from e
 
+    for old in dest.rglob("*"):
+        if old.is_file() and old != pdf:
+            old.unlink()
     pages = _pdf_page_count(pdf)
     steps.append(f"Downloaded {pdf.name} — {pages} page(s):\n    {pdf}")
     if slug and ch_no:
@@ -1356,14 +1360,18 @@ def _export_chapter(chapter_id: str, entries: list[dict], slug: str | None, ch_n
     """Render every frame of `entries` and write the chapter's mapping.json and manifest."""
     if not entries:
         raise Refused("No entries to export.")
+    if not any(f.get("bbox") for entry in entries for f in entry.get("frames") or []):
+        raise Refused("No line had a frame bound. Draw a box first.")
 
     strip_path = _strip_path(chapter_id)
     if not strip_path.exists():
         raise Refused(f"No strip for {chapter_id}; load a PDF first.")
     strip = Image.open(strip_path).convert("RGB")
 
+    # The old frames and the narration voiced for the old lines go before the new frames are written.
     frames_dir = chapter_work_dir(chapter_id) / "frames"
-    frames_dir.mkdir(parents=True, exist_ok=True)
+    clear_directory(frames_dir)
+    clear_directory(chapter_work_dir(chapter_id) / "audio")
 
     mapping = []
     beats = []
@@ -1412,9 +1420,6 @@ def _export_chapter(chapter_id: str, entries: list[dict], slug: str | None, ch_n
             has_face=True,
             is_text_only=False,
         ))
-
-    if not beats:
-        raise Refused("No line had a frame bound. Draw a box first.")
 
     framer_dir = _framer_dir(chapter_id)
     mapping_path = framer_dir / "mapping.json"
@@ -1926,12 +1931,13 @@ def _manifest_panels(chapter_id: str) -> list[Panel]:
 
 def _ensure_panels(chapter_id: str) -> list[Panel]:
     """The chapter's panels, split from its strip (stitching the downloaded PDF
-    first if needed) and recorded in the manifest the first time."""
+    first if needed) and recorded in the manifest; kept only while they are newer than the strip."""
     panels = _manifest_panels(chapter_id)
-    if panels and all(Path(p.crop).is_file() for p in panels):
-        return panels
     work = chapter_work_dir(chapter_id)
     strip_path = _strip_path(chapter_id)
+    if panels and strip_path.exists() and all(
+            Path(p.crop).is_file() and Path(p.crop).stat().st_mtime >= strip_path.stat().st_mtime for p in panels):
+        return panels
     pdf = _downloaded_pdf(chapter_id)
     if not strip_path.exists():
         if pdf is None:
@@ -2747,7 +2753,7 @@ def api_create_project():
     url = (data.get("url") or "").strip()
     if not name:
         return jsonify(error="Project name required."), 400
-    project = projects.create(name, url)
+    project = project_defaults.create_project(name, url)
 
     adapter = sites.detect(url) if url else None
     fetched = adapter.fetch_series(url) if adapter else None
@@ -2919,6 +2925,35 @@ def api_set_settings(slug):
     data = request.get_json(silent=True) or {}
     project = projects.update_settings(slug, data)
     return jsonify(ok=True, settings=project["settings"])
+
+
+@app.post("/api/projects/<slug>/defaults")
+def api_save_defaults(slug):
+    """Make this project's settings (and the custom files they use) the defaults for new projects."""
+    if not projects.exists(slug):
+        return jsonify(error=f"No such project: {slug}"), 404
+    project_defaults.save_from(slug)
+    return jsonify(ok=True)
+
+
+@app.get("/api/defaults/changes")
+def api_defaults_changes():
+    """What applying the default settings would change, for `?project=<slug>` or every project."""
+    slugs = [request.args["project"]] if request.args.get("project") else [p["slug"] for p in projects.list_projects()]
+    found = [{"slug": slug, "name": projects.load(slug)["name"], "changes": project_defaults.changes(slug)}
+             for slug in slugs if projects.exists(slug)]
+    return jsonify(projects=[p for p in found if p["changes"]])
+
+
+@app.post("/api/defaults/apply")
+def api_apply_defaults():
+    """Body: JSON {projects: [slug, ...]}. Applies the default settings to each."""
+    slugs = (request.get_json(silent=True) or {}).get("projects") or []
+    if not slugs or not all(projects.exists(slug) for slug in slugs):
+        return jsonify(error="Choose projects to apply the defaults to."), 400
+    for slug in slugs:
+        project_defaults.apply(slug)
+    return jsonify(ok=True)
 
 
 @app.post("/api/projects/<slug>/asset")
@@ -3599,7 +3634,7 @@ def api_batch_preflight(slug):
 @app.post("/api/projects/<slug>/batch")
 def api_batch_start(slug):
     """Body: JSON {plans: {"<chapter>": [step, ...]}}. Runs just those steps, in pipeline order, for
-    each chapter, pipelined across chapters."""
+    each chapter, pipelined across chapters. A batch that is already running takes them on as well."""
     if not projects.exists(slug):
         return jsonify(error=f"No such project: {slug}"), 404
     known = {c["n"] for c in projects.load(slug)["chapters"]}
@@ -3617,7 +3652,11 @@ def api_batch_start(slug):
     with _BATCH_LOCK:
         previous = _BATCHES.get(slug)
         if previous and previous.active:
-            return jsonify(error="A batch is already running for this project."), 409
+            try:
+                previous.enqueue(plans)
+            except ValueError as e:
+                return jsonify(error=str(e)), 409
+            return jsonify(ok=True)
         if previous:
             previous.close()
         _BATCHES[slug] = batch.Batch.create(_batch_path(slug), _batch_env(slug), plans)
@@ -3643,16 +3682,10 @@ def api_batch_control(slug, control):
     return _batch_do(slug, lambda b: getattr(b, control)())
 
 
-@app.post("/api/projects/<slug>/batch/chapters/<int:n>/<control>")
-def api_batch_chapter(slug, n, control):
-    """control: rerun (body {stage, only?}: that step and those after it, or just that step) | continue
-    (after frame review)."""
-    stage = (request.get_json(silent=True) or {}).get("stage")
-    only = bool((request.get_json(silent=True) or {}).get("only"))
-    actions = {"rerun": lambda b: b.rerun(n, stage, only), "continue": lambda b: b.continue_review(n)}
-    if control not in actions:
-        return jsonify(error="Unknown control."), 404
-    return _batch_do(slug, actions[control])
+@app.post("/api/projects/<slug>/batch/chapters/<int:n>/continue")
+def api_batch_continue(slug, n):
+    """Continue chapter n past the frame review."""
+    return _batch_do(slug, lambda b: b.continue_review(n))
 
 
 @app.post("/api/projects/<slug>/batch/usage")

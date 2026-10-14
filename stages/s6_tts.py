@@ -55,6 +55,7 @@ import os
 import sys
 from pathlib import Path
 
+from atomic_io import clear_directory
 from config import ROOT, chapter_work_dir, TTS_VOICE
 from gpu import nvidia_gpu, record_usage
 from manifest import Manifest
@@ -497,7 +498,8 @@ def _run_draft(m: Manifest, audio_dir: Path) -> Manifest:
 # --------------------------------------------------------------------------- #
 def run(m: Manifest) -> Manifest:
     audio_dir = chapter_work_dir(m.chapter_id) / "audio"
-    audio_dir.mkdir(parents=True, exist_ok=True)
+    clear_directory(audio_dir)   # the voice of the previous run, including lines that no longer exist
+    (chapter_work_dir(m.chapter_id) / "_voice_ref_f32.wav").unlink(missing_ok=True)
 
     if os.environ.get("MANHWA_TTS_DRAFT", "").strip() not in ("", "0", "false", "False"):
         return _run_draft(m, audio_dir)

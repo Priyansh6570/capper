@@ -125,7 +125,7 @@ def _atomic_write(path: Path, text: str) -> None:
 # --------------------------------------------------------------------------- #
 # schema helpers (dataclasses used only for shape/defaults; disk format is dict)
 # --------------------------------------------------------------------------- #
-def _default_settings() -> dict:
+def default_settings() -> dict:
     return {
         "music": {"mode": "default", "file": None},
         # engine: "chatterbox" clones the reference voice (mode/file); "kokoro" has no cloning and
@@ -193,7 +193,7 @@ def new_project(name: str, url: str, slug: Optional[str] = None) -> dict:
         "schema": SCHEMA_VERSION, "slug": slug, "name": name.strip() or slug,
         "url": (url or "").strip(), "series_title": None, "source": "manual",
         "created_at": now, "updated_at": now,
-        "chapters": [], "settings": _default_settings(),
+        "chapters": [], "settings": default_settings(),
     }
 
 
@@ -210,8 +210,8 @@ def load(slug: str) -> dict:
     data = read_json_with_backup_fallback(project_json_path(slug))
     data.setdefault("schema", SCHEMA_VERSION)
     data.setdefault("chapters", [])
-    data.setdefault("settings", _default_settings())
-    settings = _default_settings()
+    data.setdefault("settings", default_settings())
+    settings = default_settings()
     _deep_merge(settings, data["settings"])
     data["settings"] = settings
     for ch in data["chapters"]:
@@ -362,7 +362,7 @@ _ASSET_EXTS = {
     "watermark": {".png", ".jpg", ".jpeg", ".webp"},
     # Both image AND video extensions - the SAME upload slot serves either,
     # depending on the project's `background.mode` ("image" or "video"; see
-    # _default_settings()). save_asset() below doesn't otherwise care which.
+    # default_settings()). save_asset() below doesn't otherwise care which.
     "background": {".png", ".jpg", ".jpeg", ".webp", ".mp4", ".mov", ".webm", ".mkv", ".m4v"},
     "intro": {".mp4", ".mov", ".webm", ".mkv", ".m4v"},
     "outro": {".mp4", ".mov", ".webm", ".mkv", ".m4v"},
@@ -417,7 +417,7 @@ def update_settings(slug: str, settings: dict) -> dict:
         cl["series_brief"] = str(cl.get("series_brief") or "")[:12000]
         for key in ("comprehension_model", "narration_model"):
             if cl.get(key) not in claude_cli.MODELS:
-                cl[key] = _default_settings()["claude"][key]
+                cl[key] = default_settings()["claude"][key]
         cl["target_minutes"] = max(1.0, min(30.0, float(cl.get("target_minutes") or 10)))
         cl["min_frame_s"] = max(1.0, min(10.0, float(cl.get("min_frame_s") or 3)))
         bt = settings["batch"]

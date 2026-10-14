@@ -99,14 +99,7 @@ class Batch:
     def create(cls, path: Path, env: BatchEnv, plans: dict[int, list[str]]) -> "Batch":
         """`plans` maps each chapter to the steps to run, in pipeline order; every other step the
         chapter already has on disk counts as done."""
-        chapters = []
-        for n, plan in sorted(plans.items()):
-            with env.scope(n):
-                completed = [s for s in env.done_stages(n) if s not in plan]
-            chapters.append({"n": n, "plan": plan, "completed": completed, "stage": None, "state": "queued",
-                             "error": None, "started_at": None, "finished_at": None, "stage_started_at": None,
-                             "stage_seconds": {}})
-            _advance(chapters[-1], None, review=False)
+        chapters = [_new_chapter(env, n, plan) for n, plan in sorted(plans.items())]
         batch = cls(path, env, {"status": "running", "created_at": _now(), "finished_at": None,
                                 "ignore": {w: False for w in claude_usage.WINDOWS}, "chapters": chapters})
         batch._save()
@@ -283,26 +276,19 @@ class Batch:
             self._closed = True
             self._cond.notify_all()
 
-    def rerun(self, n: int, stage: str, only: bool = False) -> None:
-        """Run `stage` again for chapter n, and the steps after it (or just that step with `only`;
-        the later steps keep their existing output). Revives a cancelled or finished batch."""
-        if stage not in LANE_STAGES:
-            raise ValueError(f"Unknown step: {stage}.")
+    def enqueue(self, plans: dict[int, list[str]]) -> None:
+        """Add `plans` (chapter -> steps to run) to this running batch: chapters it already holds start
+        over with their new plan, others join. A chapter still working on a step can't be changed."""
         with self._cond:
-            chapter = self._chapter(n)
             if self._closed:
                 raise ValueError("This batch has been replaced by a newer one.")
-            if n in self._busy or chapter["state"] == "running":
-                raise ValueError(f"Chapter {n} is still working on a step; wait for it or cancel first.")
-            plan = [stage] if only else LANE_STAGES[LANE_STAGES.index(stage):]
-            chapter.update(plan=plan, completed=[s for s in chapter["completed"] if s not in plan], stage=stage,
-                           state="queued", error=None, finished_at=None)
-            self.log(n, f"== {stage} queued to run again{' (this step only)' if only else ''} ==")
-            if self.status == "cancelled":
-                self._generation += 1
-                self._start_lanes()
-            if self.status in ("finished", "cancelled"):
-                self.status, self.finished_at = "running", None
+            working = [n for n in plans if n in self._busy or any(c["n"] == n and c["state"] == "running" for c in self.chapters)]
+            if working:
+                raise ValueError(f"Chapter {', '.join(map(str, working))} is still working on a step; wait for it or cancel first.")
+            for n, plan in plans.items():
+                fresh = _new_chapter(self.env, n, plan)
+                self.chapters = sorted([c for c in self.chapters if c["n"] != n] + [fresh], key=lambda c: c["n"])
+                self.log(n, f"== queued to run {' + '.join(plan)} ==")
             self._save()
             self._cond.notify_all()
 
@@ -419,6 +405,15 @@ class Batch:
             return {"status": self.status, "created_at": self.created_at, "finished_at": self.finished_at,
                     "hold": self.hold, "ignore": dict(self.ignore), "chapters": chapters,
                     "finish_at": max(finish.values(), default=None)}
+
+
+def _new_chapter(env: BatchEnv, n: int, plan: list[str]) -> dict:
+    with env.scope(n):
+        completed = [s for s in env.done_stages(n) if s not in plan]
+    chapter = {"n": n, "plan": plan, "completed": completed, "stage": None, "state": "queued", "error": None,
+               "started_at": None, "finished_at": None, "stage_started_at": None, "stage_seconds": {}}
+    _advance(chapter, None, review=False)
+    return chapter
 
 
 def _advance(chapter: dict, left: str | None, *, review: bool) -> None:

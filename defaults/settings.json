@@ -1,0 +1,66 @@
+{
+  "music": {
+    "mode": "default",
+    "file": null
+  },
+  "voice": {
+    "mode": "default",
+    "file": null,
+    "engine": "kokoro",
+    "kokoro_voice": "am_adam"
+  },
+  "watermark": {
+    "enabled": true,
+    "type": "text",
+    "text": "RECAPPER",
+    "file": null,
+    "opacity": 0.2,
+    "size": 0.24,
+    "spacing": 2.48,
+    "angle": -90
+  },
+  "background": {
+    "mode": "video",
+    "file": "assets/background.mp4",
+    "dim": 0.72
+  },
+  "animation": {
+    "style": "cut",
+    "direction": "left",
+    "duration": 0.35,
+    "ken_burns": false
+  },
+  "video": {
+    "quality": "standard"
+  },
+  "branding": {
+    "intro": {
+      "enabled": true,
+      "file": null
+    },
+    "outro": {
+      "enabled": true,
+      "file": null
+    }
+  },
+  "gemini": {
+    "tone": "dramatic",
+    "narration_type": "first_person",
+    "style_reference": "",
+    "model": "gemini-3.1-pro-preview"
+  },
+  "script_engine": "claude",
+  "claude": {
+    "comprehension_model": "sonnet",
+    "narration_model": "sonnet",
+    "target_minutes": 10.0,
+    "min_frame_s": 3.0
+  },
+  "batch": {
+    "review_before_audio": false,
+    "five_hour_pct": 70,
+    "seven_day_pct": 60,
+    "auto_wait_five_hour": true,
+    "notifications": true
+  }
+}

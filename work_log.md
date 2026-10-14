@@ -1,17 +1,10 @@
 # Work log
 
-## Chapter screen, semi-dark theme, pipeline step modal, step tracker
+## Step chips through the modal, clean redo, default settings, Claude check
 
-**Backend**
-- `tools/framer/app.py`: `_stage_times` / `_chapter_steps` read each of the 7 steps from disk (write times, so a step is "out of date" when an earlier step was written after it). `/api/projects/<slug>` now returns per chapter `steps {done, stale, next}`, `has_thumb`, and `duration` for any chapter with a video. New `/chapters/<n>/thumb` (first exported frame, else a video frame). `POST /batch` takes `{plans: {chapter: [steps]}}`. Merge now only needs a video on disk (not "complete"). Removed the view-only chapter pipeline route.
-- `tools/framer/batch.py`: each chapter has a `plan`; only planned steps run, in order. `rerun` uses the same plan mechanism. Old `batch.json` files load unchanged.
-- `tools/framer/preflight.py`: checks depend on the steps being run.
+- **Chips / Retry -> modal** (`tools/framer/index.html`, `batch.py`, `app.py`): every step chip and the Retry button open the pipeline step modal with that step pre-ticked; the separate confirm and `/rerun` route are gone. `POST /batch` now also adds plans to a running batch (`Batch.enqueue`), so a failed chapter can be redone while others run.
+- **Redo cleans up**: export deletes old frames and the old narration audio before cutting new frames (and refuses an empty export before deleting anything); audio (`s6_tts.py`) clears `audio/` and its temp voice file first; video (`s7_assemble.py`) deletes the old `recap.mp4` + plan first; download removes other files in `download/` once the new PDF is in; script reuses panels only if newer than the strip. `atomic_io.clear_directory` is the shared helper. Media library gains a "Panels" type; audio/frames types now cover the temp voice file and `thumb.jpg`.
+- **Default settings**: `tools/framer/project_defaults.py`, tracked `defaults/settings.json` + `defaults/assets/background.mp4` (taken from "100-Year-Old Top Chef"; series brief excluded). New projects start from them. Project Settings has "Make these my default settings", "Apply default settings" and "Apply to all projects" (shows the changes, applies after confirm).
+- **Claude CLI check**: `claude_cli.cli_status` messages now give plain steps; the pre-run check shows them (multi-line) before any run that includes the script step.
 
-**Frontend** (`tools/framer/index.html`)
-- Semi-dark theme tokens (page < panel < row/card < input < modal, header strips, selection tint, light frames on thumbnails/videos); `--accent-fg` for red text (AA).
-- Chapter list: one selection checkbox, list/card toggle (remembered per project), container-query layout so status and actions never overlap, 7-step tracker + "Next:" label + video length.
-- Pipeline modal for every start (Run pipeline, per-chapter Pipeline button): prerequisite ticking, reuse/redo, out-of-date pre-ticks, groups by state, footer summary, remembered choices.
-
-**Not changed:** the step chips in the Pipeline card still re-run a single step directly (they have their own confirm).
-
-**Run next:** restart the app (`start.bat`) to load the backend changes.
+Next: restart the app (`start.bat`). Commit and push `defaults/` to share it through Check for updates.

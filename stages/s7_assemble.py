@@ -896,6 +896,8 @@ def run(m: Manifest) -> Manifest:
             extra = " -> 1 still"
         print(f"  line {ln['order']}: {ln['n_frames']} frame(s), mode={ln['mode']}{extra}")
 
+    for old in ("recap.mp4", "video_plan.json"):
+        (out_dir / old).unlink(missing_ok=True)
     (out_dir / "video_plan.json").write_text(
         json.dumps({
             "chapter_id": m.chapter_id, "size": [W, H], "fps": FPS,

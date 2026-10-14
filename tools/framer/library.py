@@ -41,6 +41,16 @@ def _strips(chapter: Path) -> list[Path]:
         [p for p in (framer / "preview.json",) if p.is_file()]
 
 
+def _audio(chapter: Path) -> list[Path]:
+    work = chapter / "work"
+    return _files(work / "audio") + [p for p in (work / "_voice_ref_f32.wav",) if p.is_file()]
+
+
+def _frames(chapter: Path) -> list[Path]:
+    work = chapter / "work"
+    return _files(work / "frames") + [p for p in (work / "thumb.jpg",) if p.is_file()]
+
+
 def _pdfs(chapter: Path) -> list[Path]:
     work = chapter / "work"
     downloads = sorted(p for p in (work / "download").rglob("*.pdf")) if (work / "download").is_dir() else []
@@ -53,12 +63,15 @@ KINDS: dict[str, Kind] = {k.key: k for k in (
          _video),
     Kind("audio", "Narration audio",
          "Generate audio + video again; the narration is synthesized from the script.",
-         lambda c: _files(c / "work" / "audio")),
+         _audio),
     Kind("frames", "Exported frames",
          "Export again in the editor: frames are re-cut from the stitched strip with "
          "your boxes (the strip must exist). Export resets the narration, so run "
          "Generate audio + video afterwards.",
-         lambda c: _files(c / "work" / "frames")),
+         _frames),
+    Kind("panels", "Script panels",
+         "Generate the script again: the strip is split into panels first.",
+         lambda c: _files(c / "work" / "panels")),
     Kind("strips", "Stitched strip + preview tiles",
          "Re-stitch from the PDF in the editor (Chapter source). Frames cannot be "
          "re-exported until the strip exists again.",

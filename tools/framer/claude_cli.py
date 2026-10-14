@@ -48,8 +48,10 @@ class UsageLimit(ClaudeError):
 def cli_status() -> dict:
     exe = shutil.which("claude")
     if not exe:
-        return {"ready": False, "message": "Claude Code is not installed. Install it from "
-                "https://claude.com/claude-code, then reload this page."}
+        return {"ready": False, "message": "Claude Code is not installed on this PC, and the script step needs it "
+                "to write the narration.\n1. Install Claude Code from https://claude.com/claude-code.\n"
+                "2. Open a new terminal window and run: claude auth login\n"
+                "3. Sign in with your Claude account, then try again."}
     try:
         proc = subprocess.run([exe, "auth", "status"], capture_output=True, text=True,
                               encoding="utf-8", timeout=30, **NO_CONSOLE)
@@ -57,8 +59,9 @@ def cli_status() -> dict:
     except (OSError, ValueError, subprocess.TimeoutExpired):
         logged_in = False
     if not logged_in:
-        return {"ready": False, "message": "Claude Code is installed but not logged in. Open a "
-                "terminal, run `claude auth login`, sign in with your Claude account, then reload."}
+        return {"ready": False, "message": "Claude Code is installed, but you are not signed in, and the script "
+                "step needs it to write the narration.\n1. Open a terminal window.\n"
+                "2. Run: claude auth login\n3. Sign in with your Claude account, then try again."}
     return {"ready": True, "message": "Claude Code is installed and logged in."}
 
 
