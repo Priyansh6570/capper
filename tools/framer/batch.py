@@ -15,7 +15,7 @@ threshold is reached and the user has neither chosen to wait for the reset nor t
 With auto-wait on, a reached five-hour threshold waits for the reset by itself and resumes.
 
 The batch also estimates when it will finish (from how long each step took before), warns when
-a step goes quiet or a render drops to the slow fallback, and raises desktop notifications.
+a step goes quiet or a step goes quiet, and raises desktop notifications.
 """
 from __future__ import annotations
 
@@ -85,6 +85,7 @@ class Batch:
         self._closed = False
         self._cond = threading.Condition()
         for chapter in self.chapters:
+            chapter.setdefault("plan", list(LANE_STAGES))
             if chapter["state"] == "running":
                 chapter["state"] = "queued"
         self._settle()
@@ -95,16 +96,18 @@ class Batch:
             threading.Thread(target=self._lane, args=(stage, self._generation), daemon=True).start()
 
     @classmethod
-    def create(cls, path: Path, env: BatchEnv, numbers: list[int]) -> "Batch":
+    def create(cls, path: Path, env: BatchEnv, plans: dict[int, list[str]]) -> "Batch":
+        """`plans` maps each chapter to the steps to run, in pipeline order; every other step the
+        chapter already has on disk counts as done."""
         chapters = []
-        for n in sorted(numbers):
+        for n, plan in sorted(plans.items()):
             with env.scope(n):
-                completed = env.done_stages(n)
-            chapters.append({"n": n, "completed": completed, "stage": None, "state": "queued", "error": None,
-                             "started_at": None, "finished_at": None, "stage_started_at": None,
+                completed = [s for s in env.done_stages(n) if s not in plan]
+            chapters.append({"n": n, "plan": plan, "completed": completed, "stage": None, "state": "queued",
+                             "error": None, "started_at": None, "finished_at": None, "stage_started_at": None,
                              "stage_seconds": {}})
             _advance(chapters[-1], None, review=False)
-        batch = cls(path, env, {"status": "running", "created_at": _now(),
+        batch = cls(path, env, {"status": "running", "created_at": _now(), "finished_at": None,
                                 "ignore": {w: False for w in claude_usage.WINDOWS}, "chapters": chapters})
         batch._save()
         return batch
@@ -280,8 +283,9 @@ class Batch:
             self._closed = True
             self._cond.notify_all()
 
-    def rerun(self, n: int, stage: str) -> None:
-        """Run `stage` again for chapter n, and the steps after it. Revives a cancelled batch."""
+    def rerun(self, n: int, stage: str, only: bool = False) -> None:
+        """Run `stage` again for chapter n, and the steps after it (or just that step with `only`;
+        the later steps keep their existing output). Revives a cancelled or finished batch."""
         if stage not in LANE_STAGES:
             raise ValueError(f"Unknown step: {stage}.")
         with self._cond:
@@ -290,10 +294,10 @@ class Batch:
                 raise ValueError("This batch has been replaced by a newer one.")
             if n in self._busy or chapter["state"] == "running":
                 raise ValueError(f"Chapter {n} is still working on a step; wait for it or cancel first.")
-            keep = LANE_STAGES[:LANE_STAGES.index(stage)]
-            chapter.update(completed=[s for s in chapter["completed"] if s in keep], stage=stage,
+            plan = [stage] if only else LANE_STAGES[LANE_STAGES.index(stage):]
+            chapter.update(plan=plan, completed=[s for s in chapter["completed"] if s not in plan], stage=stage,
                            state="queued", error=None, finished_at=None)
-            self.log(n, f"== {stage} queued to run again ==")
+            self.log(n, f"== {stage} queued to run again{' (this step only)' if only else ''} ==")
             if self.status == "cancelled":
                 self._generation += 1
                 self._start_lanes()
@@ -384,7 +388,7 @@ class Batch:
             if chapter["state"] not in ACTIVE_STATES:
                 continue
             ready = now
-            upcoming = [s for s in LANE_STAGES if s not in chapter["completed"]]
+            upcoming = [s for s in chapter["plan"] if s not in chapter["completed"]]
             for stage in upcoming:
                 if chapter["state"] == "running" and stage == chapter["stage"] and chapter["stage_started_at"]:
                     elapsed = now - datetime.fromisoformat(chapter["stage_started_at"]).timestamp()
@@ -421,7 +425,7 @@ def _advance(chapter: dict, left: str | None, *, review: bool) -> None:
     """Record that `chapter` left `left` and queue its next stage (or finish it)."""
     if left:
         chapter["completed"].append(left)
-    upcoming = next((s for s in LANE_STAGES if s not in chapter["completed"]), None)
+    upcoming = next((s for s in chapter["plan"] if s not in chapter["completed"]), None)
     if upcoming is None:
         chapter.update(state="done", stage=None, finished_at=_now())
     elif left == "export" and review:

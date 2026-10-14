@@ -56,7 +56,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from flask import Flask, Response, jsonify, request, send_file, send_from_directory  # noqa: E402
-from PIL import Image, ImageFilter  # noqa: E402
+from PIL import Image, ImageDraw, ImageFilter  # noqa: E402
 
 # Stage 1: importing it lifts Pillow's MAX_IMAGE_PIXELS guard (module-level) and
 # gives us the exact stitch used by the real pipeline.
@@ -1268,20 +1268,28 @@ def _blur_region(img: Image.Image, lx: int, ly: int, rx: int, ry: int, style: st
     style "g" = heavy gaussian (radius = BLUR_STRENGTH * minside); anything else =
     mosaic/pixelate (downscale then nearest-neighbour upscale), which reduces the
     region to a few blocks and is the most reliable way to make text unreadable.
-    Shared by BOTH the export and the live preview so they look identical.
+    A trailing "o" ("mo", "go") makes the region an ellipse inscribed in its box instead
+    of the full rectangle. Shared by BOTH the export and the live preview so they look identical.
     """
     w, h = rx - lx, ry - ly
     if w <= 0 or h <= 0:
         return
+    oval = style.endswith("o")
+    style = style.rstrip("o")
     minside = min(w, h)
     patch = img.crop((lx, ly, rx, ry))
     if style == "g":
-        patch = patch.filter(ImageFilter.GaussianBlur(max(8.0, BLUR_STRENGTH * minside)))
+        blurred = patch.filter(ImageFilter.GaussianBlur(max(8.0, BLUR_STRENGTH * minside)))
     else:  # mosaic / pixelate (default)
         block = max(3, int(round(BLUR_STRENGTH * minside)))
         sw, sh = max(1, w // block), max(1, h // block)
-        patch = patch.resize((sw, sh), Image.BILINEAR).resize((w, h), Image.NEAREST)
-    img.paste(patch, (lx, ly))
+        blurred = patch.resize((sw, sh), Image.BILINEAR).resize((w, h), Image.NEAREST)
+    if oval:
+        # anti-aliased ellipse: drawn at 4x, shrunk back
+        mask = Image.new("L", (w * 4, h * 4), 0)
+        ImageDraw.Draw(mask).ellipse((0, 0, w * 4 - 1, h * 4 - 1), fill=255)
+        blurred = Image.composite(blurred, patch, mask.resize((w, h), Image.LANCZOS))
+    img.paste(blurred, (lx, ly))
 
 
 def _crop_frame(strip: Image.Image, entry: dict, out_path: Path) -> None:
@@ -2769,11 +2777,21 @@ def api_get_project(slug):
     project = projects.load(slug)
     for ch in project["chapters"]:
         video = projects.chapter_video_path(slug, ch["n"])
-        ch["duration"] = branding.duration_of(video) if ch["status"] == "complete" and video.is_file() else None
+        ch["duration"] = branding.duration_of(video) if video.is_file() else None
+        ch["steps"] = _chapter_steps(slug, ch["n"])
+        ch["has_thumb"] = _thumb_source(slug, ch["n"]) is not None
     chapter_totals = [(claude_engine.read_usage(projects.chapter_work_dir(slug, ch["n"]) / "claude" / "state.json")
                        or {}).get("total") for ch in project["chapters"]]
     project["claude_usage"] = claude_cli.sum_usage([t for t in chapter_totals if t])
     return jsonify(project=project)
+
+
+@app.get("/api/projects/<slug>/chapters/<int:n>/thumb")
+def api_chapter_thumb(slug, n):
+    if not projects.exists(slug):
+        return jsonify(error=f"No such project: {slug}"), 404
+    thumb = _chapter_thumb(slug, n)
+    return send_file(thumb, mimetype="image/jpeg", max_age=0) if thumb else (jsonify(error="No frame yet."), 404)
 
 
 @app.get("/api/projects/<slug>/export")
@@ -3103,8 +3121,7 @@ def merge_stream(slug):
     """Concatenate several chapters' recap.mp4, in chapter order, into one
     video under projects/<slug>/merged/. EventSource (GET) only:
         ?chapters=1,3,5
-    Only chapters currently marked "complete" (re-derived fresh from disk, not
-    just the stored status) are accepted. When every input shares 1920x1080 +
+    Only chapters whose recap.mp4 exists on disk are accepted. When every input shares 1920x1080 +
     a matching video AND audio codec, the merge is a fast stream copy;
     otherwise every input is scaled/padded to 1920x1080@24fps first (see
     _build_merge_cmd_reencode) so a mismatched render can't corrupt the merge.
@@ -3120,7 +3137,7 @@ def merge_stream(slug):
             yield _sse({"type": "error", "message": f"No such project: {slug}"})
             return
         if len(chapters) < 2:
-            yield _sse({"type": "error", "message": "Select at least 2 complete chapters to merge."})
+            yield _sse({"type": "error", "message": "Select at least 2 chapters with a video to merge."})
             return
 
         with _MERGE_LOCK:
@@ -3139,15 +3156,6 @@ def merge_stream(slug):
                 ch = projects.get_chapter(projects.load(slug), n)
                 if ch is None:
                     yield _sse({"type": "error", "message": f"No chapter {n} in this project."})
-                    return
-                try:
-                    ch = projects.derive_status(slug, n)  # refuse a stale "complete" the disk disagrees with
-                except KeyError:
-                    yield _sse({"type": "error", "message": f"No chapter {n} in this project."})
-                    return
-                if ch["status"] != "complete":
-                    yield _sse({"type": "error",
-                                "message": f"Chapter {n} is not marked complete (status: {ch['status']})."})
                     return
                 video = projects.chapter_video_path(slug, n)
                 if not video.is_file():
@@ -3381,6 +3389,7 @@ def api_library_delete(slug):
 # --------------------------------------------------------------------------- #
 _BATCHES: dict[str, batch.Batch] = {}
 _BATCH_LOCK = threading.Lock()
+THUMB_WIDTH = 480
 
 
 def _entries_from_state(state: dict) -> list[dict]:
@@ -3397,28 +3406,89 @@ def _chapter_pdf(chapter_id: str) -> Path:
     return pdf
 
 
-def _voiced(chapter_id: str) -> bool:
-    beats = Manifest.load(chapter_work_dir(chapter_id)).beats
-    return bool(beats) and all(beat.audio and Path(beat.audio).is_file() for beat in beats)
+def _newest(paths) -> float | None:
+    times = [p.stat().st_mtime for p in paths if p.is_file()]
+    return max(times) if times else None
+
+
+def _script_saved_at(state_path: Path) -> float | None:
+    narration = claude_engine.read_narration(state_path)
+    return datetime.fromisoformat(narration["saved_at"]).timestamp() if narration else None
+
+
+def _stage_times(chapter_id: str) -> dict[str, float | None]:
+    """When each pipeline step's output was last written, None for a step with no output. Creates
+    nothing on disk, so it is safe to call for every chapter. Call inside its scope."""
+    work = chapter_work_dir(chapter_id)
+    try:
+        beats = Manifest.load(work).beats
+    except (OSError, ValueError):
+        beats = []
+    voiced = bool(beats) and all(beat.audio and Path(beat.audio).is_file() for beat in beats)
+    return {
+        "download": _newest((work / "download").rglob("*.pdf")),
+        "split": _newest((work / "gemini_parts").glob("*.pdf")),
+        "stitch": _newest([work / "pages" / "strip_001.png"]),
+        "script": _script_saved_at(work / "claude" / "state.json"),
+        "export": _newest([work / "framer" / "mapping.json"]),
+        "audio": _newest(Path(beat.audio) for beat in beats) if voiced else None,
+        "video": _newest([chapter_output_dir(chapter_id) / "recap.mp4"]),
+    }
+
+
+def _chapter_steps(slug: str, n: int) -> dict:
+    """The chapter's pipeline steps as the disk has them: `done` (a rendered video counts as having
+    every step, older chapters never produced some intermediates), `stale` (done, but an earlier
+    step was written after it), and `next`, the first step that is missing or stale."""
+    with config.chapter_scope(projects.chapter_work_dir(slug, n), projects.chapter_output_dir(slug, n)):
+        times = _stage_times(f"{slug}_ch{n}")
+    rendered = times["video"] is not None
+    done = [s for s in batch.LANE_STAGES if rendered or times[s] is not None]
+    stale = [s for i, s in enumerate(batch.LANE_STAGES)
+             if times[s] is not None and any(t is not None and t > times[s] for t in map(times.get, batch.LANE_STAGES[:i]))]
+    pending = [s for s in batch.LANE_STAGES if s not in done or s in stale]
+    return {"done": done, "stale": stale, "next": pending[0] if pending else None}
 
 
 def _stages_on_disk(chapter_id: str) -> list[str]:
-    """The leading pipeline stages whose output the chapter already has. Call inside its scope."""
-    exists = {
-        "download": lambda: _downloaded_pdf(chapter_id) is not None,
-        "split": lambda: bool(_existing_gemini_parts(chapter_id)),
-        "stitch": lambda: _strip_path(chapter_id).exists(),
-        "script": lambda: claude_engine.read_narration(_claude_state_path(chapter_id)) is not None,
-        "export": lambda: (_framer_dir(chapter_id) / "mapping.json").is_file(),
-        "audio": lambda: _voiced(chapter_id),
-        "video": lambda: (chapter_output_dir(chapter_id) / "recap.mp4").is_file(),
-    }
+    """The leading run of steps the chapter has output for: what a batch resumes from.
+    Call inside its scope."""
+    times = _stage_times(chapter_id)
+    rendered = times["video"] is not None
     done = []
     for stage in batch.LANE_STAGES:
-        if not exists[stage]():
+        if not rendered and times[stage] is None:
             break
         done.append(stage)
     return done
+
+
+def _thumb_source(slug: str, n: int) -> tuple[Path, bool] | None:
+    """The file the chapter's thumbnail comes from (its first exported frame, else its rendered
+    video) and whether that file is a frame."""
+    frames = sorted((projects.chapter_work_dir(slug, n) / "frames").glob("frame_*.png"))
+    source = frames[0] if frames else projects.chapter_video_path(slug, n)
+    return (source, bool(frames)) if source.is_file() else None
+
+
+def _chapter_thumb(slug: str, n: int) -> Path | None:
+    """A small JPEG of the chapter's thumbnail source, rebuilt whenever that source is newer."""
+    found = _thumb_source(slug, n)
+    if found is None:
+        return None
+    source, is_frame = found
+    thumb = projects.chapter_work_dir(slug, n) / "thumb.jpg"
+    if thumb.is_file() and thumb.stat().st_mtime >= source.stat().st_mtime:
+        return thumb
+    if is_frame:
+        with Image.open(source) as image:
+            image.convert("RGB").resize((THUMB_WIDTH, round(image.height * THUMB_WIDTH / image.width))).save(thumb, quality=82)
+    else:
+        done = subprocess.run([gpu.ffmpeg_path(), "-y", "-ss", "1", "-i", str(source), "-frames:v", "1",
+                               "-vf", f"scale={THUMB_WIDTH}:-2", str(thumb)], capture_output=True, **NO_CONSOLE)
+        if done.returncode:
+            return None
+    return thumb
 
 
 def _cancel_job(job_id: str) -> None:
@@ -3436,8 +3506,6 @@ def _batch_env(slug: str) -> batch.BatchEnv:
 
     def mirror(b: batch.Batch, n: int, line: str) -> None:
         b.log(n, line)
-        if "falling back to MoviePy" in line:
-            b.warn(n, "The fast ffmpeg render failed, so MoviePy is rendering instead: much slower, no Ken Burns.")
 
     def run_job(b: batch.Batch, n: int, job: Job) -> None:
         b.attach(n, job.id)
@@ -3520,32 +3588,39 @@ def api_batch(slug):
 
 @app.get("/api/projects/<slug>/batch/preflight")
 def api_batch_preflight(slug):
-    """Checks to run before a batch of `?chapters=1,2,3` starts."""
+    """Checks to run before a batch of `?chapters=1,2,3` running `?steps=script,export` starts."""
     if not projects.exists(slug):
         return jsonify(error=f"No such project: {slug}"), 404
     numbers = [int(n) for n in request.args.get("chapters", "").split(",") if n.strip().isdigit()]
-    return jsonify(checks=preflight.check(projects.load(slug), numbers))
+    steps = {s for s in request.args.get("steps", "").split(",") if s in batch.LANE_STAGES}
+    return jsonify(checks=preflight.check(projects.load(slug), numbers, steps))
 
 
 @app.post("/api/projects/<slug>/batch")
 def api_batch_start(slug):
-    """Body: JSON {chapters: [n, ...]}. Runs the full pipeline for each, pipelined in order."""
+    """Body: JSON {plans: {"<chapter>": [step, ...]}}. Runs just those steps, in pipeline order, for
+    each chapter, pipelined across chapters."""
     if not projects.exists(slug):
         return jsonify(error=f"No such project: {slug}"), 404
     known = {c["n"] for c in projects.load(slug)["chapters"]}
-    numbers = sorted({int(n) for n in (request.get_json(silent=True) or {}).get("chapters") or []})
-    if not numbers or not set(numbers) <= known:
-        return jsonify(error="Select chapters of this project."), 400
-    status = claude_cli.cli_status()
-    if not status["ready"]:
-        return jsonify(error=status["message"]), 409
+    try:
+        plans = {int(n): [s for s in batch.LANE_STAGES if s in steps]
+                 for n, steps in ((request.get_json(silent=True) or {}).get("plans") or {}).items()}
+    except (ValueError, TypeError):
+        plans = {}
+    if not plans or not set(plans) <= known or not all(plans.values()):
+        return jsonify(error="Choose steps to run for chapters of this project."), 400
+    if any("script" in steps for steps in plans.values()):
+        status = claude_cli.cli_status()
+        if not status["ready"]:
+            return jsonify(error=status["message"]), 409
     with _BATCH_LOCK:
         previous = _BATCHES.get(slug)
         if previous and previous.active:
             return jsonify(error="A batch is already running for this project."), 409
         if previous:
             previous.close()
-        _BATCHES[slug] = batch.Batch.create(_batch_path(slug), _batch_env(slug), numbers)
+        _BATCHES[slug] = batch.Batch.create(_batch_path(slug), _batch_env(slug), plans)
     return jsonify(ok=True)
 
 
@@ -3570,9 +3645,11 @@ def api_batch_control(slug, control):
 
 @app.post("/api/projects/<slug>/batch/chapters/<int:n>/<control>")
 def api_batch_chapter(slug, n, control):
-    """control: rerun (body {stage}: that step and those after it) | continue (after frame review)."""
+    """control: rerun (body {stage, only?}: that step and those after it, or just that step) | continue
+    (after frame review)."""
     stage = (request.get_json(silent=True) or {}).get("stage")
-    actions = {"rerun": lambda b: b.rerun(n, stage), "continue": lambda b: b.continue_review(n)}
+    only = bool((request.get_json(silent=True) or {}).get("only"))
+    actions = {"rerun": lambda b: b.rerun(n, stage, only), "continue": lambda b: b.continue_review(n)}
     if control not in actions:
         return jsonify(error="Unknown control."), 404
     return _batch_do(slug, actions[control])

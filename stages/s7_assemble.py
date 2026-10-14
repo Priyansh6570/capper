@@ -1,4 +1,4 @@
-"""Stage 7 - Assemble the video, FAST.  Runs on: your laptop (NVENC/ffmpeg).
+"""Stage 7 - Assemble the video, FAST.  Runs on: your laptop (ffmpeg).
 
 A recap is just static frames with narration, so MoviePy's per-frame Python
 render loop (compositing layers in Python for every single output frame) is pure
@@ -14,11 +14,9 @@ overhead. This stage skips it:
      hardcoded here before that setting existed; "cut" uses a plain `concat`
      instead, since a 0-duration xfade isn't a reliable no-op); the per-beat
      narration is delayed onto the timeline and mixed; a looped music bed is
-     sidechain-DUCKED under the narration. Encoded with libx264 at a constant quality
-     chosen by the project's `video.quality` preset (see QUALITY).
-  3. MoviePy is kept only as a FALLBACK if the ffmpeg path fails (it reuses the
-     same precomposed stills, so it never re-composites in Python either) -
-     it only distinguishes cut vs. a plain crossfade, see _assemble_moviepy().
+     sidechain-DUCKED under the narration. Encoded at a constant quality chosen by the
+     project's `video.quality` preset (see QUALITY) with libx264 at a fast preset. ffmpeg is REQUIRED - there
+     is no slower fallback renderer; if it fails the stage fails with ffmpeg's message.
 
 Everything is audio-driven and static (24fps): a beat holds for its narration
 length (floored at MIN_BEAT, never padded for short lines; long audio just holds),
@@ -39,14 +37,14 @@ each beat falls back to its single `frame_image`.
 
 Output: output/<chapter>/recap.mp4 (+ video_plan.json). Prints total render time.
 
-PIL is imported eagerly (Pillow is a core dep); MoviePy is imported LAZILY inside
-the fallback so the orchestrator can import this module without moviepy installed.
+PIL is imported eagerly (Pillow is a core dep). MoviePy is not used.
 """
 from __future__ import annotations
 
 import itertools
 import json
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -96,6 +94,8 @@ QUALITY = {
 DEFAULT_QUALITY = "tiny"
 BG_BLUR_DIVISOR = 10   # a blurred background is rendered at 1/10 size and scaled back up
 FFMPEG_PROGRESS_EVERY_S = 3.0   # how often ffmpeg's progress line is passed on to the log
+X264_PRESET = "veryfast"   # measured: the encoder is never the bottleneck (the filter graph is), so a
+                           # fast preset costs no render speed; h264_nvenc was no faster and made files ~3x bigger
 
 MUSIC_DIR = ROOT / "assets" / "music"
 MUSIC_EXTS = {".mp3", ".wav", ".m4a", ".ogg", ".oga", ".aac", ".flac"}
@@ -177,7 +177,7 @@ def _zoom_filter(dur: float, zoom_in: bool, width: int, height: int) -> str:
     zoom = f"(1+{KEN_BURNS_MAX_ZOOM - 1.0:.4f}*{eased if zoom_in else f'(1-{eased})'})"
     x0, y0 = f"{width / 2}*(1-1/{zoom})", f"{height / 2}*(1-1/{zoom})"
     return (f"perspective=x0='{x0}':y0='{y0}':x1='{width}-{x0}':y1='{y0}':x2='{x0}':y2='{height}-{y0}':"
-            f"x3='{width}-{x0}':y3='{height}-{y0}':sense=source:interpolation=cubic:eval=frame")
+            f"x3='{width}-{x0}':y3='{height}-{y0}':sense=source:interpolation=linear:eval=frame")
 
 
 def _resolve_animation(settings: dict) -> tuple[str, float, bool]:
@@ -474,10 +474,8 @@ def _compose_still(frame_paths: list[str | None], bg=None, wm=None, transparent:
 # --------------------------------------------------------------------------- #
 # Tiled watermark - built ONCE per render as a single 1920x1080 RGBA layer,
 # then alpha-composited onto every precomposed still (see _precompose). PIL,
-# not an ffmpeg filter: the MoviePy fallback (_assemble_moviepy) reuses these
-# same stills, so both render paths get the watermark for free from one code
-# path, and it costs one composite per BEAT (tens) rather than per output
-# frame (~24fps x total_s).
+# not an ffmpeg filter: it costs one composite per BEAT (tens) rather than per
+# output frame (~24fps x total_s).
 # --------------------------------------------------------------------------- #
 def _find_font(px: int):
     from PIL import ImageFont
@@ -573,7 +571,7 @@ def _build_watermark_layer(settings: dict):
 
 
 def _precompose(items: list[dict], stills_dir: Path, wm=None, bg=None,
-                transparent: bool = False, fill: float = FILL) -> None:
+                transparent: bool = False, fill: float = FILL, out_height: int = H) -> None:
     """Render every item's still PNG into stills_dir and record its path on the
     item (key "still"). All the per-frame compositing work happens here, once.
     A "grid" item shows its frames together; everything else is one frame. `fill` is the
@@ -589,6 +587,9 @@ def _precompose(items: list[dict], stills_dir: Path, wm=None, bg=None,
     for i, it in enumerate(items):
         out = stills_dir / f"beat_{i:04d}.png"
         still = _compose_still(it["frames"], bg, wm, transparent, fill)
+        if out_height != H:
+            from PIL import Image
+            still = still.resize((round(out_height * W / H / 2) * 2, out_height), Image.LANCZOS)
         still.save(out)
         it["still"] = str(out)
 
@@ -632,11 +633,12 @@ def _build_filtergraph(items: list[dict], music_in: int | None, total: float,
     # --- video: normalize each still (+ optional Ken Burns), then chain transitions ---
     for i in range(n):
         chain = f"[{i}:v]fps={FPS}"
-        if out_height != H:
-            chain += f",scale={out_w}:{out_height}:flags=lanczos"
+        # the stills are already composed at the output size (see _precompose), so there is no
+        # per-frame scale here; converting to planar YUV first halves what Ken Burns has to warp
+        chain += f",format={fg_pix_fmt}"
         if ken_burns:
             chain += "," + _zoom_filter(items[i]["dur"], (i % 2 == 0), out_w, out_height)
-        chain += f",format={fg_pix_fmt},setsar=1[v{i}]"
+        chain += f",setsar=1[v{i}]"
         parts.append(chain)
     if n == 1:
         vlabel = "[v0]"
@@ -751,15 +753,41 @@ def _build_cmd(ffmpeg: str, items: list[dict], music_path: Path | None,
     if alabel is not None:
         cmd += ["-map", alabel, "-c:a", "aac", "-b:a", f"{quality['audio_kbps']}k", "-ac", str(quality["audio_channels"])]
 
-    cmd += ["-c:v", "libx264", "-preset", quality["preset"], "-crf", str(quality["crf"]), "-movflags", "+faststart"]
+    cmd += ["-c:v", "libx264", "-preset", X264_PRESET, "-crf", str(quality["crf"]), "-movflags", "+faststart"]
     cmd += ["-pix_fmt", "yuv420p", "-r", str(FPS), "-t", f"{total:.3f}", str(out)]
     return cmd
 
 
-def _run_ffmpeg(cmd: list[str]) -> tuple[int, list[str]]:
-    """Run ffmpeg, printing its progress (at most every few seconds) and any error as they
-    appear. stderr must be piped explicitly: with no console, an inherited one goes nowhere.
-    Returns (exit code, the non-progress lines it printed)."""
+_STAT = {k: re.compile(rf"\b{k}=\s*(\S+)") for k in ("frame", "fps", "time", "speed", "bitrate")}
+
+
+def _clock(seconds: float) -> str:
+    s = int(round(seconds))
+    return f"{s // 3600}h{s % 3600 // 60:02d}m{s % 60:02d}s" if s >= 3600 else f"{s // 60}m{s % 60:02d}s"
+
+
+def _progress_line(stats_line: str, total_frames: int, total_s: float, started: float) -> str:
+    """One readable progress line from an ffmpeg `-stats` line: how far, how fast, how long left.
+    Keeps the `frame=` / `time=` fields the framer's progress bar parses."""
+    got = {k: (m.group(1) if (m := rx.search(stats_line)) else "?") for k, rx in _STAT.items()}
+    try:
+        h, m_, sec = got["time"].split(":")
+        done_s = int(h) * 3600 + int(m_) * 60 + float(sec)
+    except ValueError:
+        done_s = 0.0
+    elapsed = time.monotonic() - started
+    pct = min(100.0, 100.0 * done_s / total_s) if total_s else 0.0
+    eta = elapsed * (total_s - done_s) / done_s if done_s > 0 else 0.0
+    return (f"  render {pct:3.0f}%  frame={got['frame']}/{total_frames}  fps={got['fps']}  "
+            f"time={got['time']}  speed={got['speed']} realtime  bitrate={got['bitrate']}  "
+            f"elapsed {_clock(elapsed)}  eta {_clock(eta) if done_s > 0 else '?'}")
+
+
+def _run_ffmpeg(cmd: list[str], total_frames: int, total_s: float) -> tuple[int, list[str]]:
+    """Run ffmpeg, logging its progress (every few seconds: percent, frames, encode fps, speed vs
+    realtime, ETA) and any error as they appear. stderr must be piped explicitly: with no console,
+    an inherited one goes nowhere. Returns (exit code, the non-progress lines it printed)."""
+    started = time.monotonic()
     proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
                             encoding="utf-8", errors="replace", **NO_CONSOLE)
     errors, shown = [], 0.0
@@ -768,23 +796,59 @@ def _run_ffmpeg(cmd: list[str]) -> tuple[int, list[str]]:
         if line.startswith("frame="):
             if time.monotonic() - shown >= FFMPEG_PROGRESS_EVERY_S:
                 shown = time.monotonic()
-                print(f"  {line}", flush=True)
+                print(_progress_line(line, total_frames, total_s, started), flush=True)
         elif line:
             errors.append(line)
             print(f"  {line}", flush=True)
     return proc.wait(), errors
 
 
+def _require_ffmpeg() -> str:
+    """The ffmpeg executable, or a clear error: ffmpeg is mandatory for this stage."""
+    exe = ffmpeg_path()
+    if not (Path(exe).is_file() or shutil.which(exe)):
+        raise RuntimeError("ffmpeg was not found (looked for vendor/ffmpeg/bin/ffmpeg.exe, then PATH). "
+                           "Run setup.bat to install it - video rendering requires ffmpeg.")
+    return exe
+
+
+def _ffmpeg_version(ffmpeg: str) -> str:
+    try:
+        out = subprocess.run([ffmpeg, "-version"], capture_output=True, text=True, timeout=15, **NO_CONSOLE).stdout
+        return out.splitlines()[0] if out else "unknown"
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
+
+
 def _assemble_ffmpeg(items: list[dict], music_path: Path | None, total: float, out: Path,
                      quality: dict, transition: str = "fade", crossfade: float = CROSSFADE,
                      ken_burns: bool = False, video_bg: Path | None = None,
                      bg_dim: float = 0.85) -> str:
-    """Render with ffmpeg directly. Returns the codec used; raises if ffmpeg fails."""
-    cmd = _build_cmd(ffmpeg_path(), items, music_path, total, out, quality, transition, crossfade,
+    """Render with ffmpeg directly, logging exactly what is being run. Returns the codec used;
+    raises if ffmpeg fails (there is no fallback renderer)."""
+    ffmpeg = _require_ffmpeg()
+    total_frames = int(round(total * FPS))
+    cmd = _build_cmd(ffmpeg, items, music_path, total, out, quality, transition, crossfade,
                      ken_burns, video_bg, bg_dim)
-    returncode, errors = _run_ffmpeg(cmd)
+    print(f"  ffmpeg: {ffmpeg}", flush=True)
+    print(f"          {_ffmpeg_version(ffmpeg)}", flush=True)
+    print(f"  encoder: libx264 (CPU), preset {X264_PRESET}, crf {quality['crf']}, "
+          f"audio aac {quality['audio_kbps']}k x{quality['audio_channels']}", flush=True)
+    print(f"  output: {round(quality['height'] * W / H / 2) * 2}x{quality['height']} @ {FPS}fps, "
+          f"{total_frames} frames, {total:.1f}s -> {out}", flush=True)
+    print(f"  filters: {len(items)} stills, transition={transition} @ {crossfade:.2f}s, "
+          f"ken_burns={'on (perspective, linear)' if ken_burns else 'off'}, "
+          f"video_background={'on' if video_bg else 'off'}, music={'on' if music_path else 'off'}, "
+          f"narration clips={sum(1 for it in items if it['audio'])}", flush=True)
+    print("  command: " + " ".join(f'"{c}"' if " " in c else c for c in cmd), flush=True)
+    started = time.monotonic()
+    returncode, errors = _run_ffmpeg(cmd, total_frames, total)
+    took = time.monotonic() - started
     if returncode != 0:
         raise RuntimeError(f"ffmpeg exited {returncode}: {errors[-1] if errors else 'no message'}")
+    print(f"  ffmpeg finished: {total / max(took, 0.001):.2f}x realtime, "
+          f"{total_frames / max(took, 0.001):.0f} fps average, {_clock(took)} for {_clock(total)} of video",
+          flush=True)
     return "libx264"
 
 
@@ -793,72 +857,6 @@ def _resolve_quality(settings: dict) -> tuple[str, dict]:
     name = settings.get("quality")
     name = name if name in QUALITY else DEFAULT_QUALITY
     return name, QUALITY[name]
-
-
-# --------------------------------------------------------------------------- #
-# MoviePy fallback (reuses the precomposed stills; only if ffmpeg fails)
-# --------------------------------------------------------------------------- #
-def _assemble_moviepy(items: list[dict], music_path: Path | None, total: float, out: Path,
-                      crossfade: float = CROSSFADE) -> str:
-    """MoviePy has no built-in slide/zoom transitions to match ffmpeg's xfade
-    styles, so this last-resort fallback (only used if the direct ffmpeg path
-    fails outright) only distinguishes "cut" (crossfade<=0 - plain concat, no
-    blend) from everything else (a plain crossfade at `crossfade` seconds,
-    i.e. today's only look, regardless of slide/zoom being configured). It
-    likewise does not support a video background or Ken Burns: if the
-    project has a video background, the precomposed stills it reuses are
-    TRANSPARENT (see run()), which MoviePy just renders as plain black here -
-    no crash, just a visibly plainer video than the primary ffmpeg path."""
-    from moviepy import (ImageClip, AudioFileClip, CompositeAudioClip,
-                         concatenate_videoclips)
-    from moviepy.video.fx import CrossFadeIn
-
-    clips, to_close = [], []
-    for it in items:
-        clip = ImageClip(it["still"]).with_duration(it["dur"])
-        if it["audio"]:
-            narration = (AudioFileClip(it["audio"]).with_start(0.0)
-                         .with_volume_scaled(NARRATION_VOL))
-            clip = clip.with_audio(CompositeAudioClip([narration]))
-        clips.append(clip)
-    to_close += clips
-
-    if len(clips) == 1:
-        final = clips[0]
-    elif crossfade <= 0:
-        final = concatenate_videoclips(clips, method="compose")
-    else:
-        faded = [clips[0]] + [c.with_effects([CrossFadeIn(crossfade)]) for c in clips[1:]]
-        final = concatenate_videoclips(faded, method="compose", padding=-crossfade)
-    to_close.append(final)
-
-    if music_path is not None and final.audio is not None:
-        from moviepy import AudioFileClip as _AFC
-        from moviepy.audio.fx import AudioLoop
-        track = (_AFC(str(music_path)).with_effects([AudioLoop(duration=final.duration)])
-                 .with_volume_scaled(MUSIC_VOL))
-        to_close.append(track)
-        final = final.with_audio(CompositeAudioClip([final.audio, track]))
-
-    codec = "libx264"
-    common = dict(fps=FPS, audio_codec="aac", audio_bitrate="192k",
-                  temp_audiofile=str(out.parent / "_recap_temp_audio.m4a"),
-                  remove_temp=True, threads=4, logger="bar")
-    try:
-        final.write_videofile(str(out), codec="h264_nvenc",
-                              ffmpeg_params=["-pix_fmt", "yuv420p", "-b:v", "8M"], **common)
-        codec = "h264_nvenc"
-    except Exception as e:  # noqa: BLE001
-        print(f"  h264_nvenc unavailable ({type(e).__name__}); using libx264")
-        final.write_videofile(str(out), codec="libx264", preset="medium",
-                              ffmpeg_params=["-pix_fmt", "yuv420p"], **common)
-    finally:
-        for c in to_close:
-            try:
-                c.close()
-            except Exception:  # noqa: BLE001
-                pass
-    return codec
 
 
 # --------------------------------------------------------------------------- #
@@ -920,26 +918,18 @@ def run(m: Manifest) -> Manifest:
     t0 = time.perf_counter()
     try:
         _precompose(items, stills_dir, watermark, background, transparent=(video_bg is not None),
-                    fill=KEN_BURNS_FILL if ken_burns else FILL)
+                    fill=KEN_BURNS_FILL if ken_burns else FILL, out_height=quality["height"])
         anim_desc = "cut (no transition)" if transition == "cut" else f"{transition} @ {crossfade:.2f}s"
         if ken_burns:
             anim_desc += " + alternating Ken Burns"
         print(f"  precomposed {len(items)} stills ({total:.1f}s timeline), transition={anim_desc}"
               f"{' + watermark' if watermark else ''}{' + custom background' if background else ''}"
               f"{' + video background' if video_bg else ''}")
-        try:
-            codec = _assemble_ffmpeg(items, music_path, total, out, quality, transition, crossfade,
-                                     ken_burns, video_bg, bg_dim)
-            path = "ffmpeg"
-        except Exception as e:  # noqa: BLE001 - fall back to MoviePy
-            print(f"  ffmpeg assembly failed ({type(e).__name__}: {e}); "
-                  f"falling back to MoviePy")
-            if video_bg is not None:
-                print("  NOTE: the MoviePy fallback does not support a video background or "
-                      "Ken Burns (see _assemble_moviepy) - the transparent stills will show "
-                      "plain black where the video would have played.")
-            codec = _assemble_moviepy(items, music_path, total, out, crossfade)
-            path = "moviepy"
+        t_pre = time.perf_counter() - t0
+        print(f"  precompose took {t_pre:.1f}s ({len(items) / max(t_pre, 0.001):.1f} stills/s)", flush=True)
+        codec = _assemble_ffmpeg(items, music_path, total, out, quality, transition, crossfade,
+                                 ken_burns, video_bg, bg_dim)
+        path = "ffmpeg"
     finally:
         shutil.rmtree(stills_dir, ignore_errors=True)
 

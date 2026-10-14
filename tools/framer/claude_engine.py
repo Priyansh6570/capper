@@ -29,8 +29,8 @@ import panel_split
 from atomic_io import atomic_write_json, read_json_with_backup_fallback
 from manifest import Panel
 
-SEND_MAX_SIDE = 1568        # longest side of the copy of a panel sent to the model, px
-JPEG_QUALITY = 85
+SEND_MAX_SIDE = 1024        # longest side of the copy of a panel sent to the model, px
+JPEG_QUALITY = 80
 BATCH_PANELS = 40           # images per pass-1 call (the API allows 100 and caps request size)
 FRAME_KINDS = ("character", "action", "scene", "sound_effect")
 KINDS = FRAME_KINDS + ("dialogue_bubble", "junk")

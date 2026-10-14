@@ -9,6 +9,7 @@ interrupted session.
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -139,10 +140,13 @@ def _run(content: list[dict], schema: dict, model: str, cwd: Path, session_id: s
          usage: dict, mention_event: str, panel_ids: set[str]) -> dict:
     cmd = [shutil.which("claude"), "-p", "--input-format", "stream-json", "--output-format", "stream-json",
            "--verbose", "--include-partial-messages", "--json-schema", json.dumps(schema),
-           "--tools", "", "--model", model]
+           "--tools", "", "--model", model, "--effort", "low",
+           # no MCP servers, skills or plugins: they only add startup time and prompt tokens
+           "--strict-mcp-config", "--disable-slash-commands", "--exclude-dynamic-system-prompt-sections"]
     if session_id:
         cmd += ["--resume", session_id]
-    proc = subprocess.Popen(cmd, cwd=str(cwd), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+    env = {**os.environ, "MAX_THINKING_TOKENS": "0"}   # the answer is structured; thinking only slows it
+    proc = subprocess.Popen(cmd, cwd=str(cwd), env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
                             **NO_CONSOLE)
     on_proc(proc)

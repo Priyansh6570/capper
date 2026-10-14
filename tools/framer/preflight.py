@@ -17,7 +17,7 @@ import claude_usage
 import projects
 import sites
 from config import NO_CONSOLE, PROJECTS_DIR
-from gpu import ffmpeg_path, nvenc_works, nvidia_gpu
+from gpu import ffmpeg_path, nvidia_gpu
 
 DISK_PER_CHAPTER_GB = 3
 OTHER_GPU_APPS_WARN_MB = 1500       # Chatterbox needs about 3 GB of a 4 GB card
@@ -69,9 +69,7 @@ def _ffmpeg() -> dict:
     ffmpeg = ffmpeg_path()
     if not (Path(ffmpeg).exists() or shutil.which(ffmpeg)):
         return _result("Video encoder", "fail", "ffmpeg was not found. Run setup.bat again.")
-    if nvenc_works(ffmpeg):
-        return _result("Video encoder", "ok", "ffmpeg with NVENC (GPU encoding).")
-    return _result("Video encoder", "warn", "NVENC does not work here, so videos encode on the CPU (slower).")
+    return _result("Video encoder", "ok", "ffmpeg found (libx264 encoding; required, there is no fallback renderer).")
 
 
 def _disk(numbers: list[int]) -> dict:
@@ -121,7 +119,19 @@ def _usage(limits: dict) -> dict:
     return _result("Claude usage", "ok", "; ".join(parts) or "No usage reading yet; it is read on the first call.")
 
 
-def check(project: dict, numbers: list[int]) -> list[dict]:
+def check(project: dict, numbers: list[int], steps: set[str]) -> list[dict]:
+    """The checks that matter for the `steps` the batch will run."""
     settings = project["settings"]
-    return [_claude(), _source(project, numbers), _ffmpeg(), _disk(numbers), _voice(settings), _gpu(settings),
-            _power(), _usage(settings["batch"])]
+    checks = [_source(project, numbers)] if "download" in steps else []
+    if "script" in steps:
+        checks = [_claude(), *checks]
+    if steps & {"audio", "video"}:
+        checks.append(_ffmpeg())
+    checks.append(_disk(numbers))
+    if "audio" in steps:
+        checks += [_voice(settings), _gpu(settings)]
+    if steps & {"audio", "video"}:
+        checks.append(_power())
+    if "script" in steps:
+        checks.append(_usage(settings["batch"]))
+    return checks

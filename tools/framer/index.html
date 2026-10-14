@@ -10,33 +10,40 @@
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
   /* ==========================================================================
-     ReCapper skin: IBM Plex Sans, near-black neutrals, a single brand-red
-     accent (from the logo) for primary actions, green frames / amber-orange
-     blur-danger (kept a distinct hue from the red accent on purpose - red is
-     now the BRAND color, so error/blur states use orange instead of red to
-     avoid reading as "another primary button"), soft radii. LIGHT is the
-     default (body.light); DARK is the class-less fallback, so the existing
-     theme toggle and server-side /settings persistence keep working unchanged.
+     ReCapper skin: IBM Plex Sans, a SEMI-DARK default theme with a single
+     brand-red accent (from the logo) for primary actions, green frames /
+     amber-orange blur-danger (kept a distinct hue from the red accent on
+     purpose - red is the BRAND color, so error/blur states use orange instead
+     of red to avoid reading as "another primary button"), soft radii.
+     Surfaces step lighter from the page to the controls so every block reads
+     on its own: --bg page < --panel sections < --surface cards and rows <
+     --input fields < --modal dialogs, with --head for header strips and
+     --sel for selected items. --accent-fg is the red for TEXT (AA on every
+     surface); --accent is for fills, borders and focus. The light theme is
+     body.light; the toggle and the server-side /settings persistence are
+     unchanged.
      ========================================================================== */
   :root {
-    --bg:#0a0708; --panel:#130c0d; --surface:#1a1113;
-    --line:#2e1c1f; --rule:#2e1c1f;
-    --txt:#f0e8e9; --muted:#a68e91;
-    --accent:#e8283c; --accent-ink:#ffffff; --accent-hover:#ff4a5c; --accent-press:#b91c2c;
-    --accent-tint:#2a0f13;
-    --frame:#3ecf8e; --blur:#ff9f43; --blur-ink:#1a0d0e;
-    --ok:#3ecf8e; --warn:#e9b949;
-    --input:#150e0f; --input2:#110a0b;
-    --btn:#241618; --btn-hover:#301c1f;
-    --stage:#070404; --pill:#241618; --chip:#130c0d; --toast:#1c1214;
-    --frame-fill:rgba(62,207,142,.10); --frame-fill2:rgba(62,207,142,.20);
-    --blur-fill:rgba(255,159,67,.18); --blur-fill2:rgba(255,159,67,.12);
-    --overlay:rgba(10,7,8,.80);
-    --shadow:0 12px 32px rgba(0,0,0,.55);
+    --bg:#1b1517; --panel:#262022; --surface:#322a2d; --head:#443a3e;
+    --modal:#3a3135; --sel:#4a262d;
+    --line:#554a4e; --rule:#554a4e; --frame-line:#b9aaae;
+    --txt:#f5eeef; --muted:#c4b3b6;
+    --accent:#d7263a; --accent-fg:#ff8a96; --accent-ink:#ffffff; --accent-hover:#dc2b3f; --accent-press:#b91c2c;
+    --accent-tint:#4a262d;
+    --frame:#4fd99a; --blur:#ffa75a; --blur-ink:#1a0d0e;
+    --ok:#4fd99a; --warn:#f0c25a;
+    --input:#3b3236; --input2:#2f272a;
+    --btn:#43393d; --btn-hover:#50444a;
+    --stage:#120d0f; --pill:#43393d; --chip:#322a2d; --toast:#3a3135;
+    --frame-fill:rgba(79,217,154,.10); --frame-fill2:rgba(79,217,154,.20);
+    --blur-fill:rgba(255,167,90,.18); --blur-fill2:rgba(255,167,90,.12);
+    --overlay:rgba(10,7,8,.72);
+    --shadow:0 12px 32px rgba(0,0,0,.5);
     --r:9px; --r2:7px; --r3:5px;
   }
   body.light {
-    --bg:#f4eeee; --panel:#ffffff; --surface:#f8f3f3;
+    --bg:#f4eeee; --panel:#ffffff; --surface:#f8f3f3; --head:#ece2e3; --modal:#ffffff; --sel:#fbe4e6;
+    --frame-line:#b9aaae; --accent-fg:#d21f2f;
     --line:#e6dadb; --rule:#e6dadb;
     --txt:#1c1214; --muted:#6b585a;
     --accent:#d21f2f; --accent-ink:#ffffff; --accent-hover:#e8283c; --accent-press:#a4141f;
@@ -110,7 +117,7 @@
   .pill { font-size:11px; padding:3px 8px; background:var(--pill); border:1px solid var(--line);
           border-radius:999px;
           font-weight:700; letter-spacing:.03em; }
-  a { color:var(--accent); text-underline-offset:3px; }
+  a { color:var(--accent-fg); text-underline-offset:3px; }
   a:hover { color:var(--accent-press); }
 
   /* --- shell: apphead / sidebar / workspace / script -----------------------
@@ -146,7 +153,7 @@
   #globalProg .gfill { height:100%; width:0; background:var(--accent); transition:width .3s ease; }
   #globalProg.indet .gfill { width:38%; animation:indet 1.1s ease-in-out infinite; }
   #globalProg .glbl { font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.1em;
-                      color:var(--accent); white-space:nowrap; }
+                      color:var(--accent-fg); white-space:nowrap; }
 
   /* left sidebar: Chapter Source / Stitch Strip / Draw Tool / Export & Render */
   .sidebar { flex:0 0 300px; min-height:0; overflow-y:auto; background:var(--panel);
@@ -259,7 +266,7 @@
   .rmeta { display:flex; gap:7px; align-items:center; margin-top:7px; flex-wrap:wrap; }
   .rmeta label { font-size:11px; color:var(--muted); display:flex; gap:5px; align-items:center; }
   .dur { width:66px; }
-  .idx { font-weight:800; color:var(--accent); margin-right:3px;
+  .idx { font-weight:800; color:var(--accent-fg); margin-right:3px;
          font-family:ui-monospace,Consolas,monospace; }
   .small { padding:6px 9px; font-size:12px; }
   button.seg { padding:5px 10px; font-size:11px; text-transform:uppercase; letter-spacing:.06em; }
@@ -316,7 +323,7 @@
             background:var(--input2); border:1px solid var(--line); border-radius:var(--r2);
             padding:7px 9px; max-height:168px; overflow:auto; white-space:pre-wrap; display:none; }
   .genlog:not(:empty) { display:block; }
-  .genvideo { width:100%; background:#000; border-radius:var(--r2); }
+  .genvideo { width:100%; background:#000; border:2px solid var(--frame-line); border-radius:var(--r2); }
   .jobcard { border:1px solid var(--ok); background:var(--surface); border-radius:var(--r);
              padding:10px;
              display:flex; flex-direction:column; gap:8px; }
@@ -363,7 +370,7 @@
   .tst.ok { border-left-color:var(--ok); } .tst.ok .tico { color:var(--ok); }
   .tst.err { border-left-color:var(--blur); } .tst.err .tico { color:var(--blur); }
   .tst.warn { border-left-color:var(--warn); } .tst.warn .tico { color:var(--warn); }
-  .tst.info .tico { color:var(--accent); }
+  .tst.info .tico { color:var(--accent-fg); }
   .tmsg { flex:1; min-width:0; }
   .tclose { padding:3px; background:transparent; border-color:transparent; color:var(--muted); }
   .tclose:hover { background:var(--btn); color:var(--txt); }
@@ -423,7 +430,7 @@
   .appnav a:hover, .appnav button:hover { background:var(--btn); color:var(--txt); }
   .appnav a.on { background:color-mix(in srgb, var(--accent) 14%, transparent); color:var(--txt);
                  box-shadow:inset 0 0 0 1px color-mix(in srgb, var(--accent) 30%, transparent); }
-  .appnav a.on .ic { color:var(--accent); }
+  .appnav a.on .ic { color:var(--accent-fg); }
   .appnav .navcount { margin-left:auto; font-family:ui-monospace,Consolas,monospace; font-size:10px; color:var(--muted); }
   .navlabel { font-family:ui-monospace,Consolas,monospace; font-size:10px; letter-spacing:.12em;
               color:var(--muted); padding:0 10px; text-transform:uppercase; }
@@ -510,7 +517,7 @@
   .pcard .ptop { display:flex; gap:11px; align-items:flex-start; min-width:0; }
   .pcard .pinitial { width:38px; height:38px; flex:none; border-radius:9px; background:var(--input2);
                       border:1px solid var(--line); display:flex; align-items:center; justify-content:center;
-                      font-family:ui-monospace,Consolas,monospace; font-size:14px; color:var(--accent); }
+                      font-family:ui-monospace,Consolas,monospace; font-size:14px; color:var(--accent-fg); }
   .pcard .ptexts { display:flex; flex-direction:column; gap:3px; min-width:0; flex:1; }
   .pcard .pname { font-weight:800; font-size:14px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .pcard .purl { font-family:ui-monospace,Consolas,monospace; font-size:11px; color:var(--muted);
@@ -533,7 +540,8 @@
 
   .batchcard { background:var(--panel); border:1px solid var(--line); border-radius:var(--r); overflow:hidden; flex-shrink:0; }
   .batchcard[hidden], .batchhold[hidden] { display:none; }
-  .batchhead { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:14px 18px; flex-wrap:wrap; }
+  .batchhead { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:14px 18px; flex-wrap:wrap;
+               background:var(--head); border-bottom:1px solid var(--line); }
   .batchhead .bhtitle { display:flex; align-items:center; gap:10px; }
   .batchhead h2 { margin:0; text-transform:none; letter-spacing:0; font-size:15px; color:var(--txt); }
   .batchhead .macts { display:flex; gap:8px; }
@@ -563,9 +571,10 @@
                display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }
   .batchhold .holdtext { color:var(--warn); font-size:12.5px; line-height:1.5; flex:1; min-width:240px; }
   .batchhold .macts { display:flex; gap:8px; }
+  .bchap.flash { box-shadow:inset 0 0 0 2px var(--accent); transition:box-shadow .3s; }
   .bchap { padding:14px 18px; border-top:1px solid var(--line); display:flex; flex-direction:column; gap:8px; }
   .bchaphead { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
-  .bchaphead .chno { font-family:ui-monospace,Consolas,monospace; font-weight:700; color:var(--accent); font-size:12px; }
+  .bchaphead .chno { font-family:ui-monospace,Consolas,monospace; font-weight:700; color:var(--accent-fg); font-size:12px; }
   .bchaphead .btitle { font-weight:600; font-size:13.5px; flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .bchaphead .btime { font-family:ui-monospace,Consolas,monospace; font-size:11px; color:var(--muted); }
   .bchaphead .btime b { color:var(--txt); font-weight:600; }
@@ -597,31 +606,98 @@
 
   .chaptercard { background:var(--panel); border:1px solid var(--line); border-radius:var(--r); overflow:hidden; flex-shrink:0; }
   .chaptercardhead { display:flex; align-items:center; justify-content:space-between; padding:14px 18px;
-                     border-bottom:1px solid var(--line); gap:12px; }
+                     background:var(--head); border-bottom:1px solid var(--line); gap:12px; flex-wrap:wrap; }
   .chaptercardhead h2 { margin:0 0 3px; text-transform:none; letter-spacing:0; font-size:14px; color:var(--txt); }
   .chaptercardhead .hint { margin:0; }
-  .chheadrow, .chrow { display:grid; grid-template-columns:24px 38px 42px minmax(0,1fr) 160px 230px; align-items:center; gap:8px; }
+  .chaptercard { container-type:inline-size; }
+  .chbulk { display:flex; flex-wrap:wrap; align-items:center; gap:8px; padding:10px 18px; background:var(--surface);
+            border-bottom:1px solid var(--line); }
+  .chbulk .selcount { font-weight:700; font-size:12.5px; margin-right:6px; min-width:84px; }
+  .chbulk .grow { flex:1 1 0; }
+  .actionwhy { font-size:12px; color:var(--muted); }
+  .viewtoggle { display:inline-flex; }
+  .viewtoggle button { border-radius:0; }
+  .viewtoggle button:first-child { border-radius:var(--r2) 0 0 var(--r2); }
+  .viewtoggle button:last-child { border-radius:0 var(--r2) var(--r2) 0; margin-left:-1px; }
+  .chheadrow, .chrow { display:grid; grid-template-columns:22px 40px minmax(120px,1fr) 120px 210px 290px;
+                       grid-template-areas:"ck no texts status prog acts"; align-items:center; column-gap:10px; row-gap:8px; }
   .chheadrow { padding:7px 18px; font-family:ui-monospace,Consolas,monospace; font-size:10px; letter-spacing:.1em;
-               color:var(--muted); text-transform:uppercase; border-bottom:1px solid var(--line); }
-  .chlist { display:flex; flex-direction:column; }
-  .chrow { padding:11px 18px; border-bottom:1px solid var(--line); background:var(--panel); }
+               color:var(--muted); text-transform:uppercase; border-bottom:1px solid var(--line); background:var(--panel); }
+  .chheadrow span:nth-child(1) { grid-area:ck; } .chheadrow span:nth-child(2) { grid-area:no; }
+  .chheadrow span:nth-child(3) { grid-area:texts; } .chheadrow span:nth-child(4) { grid-area:status; }
+  .chheadrow span:nth-child(5) { grid-area:prog; } .chheadrow span:nth-child(6) { grid-area:acts; text-align:right; }
+  .chlist { display:flex; flex-direction:column; background:var(--panel); }
+  .chrow { padding:11px 18px; border-bottom:1px solid var(--line); background:var(--surface); }
   .chrow:last-child { border-bottom:0; }
-  .chrow:hover { background:var(--surface); }
-  .chrow .mergeCk, .chrow .chck-spacer, .chrow .batchCk { flex:none; width:16px; height:16px; }
-  .chrow .chck-spacer { border:1px dashed var(--line); border-radius:5px; display:block; }
-  .chrow .chno { font-family:ui-monospace,Consolas,monospace; font-weight:700; color:var(--accent); font-size:12px; }
-  .chrow .chtexts { display:flex; flex-direction:column; gap:2px; min-width:0; }
-  .chrow .chtitle { font-weight:600; font-size:13.5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .chrow .chmeta { font-family:ui-monospace,Consolas,monospace; font-size:10.5px; color:var(--muted); }
-  .chrow .chstatuswrap { display:flex; flex-direction:column; gap:6px; padding-right:14px; }
-  .chsteps { display:flex; gap:3px; }
-  .chsteps span { flex:1; height:3px; border-radius:2px; background:var(--line); }
-  .chsteps span.on { background:var(--accent); }
+  .chrow:hover { background:var(--head); }
+  .chrow.sel, .chcard.sel { background:var(--sel); }
+  .selCk { grid-area:ck; width:16px; height:16px; margin:0; accent-color:var(--accent); }
+  .chlist .chno { grid-area:no; font-family:ui-monospace,Consolas,monospace; font-weight:700; color:var(--accent-fg); font-size:12px; }
+  .chtexts { grid-area:texts; display:flex; flex-direction:column; gap:2px; min-width:0; }
+  .chlist .chtitle { font-weight:600; font-size:13.5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .chlist .chmeta { font-family:ui-monospace,Consolas,monospace; font-size:10.5px; color:var(--muted); }
+  .chstatus { grid-area:status; display:flex; flex-direction:column; gap:2px; }
+  .chlen { font-size:11.5px; color:var(--muted); }
+  .chprogress { grid-area:prog; display:flex; flex-direction:column; gap:5px; }
+  .nextstep { font-size:11.5px; color:var(--muted); }
+  .tracker { display:flex; gap:3px; }
+  .trk { flex:1; min-width:12px; height:8px; border-radius:2px; border:1px solid var(--line); background:var(--input2); }
+  .trk.done { background:var(--ok); border-color:var(--ok); }
+  .trk.current { background:var(--accent); border-color:var(--accent-fg); animation:trkpulse 1.2s ease-in-out infinite; }
+  .trk.stale { border-color:var(--warn); background:repeating-linear-gradient(135deg, var(--warn) 0 3px, transparent 3px 6px); }
+  @keyframes trkpulse { 50% { opacity:.4; } }
+  @media (prefers-reduced-motion: reduce) { .trk.current { animation:none; } }
   .stpill { font-size:11.5px; font-weight:600; }
   .stpill.st-not_started { color:var(--muted); }
   .stpill.st-downloaded, .stpill.st-boxed { color:var(--warn); }
   .stpill.st-rendered, .stpill.st-complete { color:var(--ok); }
-  .chacts { display:flex; justify-content:flex-end; gap:7px; flex:none; }
+  .chacts { grid-area:acts; display:flex; flex-wrap:wrap; justify-content:flex-end; gap:7px; min-width:0; }
+  .chlist.cards { display:grid; grid-template-columns:repeat(auto-fill, minmax(min(100%, 270px), 1fr)); gap:14px; padding:16px 18px; }
+  .chcard { display:flex; flex-direction:column; gap:10px; padding:12px; background:var(--surface);
+            border:1px solid var(--line); border-radius:var(--r); }
+  .chcard.sel { border-color:var(--accent); }
+  .chcardtop { display:flex; align-items:center; gap:10px; min-width:0; }
+  .chcardtop .chtitle { flex:1; min-width:0; }
+  .chthumb { aspect-ratio:16/9; display:grid; place-items:center; overflow:hidden; background:var(--stage);
+             border:2px solid var(--frame-line); border-radius:var(--r2); font-size:12px; color:var(--muted); }
+  .chthumb img { width:100%; height:100%; object-fit:cover; display:block; }
+  .chcardmeta { display:flex; flex-wrap:wrap; align-items:baseline; gap:4px 12px; }
+  .chcard .chacts { justify-content:flex-start; }
+  @container (max-width: 899px) {
+    .chheadrow { display:none; }
+    .chrow { grid-template-columns:22px 40px minmax(0,1fr) auto;
+             grid-template-areas:"ck no texts status" ". prog prog prog" ". acts acts acts"; }
+    .chstatus { text-align:right; }
+    .chrow .chacts { justify-content:flex-start; }
+  }
+
+  .pipemodal { width:min(780px,100%); max-height:calc(100vh - 40px); }
+  .pipebody { display:flex; flex-direction:column; gap:14px; overflow-y:auto; min-height:0; padding-right:2px; }
+  .pipehint { margin:0; font-size:12.5px; color:var(--muted); }
+  .pipesteps { display:grid; grid-template-columns:repeat(auto-fit, minmax(96px,1fr)); gap:8px; }
+  .pstep { display:flex; flex-direction:column; gap:3px; padding:9px 10px; background:var(--surface);
+           border:1px solid var(--line); border-radius:var(--r2); }
+  .pstep.on { background:var(--sel); border-color:var(--accent); }
+  .pstep label, .pcstep label { display:flex; align-items:center; gap:7px; font-weight:600; font-size:13px; cursor:pointer; }
+  .pstep input, .pcstep input, .pipeopt input { accent-color:var(--accent); margin:0; width:15px; height:15px; }
+  .ptag { font-size:11px; color:var(--muted); line-height:1.35; }
+  .ptag.reuse { color:var(--ok); } .ptag.stale { color:var(--warn); } .ptag.run { color:var(--accent-fg); }
+  .pipeopt { display:flex; align-items:center; gap:8px; font-size:13px; cursor:pointer; }
+  .pgroup { background:var(--surface); border:1px solid var(--line); border-radius:var(--r2); overflow:hidden; }
+  .pghead { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:10px 12px;
+            background:var(--head); }
+  .pghead .hint { margin-top:1px; }
+  .pgrows { display:flex; flex-direction:column; }
+  .pcrow { padding:10px 12px; border-top:1px solid var(--line); display:flex; flex-direction:column; gap:8px; }
+  .pcrow .pctitle { display:flex; gap:8px; align-items:baseline; min-width:0; }
+  .pcsteps { display:grid; grid-template-columns:repeat(auto-fit, minmax(104px,1fr)); gap:6px 10px; }
+  .pcstep { display:flex; flex-direction:column; gap:2px; }
+  .pcstep.locked label { cursor:not-allowed; }
+  .pipefoot { display:flex; align-items:center; justify-content:space-between; gap:14px; flex-wrap:wrap;
+              margin:0 -20px -20px; padding:12px 20px; background:var(--head); border-top:1px solid var(--line);
+              border-radius:0 0 var(--r) var(--r); }
+  .pipesummary { font-size:12.5px; flex:1 1 280px; min-width:0; }
+  .pipefoot .macts { margin-top:0; }
 
   .mergebar2 { flex:none; margin:16px 26px 22px; padding:14px 18px; border-radius:var(--r);
                background:var(--panel); border:1px solid var(--line); display:flex; flex-direction:column;
@@ -639,7 +715,7 @@
            border-bottom:1px solid var(--line); }
   .mcard:last-child { border-bottom:0; }
   .mcard [hidden] { display:none; }
-  .mcard video { width:100%; background:#000; border-radius:var(--r2); }
+  .mcard video { width:100%; background:#000; border:2px solid var(--frame-line); border-radius:var(--r2); }
   .mcard .mtop { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
   .mcard .mtop b { font-size:14px; }
   .mcard .mmeta { font:11px ui-monospace,Consolas,monospace; color:var(--muted); }
@@ -682,7 +758,7 @@
   .libchaphead:hover { background:var(--surface); }
   .libchaphead .chev { transition:transform .15s; color:var(--muted); }
   .libchap.open .libchaphead .chev { transform:rotate(90deg); }
-  .libchaphead .chno { font:700 12px ui-monospace,Consolas,monospace; color:var(--accent); }
+  .libchaphead .chno { font:700 12px ui-monospace,Consolas,monospace; color:var(--accent-fg); }
   .libchaphead .chtitle { font-weight:600; font-size:13.5px; min-width:0; overflow:hidden;
                           text-overflow:ellipsis; white-space:nowrap; }
   .libchaphead .chips { margin-left:auto; display:flex; gap:12px; font:11px ui-monospace,Consolas,monospace;
@@ -700,18 +776,19 @@
   .libfile .fsize { margin-left:auto; color:var(--muted); }
   .libplayer { flex:1 1 100%; }
   .libplayer audio { width:100%; height:30px; }
-  .libplayer video { width:100%; max-width:420px; background:#000; border-radius:var(--r2); }
-  .libfile a { color:var(--accent); text-decoration:none; }
+  .libplayer video { width:100%; max-width:420px; background:#000; border:2px solid var(--frame-line); border-radius:var(--r2); }
+  .libfile a { color:var(--accent-fg); text-decoration:none; }
   .libkept { font-size:12px; color:var(--muted); }
   .libkept summary { cursor:pointer; }
   .libkept .libfile { padding:2px 0; }
   .modalback { position:fixed; inset:0; background:var(--overlay); z-index:200; display:none;
                align-items:center; justify-content:center; padding:20px; }
   .modalback.on { display:flex; }
-  .modal { width:min(460px,100%); background:var(--panel); border:1px solid var(--line);
+  .modal { width:min(460px,100%); background:var(--modal); border:1px solid var(--line);
            border-radius:var(--r); box-shadow:var(--shadow); padding:20px; display:flex;
            flex-direction:column; gap:12px; }
-  .modal h3 { margin:0; font-size:15px; }
+  .modal h3 { margin:-20px -20px 0; padding:13px 20px; font-size:15px; background:var(--head);
+              border-bottom:1px solid var(--line); border-radius:var(--r) var(--r) 0 0; }
   .modal p { margin:0; font-size:13px; line-height:1.55; }
   .modal .macts { display:flex; justify-content:flex-end; gap:8px; margin-top:4px; }
   @media (max-width: 860px) { .mcard { grid-template-columns:1fr; } }
@@ -766,7 +843,7 @@
   .togglesw:has(input:checked) .tk::after { left:16px; }
   .setnote { display:flex; gap:10px; align-items:flex-start; padding:10px 12px; border-radius:8px;
              background:var(--surface); border:1px solid var(--line); color:var(--muted); line-height:1.5; font-size:12px; }
-  .setnote .tag { color:var(--accent); font-family:ui-monospace,Consolas,monospace; font-size:11px; padding-top:2px; flex:none; }
+  .setnote .tag { color:var(--accent-fg); font-family:ui-monospace,Consolas,monospace; font-size:11px; padding-top:2px; flex:none; }
   .setmedia { display:flex; gap:16px; }
   .setmedia .setbody { flex:1; }
   .previewcol { width:190px; flex:none; display:flex; flex-direction:column; gap:6px; }
@@ -801,9 +878,6 @@
   @media (max-width: 860px) {
     .appsidebar { display:none; }
     .setcard, .composer .fieldrow { grid-template-columns:1fr; }
-    .chheadrow { display:none; }
-    .chrow { grid-template-columns:22px 28px 30px minmax(0,1fr); }
-    .chrow .chstatuswrap, .chrow .chacts { grid-column:1 / -1; }
   }
 
   /* ==========================================================================
@@ -875,7 +949,7 @@
     .tabbar button { flex:1; flex-direction:column; gap:2px; border-radius:0; border:none;
                      background:transparent; font-size:10px; text-transform:uppercase;
                      letter-spacing:.05em; color:var(--muted); position:relative; }
-    .tabbar button.on { color:var(--accent); }
+    .tabbar button.on { color:var(--accent-fg); }
     .tabbadge { position:absolute; top:2px; right:calc(50% - 26px); min-width:15px; height:15px;
                 border-radius:999px; background:var(--accent); color:var(--accent-ink);
                 font-size:9px; font-weight:800; display:flex; align-items:center; justify-content:center;
@@ -1033,14 +1107,22 @@
         </div>
         <div class="chaptercard">
           <div class="chaptercardhead">
-            <div><h2>Chapters</h2><p class="hint">Each chapter goes Download &rarr; Edit &rarr; Complete. Check the box on any complete chapter to select it for merging. Tick the first box on any chapters (shift-click for a range) to run the whole pipeline for them.</p></div>
-            <div class="macts" style="display:flex;gap:8px;flex-shrink:0">
-              <button id="batchSelectAllBtn" class="small ghost" data-icon="checkbox" data-ic-size="13"><span>Select all</span></button>
-              <button id="batchRunBtn" class="small primary" data-icon="play" data-ic-size="13" disabled><span>Run pipeline</span></button>
-              <button id="selectAllBtn" class="small ghost" data-icon="checkbox" data-ic-size="13"><span>Select all complete</span></button>
+            <div><h2>Chapters</h2><p class="hint">Select chapters to run the pipeline or merge their videos; shift-click selects a range. Tracker order: download, split, stitch, script, export, audio, video. Filled is done, striped is out of date, pulsing is running.</p></div>
+            <div class="viewtoggle" role="group" aria-label="Chapter view">
+              <button id="viewListBtn" class="small" data-icon="list" data-ic-size="13" aria-pressed="true"><span>List</span></button>
+              <button id="viewCardsBtn" class="small" data-icon="grid" data-ic-size="13" aria-pressed="false"><span>Cards</span></button>
             </div>
           </div>
-          <div class="chheadrow"><span></span><span></span><span>#</span><span>Title</span><span>Status</span><span style="text-align:right">Actions</span></div>
+          <div class="chbulk">
+            <span class="selcount" id="selCount" aria-live="polite">0 selected</span>
+            <button id="selAllBtn" class="small ghost" data-icon="checkbox" data-ic-size="13"><span>Select all</span></button>
+            <button id="selCompleteBtn" class="small ghost" data-icon="checkbox" data-ic-size="13"><span>Select all complete</span></button>
+            <button id="selClearBtn" class="small ghost"><span>Clear</span></button>
+            <span class="grow"></span>
+            <span class="actionwhy" id="runWhy"></span>
+            <button id="batchRunBtn" class="small primary" data-icon="play" data-ic-size="13" disabled><span>Run pipeline</span></button>
+          </div>
+          <div class="chheadrow"><span></span><span>#</span><span>Title</span><span>Status</span><span>Progress</span><span>Actions</span></div>
           <div class="chlist" id="chList"></div>
         </div>
       </div>
@@ -1551,6 +1633,13 @@
             <option value="g">Blur: Heavy gaussian</option>
           </select>
         </div>
+        <div class="sidefield">
+          <label class="lbl">Blur shape</label>
+          <select id="blurShape" title="Shape for new blur regions - a circle follows round faces and speech bubbles without touching the art around them">
+            <option value="">Shape: Rectangle</option>
+            <option value="o">Shape: Circle / oval</option>
+          </select>
+        </div>
         <span class="hint">Drag on the strip to draw. On a phone: one finger draws, two fingers pinch-zoom - precise boxing is easiest on desktop.</span>
       </div>
 
@@ -1650,6 +1739,25 @@
 
 <div id="toast"></div>
 
+<div class="modalback" id="pipeModal">
+  <div class="modal pipemodal" role="dialog" aria-modal="true" aria-labelledby="pipeTitle">
+    <h3 id="pipeTitle">Run pipeline</h3>
+    <div class="pipebody">
+      <p class="pipehint">Tick the last step to run. Every step before it is a prerequisite: it is reused when already done and run when it is missing.</p>
+      <div class="pipesteps" id="pipeSteps"></div>
+      <label class="pipeopt"><input type="checkbox" id="pipeRedo" /> Redo completed earlier steps</label>
+      <div id="pipeGroups"></div>
+    </div>
+    <div class="pipefoot">
+      <div class="pipesummary" id="pipeSummary" aria-live="polite"></div>
+      <div class="macts">
+        <button id="pipeCancel" class="small ghost"><span>Cancel</span></button>
+        <button id="pipeRun" class="primary" data-icon="play" data-ic-size="14"><span>Run</span></button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div class="modalback" id="confirmModal">
   <div class="modal" role="dialog" aria-modal="true" aria-labelledby="cfmTitle">
     <h3 id="cfmTitle"></h3>
@@ -1700,6 +1808,8 @@ const ICONS = {
   chevdown:'<path d="m6 9 6 6 6-6"/>',
   chevup:'<path d="m18 15-6-6-6 6"/>',
   audio:'<path d="M2 10v3"/><path d="M6 6v11"/><path d="M10 3v18"/><path d="M14 8v7"/><path d="M18 5v13"/><path d="M22 10v3"/>',
+  list:'<path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/>',
+  grid:'<rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/>',
   film:'<rect x="2" y="2" width="20" height="20"/><path d="M7 2v20"/><path d="M17 2v20"/><path d="M2 12h20"/><path d="M2 7h5"/><path d="M17 7h5"/><path d="M2 17h5"/><path d="M17 17h5"/>',
   stop:'<rect x="5" y="5" width="14" height="14" fill="currentColor" stroke="none"/>',
   play:'<path d="m6 3 14 9-14 9V3z" fill="currentColor" stroke="none"/>',
@@ -1799,6 +1909,7 @@ const S = {
   activeFrame: -1,         // active frame index WITHIN the active line
   mode: 'frame',           // 'frame' | 'blur'
   blurStyle: 'm',          // style for NEW blur regions: 'm' mosaic | 'g' gaussian
+  blurShape: '',           // '' rectangle | 'o' oval (stored as a suffix on the style: 'mo', 'go')
   watchedJobId: null,      // render job this chapter session should announce completion for
   watchedScriptJobId: null, // Claude script job whose narration should be loaded when it finishes
 };
@@ -2586,8 +2697,8 @@ function endPointer(ev) {
     setStatus(`Added frame ${ln.frames.length} to line ${S.active+1}: [${box.join(', ')}] true px`);
   } else {
     pushUndo('add blur');
-    (ln.frames[S.activeFrame].blur ||= []).push([...box, S.blurStyle]);  // box + style
-    setStatus(`Blur region (${S.blurStyle==='m'?'mosaic':'gaussian'}) added to line ${S.active+1}, frame ${S.activeFrame+1}.`);
+    (ln.frames[S.activeFrame].blur ||= []).push([...box, S.blurStyle + S.blurShape]);  // box + style (+ 'o' for an oval)
+    setStatus(`Blur region (${S.blurStyle==='m'?'mosaic':'gaussian'}${S.blurShape ? ', oval' : ''}) added to line ${S.active+1}, frame ${S.activeFrame+1}.`);
   }
   redrawBoxes();
   renderRow(S.active);
@@ -2626,6 +2737,7 @@ function redrawBoxes() {
   const cur = ln.frames[S.activeFrame];
   if (cur) for (const b of (cur.blur || [])) {
     const el = boxEl(b, 'blur');
+    if (String(b[4] || '').endsWith('o')) el.style.borderRadius = '50%';
     // LIVE blur preview on the strip: fill the box with the same gaussian-blurred
     // crop the exporter will bake for this region.
     if (S.chapter_id) {
@@ -3769,8 +3881,8 @@ async function openProjectScreen(slug) {
   showScreen('project');
   $('pjTitle').textContent = 'Loading…';
   $('chList').innerHTML = '<div class="empty">Loading…</div>';
-  MERGE_SELECTION.clear();
-  BATCH_SELECTION.clear(); batchAnchor = null; BATCH = null; batchDoneCount = 0; BATCH_LOG_VIEW.clear();
+  SELECTION.clear(); selectionAnchor = null; BATCH = null; batchStepCount = 0; BATCH_LOG_VIEW.clear();
+  CHAPTER_VIEW = loadChapterView(slug);
   $('batchCard').hidden = true;
   $('mergeStatus').textContent = ''; $('mergeResult').innerHTML = '';
   try {
@@ -3942,7 +4054,8 @@ function batchChapterHtml(c) {
   const job = c.job;
   const detail = c.state === 'waiting' ? 'Waiting for your frame review. Fix the boxes in the editor, export again if you changed anything, then continue.'
     : c.state === 'running' ? (job && job.claude ? claudeStatsHtml(job) : escHtml((job && job.message) || c.message || `${c.stage}…`))
-    : c.state === 'done' ? 'Done.' : c.state === 'cancelled' ? 'Cancelled.' : c.state === 'queued' ? `Waiting for ${c.stage}.` : '';
+    : c.state === 'done' ? 'Done.' : c.state === 'cancelled' ? 'Cancelled.' : c.state === 'queued' ? `Waiting for ${c.stage}.`
+    : c.state === 'idle' ? `Not finished yet. Next step: ${c.stage}. Click a step to run it.` : '';
   const progress = c.state === 'running' && job && job.status === 'running' ? Math.round((job.progress || 0) * 100) : null;
   const acts = [];
   if (c.state === 'failed') acts.push(`<button class="small primary" data-act="rerun" data-stage="${c.stage}">Retry ${escHtml(c.stage)}</button>`);
@@ -3967,7 +4080,7 @@ function batchChapterHtml(c) {
 function renderBatch() {
   const data = BATCH && BATCH.batch;
   $('batchCard').hidden = !data;
-  paintBatchRunButton();
+  paintActionStates();
   if (!data) return;
   const pill = $('batchPill');
   pill.textContent = data.hold ? 'waiting for usage reset' : data.status;
@@ -3995,35 +4108,35 @@ function renderBatch() {
     const n = +chip.closest('.bchap').dataset.n, stage = chip.dataset.stage;
     chip.onclick = async () => {
       const costly = stage === 'script' ? ' This asks Claude to read the chapter again and uses subscription usage.' : '';
-      if (await askConfirm({ title: `Run ${stage} again?`, body: `Chapter ${n} runs ${stage} and every step after it again.${costly}`, confirmLabel: 'Run again' })) {
-        batchCall(`/chapters/${n}/rerun`, { stage });
+      const body = `Chapter ${n} runs ${stage} again.${costly}` +
+        `<label style="display:flex;gap:8px;align-items:center;margin-top:12px"><input type="checkbox" id="rerunOnly" checked />` +
+        `Only this step (keep the output of the steps after it)</label>`;
+      if (await askConfirm({ title: `Run ${stage} again?`, body, confirmLabel: 'Run again' })) {
+        batchCall(`/chapters/${n}/rerun`, { stage, only: $('rerunOnly').checked });
       }
     };
   });
-  refreshProjectWhenChaptersFinish(data);
+  refreshProjectWhenStepsFinish(data);
 }
 
-let batchDoneCount = 0;
-async function refreshProjectWhenChaptersFinish(data) {
-  const done = data.chapters.filter(c => c.state === 'done').length;
-  if (done > batchDoneCount) {
+let batchStepCount = 0;
+async function refreshProjectWhenStepsFinish(data) {
+  const finished = data.chapters.reduce((sum, c) => sum + c.completed.length, 0);
+  if (finished !== batchStepCount) {
     await loadCurrentProject(CURRENT_PROJECT.slug);
     renderChapterList();
   }
-  batchDoneCount = done;
-}
-
-function paintBatchRunButton() {
-  const picked = BATCH_SELECTION.size;
-  $('batchRunBtn').disabled = !picked || batchActive();
-  $('batchRunBtn').querySelector('span').textContent = picked ? `Run pipeline for ${picked}` : 'Run pipeline';
+  batchStepCount = finished;
 }
 
 const PREFLIGHT_MARKS = { ok: '✓', warn: '!', fail: '✕' };
 
-async function startBatch() {
-  const chapters = [...BATCH_SELECTION].sort((a, b) => a - b);
-  const { ok, data } = await apiJson(projectApi(`/batch/preflight?chapters=${chapters.join(',')}`), 'GET');
+async function startPipeline() {
+  const plans = Object.fromEntries(PIPE.rows.map(pipePlan).filter(plan => plan.runs.length).map(plan => [plan.ch.n, plan.runs]));
+  const steps = [...new Set(Object.values(plans).flat())];
+  savePipeChoice();
+  closePipeModal();
+  const { ok, data } = await apiJson(projectApi(`/batch/preflight?chapters=${Object.keys(plans).join(',')}&steps=${steps.join(',')}`), 'GET');
   if (!ok) { showToast(data.error || 'Preflight check failed.', null, null, 'warn'); return; }
   if (data.checks.some(c => c.status !== 'ok')) {
     const blocked = data.checks.some(c => c.status === 'fail');
@@ -4033,15 +4146,14 @@ async function startBatch() {
                                   confirmLabel: blocked ? 'Close' : 'Run anyway' });
     if (blocked || !go) return;
   }
-  if (await batchCall('', { chapters })) {
-    BATCH_SELECTION.clear(); batchAnchor = null;
+  if (await batchCall('', { plans })) {
+    SELECTION.clear(); selectionAnchor = null;
     renderChapterList();
   }
 }
 
 $('batchList').addEventListener('toggle', rememberBatchLogs, true);
-$('batchRunBtn').onclick = startBatch;
-$('batchSelectAllBtn').onclick = selectAllBatch;
+$('batchRunBtn').onclick = () => openPipelineModal([...SELECTION]);
 $('batchPauseBtn').onclick = () => batchCall(BATCH.batch.status === 'paused' ? '/resume' : '/pause');
 $('batchCancelBtn').onclick = async () => {
   if (await askConfirm({ title: 'Cancel the pipeline?', body: 'Running steps are stopped. Finished steps are kept, and you can run any step again from the chapter cards.', confirmLabel: 'Cancel pipeline' })) batchCall('/cancel');
@@ -4572,86 +4684,136 @@ async function clearGeminiKey() {
   } catch (e) { setStatus('Remove key error: ' + e.message, true); }
 }
 
-let MERGE_SELECTION = new Set();   // chapter numbers currently checked for merging
-const BATCH_SELECTION = new Set(); // chapter numbers ticked for the pipeline
-let batchAnchor = null;            // last ticked chapter, the start of a shift-click range
-
-function selectBatchChapter(n, on, range) {
-  const numbers = CURRENT_PROJECT.chapters.map(c => c.n);
-  const [from, to] = range && batchAnchor !== null ? [n, batchAnchor].sort((a, b) => a - b) : [n, n];
-  numbers.filter(x => x >= from && x <= to).forEach(x => on ? BATCH_SELECTION.add(x) : BATCH_SELECTION.delete(x));
-  batchAnchor = n;
-  renderChapterList();
-}
-
-function selectAllBatch() {
-  const numbers = CURRENT_PROJECT.chapters.map(c => c.n);
-  const all = numbers.every(n => BATCH_SELECTION.has(n));
-  numbers.forEach(n => all ? BATCH_SELECTION.delete(n) : BATCH_SELECTION.add(n));
-  renderChapterList();
-}
-
-// rank used only for the row's 3-segment "Download -> Edit -> Complete" mini
-// progress bar - purely cosmetic, mirrors projects.py's STATUS_RANK ordering.
+// --- Chapter list: a list view and a card view over one shared selection ---------------
+const PIPELINE_STEPS = ['download', 'split', 'stitch', 'script', 'export', 'audio', 'video'];
+const STEP_STATE_LABEL = { done: 'done', current: 'running', stale: 'out of date', todo: 'not done' };
 const STATUS_LABELS = { boxed: 'needs render' };
-const CH_RANK = { not_started: 0, downloaded: 1, boxed: 2, rendered: 3, complete: 4 };
+const SELECTION = new Set();     // chapter numbers ticked in either view
+let selectionAnchor = null;      // last ticked chapter, the start of a shift-click range
+let CHAPTER_VIEW = 'list';
+
+const chapterViewKey = slug => `recapper.chapterView.${slug}`;
+const chapterByNumber = n => CURRENT_PROJECT.chapters.find(c => c.n === n);
+const hasVideo = ch => ch.duration != null;
+
+function loadChapterView(slug) {
+  try { return localStorage.getItem(chapterViewKey(slug)) === 'cards' ? 'cards' : 'list'; } catch (_) { return 'list'; }
+}
+
+function setChapterView(view) {
+  CHAPTER_VIEW = view;
+  try { localStorage.setItem(chapterViewKey(CURRENT_PROJECT.slug), view); } catch (_) { /* the choice just isn't remembered */ }
+  renderChapterList();
+}
+
+function fmtVideoLength(seconds) {
+  const total = Math.round(seconds), minutes = Math.floor(total / 60), rest = total % 60;
+  if (!minutes) return `${rest} s`;
+  return rest ? `${minutes} min ${rest} s` : `${minutes} min`;
+}
+
+// "1, 2, 3, 5" -> "1-3, 5"
+function listNumbers(numbers) {
+  const runs = [];
+  [...numbers].sort((a, b) => a - b).forEach(n => {
+    const last = runs[runs.length - 1];
+    if (last && n === last[1] + 1) last[1] = n; else runs.push([n, n]);
+  });
+  return runs.map(([from, to]) => from === to ? `${from}` : to === from + 1 ? `${from}, ${to}` : `${from}-${to}`).join(', ');
+}
+
+function selectChapter(n, on, range) {
+  const numbers = CURRENT_PROJECT.chapters.map(c => c.n);
+  const [from, to] = range && selectionAnchor !== null ? [n, selectionAnchor].sort((a, b) => a - b) : [n, n];
+  numbers.filter(x => x >= from && x <= to).forEach(x => on ? SELECTION.add(x) : SELECTION.delete(x));
+  selectionAnchor = n;
+  paintSelection();
+}
+
+function toggleSelection(numbers) {
+  const all = numbers.length > 0 && numbers.every(n => SELECTION.has(n));
+  numbers.forEach(n => all ? SELECTION.delete(n) : SELECTION.add(n));
+  paintSelection();
+}
+
+function runningStage(ch) {
+  const live = BATCH && BATCH.batch && BATCH.batch.chapters.find(c => c.n === ch.n && c.state === 'running');
+  return live ? live.stage : null;
+}
+
+function trackerState(ch, step, running) {
+  if (step === running) return 'current';
+  if (ch.steps.stale.includes(step)) return 'stale';
+  return ch.steps.done.includes(step) ? 'done' : 'todo';
+}
+
+function progressHtml(ch) {
+  const running = runningStage(ch);
+  const states = PIPELINE_STEPS.map(step => [step, trackerState(ch, step, running)]);
+  const label = states.map(([step, state]) => `${step} ${STEP_STATE_LABEL[state]}`).join(', ');
+  const next = running ? `Running: ${running}` : ch.steps.next ? `Next: ${ch.steps.next}` : 'All steps done';
+  return `<div class="tracker" role="img" aria-label="${label}">` +
+    states.map(([step, state]) => `<span class="trk ${state}" title="${step}: ${STEP_STATE_LABEL[state]}"></span>`).join('') +
+    `</div><span class="nextstep">${next}</span>`;
+}
+
+function chapterActionsHtml(ch) {
+  const notStarted = ch.status === 'not_started';
+  const buttons = [
+    `<button class="small ${notStarted ? 'primary' : ''}" data-act="open" data-icon="${notStarted ? 'download' : 'crop'}" data-ic-size="13"><span>${notStarted ? 'Download' : ch.status === 'complete' ? 'Re-open editor' : 'Open editor'}</span></button>`,
+    ch.status === 'complete'
+      ? '<button class="small ghost" data-act="toggle" data-icon="refresh" data-ic-size="13" title="Reset to rendered"><span>Reset</span></button>'
+      : '<button class="small ghost" data-act="toggle" data-icon="check" data-ic-size="13" title="Mark complete"><span>Mark complete</span></button>',
+    hasVideo(ch) ? '<button class="small ghost" data-act="preview" data-icon="play" data-ic-size="13" title="Play the rendered recap"><span>Preview</span></button>' : '',
+    '<button class="small ghost" data-act="pipeline" data-icon="layers" data-ic-size="13"><span>Pipeline</span></button>',
+  ];
+  return buttons.join('');
+}
+
+function chapterMeta(ch) {
+  return ch.updated_at ? `Updated ${timeAgo(ch.updated_at)}` : 'Not downloaded';
+}
+
+function selectBox(ch) {
+  return `<input type="checkbox" class="selCk" aria-label="Select chapter ${ch.n}" ${SELECTION.has(ch.n) ? 'checked' : ''} />`;
+}
+
+function chapterRowHtml(ch) {
+  const status = STATUS_LABELS[ch.status] || ch.status.replace('_', ' ');
+  return `<div class="chrow ${SELECTION.has(ch.n) ? 'sel' : ''}" data-n="${ch.n}">${selectBox(ch)}<span class="chno">#${ch.n}</span>` +
+    `<span class="chtexts"><span class="chtitle">${escHtml(ch.title)}</span><span class="chmeta">${chapterMeta(ch)}</span></span>` +
+    `<div class="chstatus"><span class="stpill st-${ch.status}">${status}</span>` +
+    `${hasVideo(ch) ? `<span class="chlen">Video ${fmtVideoLength(ch.duration)}</span>` : ''}</div>` +
+    `<div class="chprogress" data-progress>${progressHtml(ch)}</div>` +
+    `<div class="chacts">${chapterActionsHtml(ch)}</div></div>`;
+}
+
+function chapterCardHtml(ch) {
+  const status = STATUS_LABELS[ch.status] || ch.status.replace('_', ' ');
+  const thumb = ch.has_thumb
+    ? `<img loading="lazy" alt="" src="${projectApi(`/chapters/${ch.n}/thumb`)}?v=${encodeURIComponent(ch.updated_at || '')}" />`
+    : 'No frame yet';
+  return `<article class="chcard ${SELECTION.has(ch.n) ? 'sel' : ''}" data-n="${ch.n}">` +
+    `<div class="chcardtop">${selectBox(ch)}<span class="chno">#${ch.n}</span><span class="chtitle" title="${escHtml(ch.title)}">${escHtml(ch.title)}</span></div>` +
+    `<div class="chthumb">${thumb}</div>` +
+    `<div class="chprogress" data-progress>${progressHtml(ch)}</div>` +
+    `<div class="chcardmeta"><span class="stpill st-${ch.status}">${status}</span>` +
+    `${hasVideo(ch) ? `<span class="chlen">Video ${fmtVideoLength(ch.duration)}</span>` : ''}<span class="chmeta">${chapterMeta(ch)}</span></div>` +
+    `<div class="chacts">${chapterActionsHtml(ch)}</div></article>`;
+}
 
 function renderChapterList() {
   const list = $('chList');
   const chapters = CURRENT_PROJECT.chapters || [];
-  if (!chapters.length) { list.innerHTML = '<div class="empty">No chapters yet.</div>'; return; }
-  // a chapter that stopped being "complete" (reset, or a fresh derive_status)
-  // can't stay selected for merging
-  for (const n of [...MERGE_SELECTION]) {
-    const ch = chapters.find(c => c.n === n);
-    if (!ch || ch.status !== 'complete') MERGE_SELECTION.delete(n);
-  }
-  list.innerHTML = '';
-  chapters.forEach(ch => {
-    const rank = CH_RANK[ch.status] ?? 0;
-    const row = document.createElement('div');
-    row.className = 'chrow';
-    const primaryLabel = ch.status === 'not_started' ? 'Download' : (ch.status === 'complete' ? 'Re-open editor' : 'Open editor');
-    const primaryIcon = ch.status === 'not_started' ? 'download' : 'crop';
-    const primary = `<button class="small ${ch.status === 'not_started' ? 'primary' : ''}" data-icon="${primaryIcon}" data-ic-size="13"><span>${primaryLabel}</span></button>`;
-    const markBtn = ch.status === 'complete'
-      ? '<button class="small ghost" data-icon="refresh" data-ic-size="13" title="Reset to rendered"><span>Reset</span></button>'
-      : '<button class="small ghost" data-icon="check" data-ic-size="13" title="Mark complete"><span>Mark complete</span></button>';
-    const previewBtn = ch.status === 'complete'
-      ? '<button class="small ghost" data-icon="play" data-ic-size="13" title="Play the rendered recap"><span>Preview</span></button>' : '';
-    const checkbox = ch.status === 'complete'
-      ? `<input type="checkbox" class="mergeCk" title="Select for merging" ${MERGE_SELECTION.has(ch.n) ? 'checked' : ''} />`
-      : `<span class="chck-spacer"></span>`;
-    row.innerHTML = `<input type="checkbox" class="batchCk" title="Select for the pipeline (shift-click for a range)" ${BATCH_SELECTION.has(ch.n) ? 'checked' : ''} />${checkbox}<span class="chno">#${ch.n}</span>` +
-      `<span class="chtexts"><span class="chtitle"></span><span class="chmeta"></span></span>` +
-      `<div class="chstatuswrap"><span class="stpill st-${ch.status}"></span>` +
-      `<div class="chsteps"><span class="${rank >= 1 ? 'on' : ''}"></span><span class="${rank >= 2 ? 'on' : ''}"></span><span class="${rank >= 4 ? 'on' : ''}"></span></div></div>` +
-      `<div class="chacts">${primary}${markBtn}${previewBtn}</div>`;
-    row.querySelector('.chtitle').textContent = ch.title;
-    row.querySelector('.chmeta').textContent = (ch.updated_at ? `Updated ${timeAgo(ch.updated_at)}` : 'Not downloaded')
-      + (ch.duration ? ` · video ${fmtClock(ch.duration)}` : '');
-    row.querySelector('.stpill').textContent = STATUS_LABELS[ch.status] || ch.status.replace('_', ' ');
-    const acts = row.querySelector('.chacts');
-    paintIcons(acts);
-    acts.children[0].onclick = () => {
-      if (ch.status === 'not_started') openChapterEditor(CURRENT_PROJECT.slug, ch.n, { autoDownload:true, url: CURRENT_PROJECT.url });
-      else navTo({ project: CURRENT_PROJECT.slug, chapter: ch.n });
-    };
-    acts.children[1].onclick = () => toggleComplete(ch);
-    if (ch.status === 'complete') {
-      acts.children[2].onclick = () => {
-        const chapterId = `${CURRENT_PROJECT.slug}_ch${ch.n}`;
-        window.open(`/output/${encodeURIComponent(chapterId)}/recap.mp4?project=${encodeURIComponent(CURRENT_PROJECT.slug)}&ch_no=${ch.n}`, '_blank');
-      };
-    }
-    row.querySelector('.batchCk').onclick = e => selectBatchChapter(ch.n, e.target.checked, e.shiftKey);
-    const ck = row.querySelector('.mergeCk');
-    if (ck) ck.onchange = () => {
-      if (ck.checked) MERGE_SELECTION.add(ch.n); else MERGE_SELECTION.delete(ch.n);
-      updateMergeBar();
-    };
-    list.appendChild(row);
-  });
+  SELECTION.forEach(n => { if (!chapterByNumber(n)) SELECTION.delete(n); });
+  const cards = CHAPTER_VIEW === 'cards';
+  list.classList.toggle('cards', cards);
+  $('viewListBtn').setAttribute('aria-pressed', String(!cards));
+  $('viewCardsBtn').setAttribute('aria-pressed', String(cards));
+  $('viewListBtn').classList.toggle('on', !cards);
+  $('viewCardsBtn').classList.toggle('on', cards);
+  list.innerHTML = chapters.length ? chapters.map(cards ? chapterCardHtml : chapterRowHtml).join('') : '<div class="empty">No chapters yet.</div>';
+  paintIcons(list);
   const counts = { not_started: 0, in_progress: 0, complete: 0 };
   chapters.forEach(c => {
     if (c.status === 'not_started') counts.not_started++;
@@ -4662,29 +4824,244 @@ function renderChapterList() {
   if ($('stInProgress')) $('stInProgress').textContent = String(counts.in_progress);
   if ($('stComplete')) $('stComplete').textContent = String(counts.complete);
   paintProjectChrome();
-  updateMergeBar();
-  paintBatchRunButton();
+  paintSelection();
 }
 
-function selectAllComplete() {
-  const chapters = CURRENT_PROJECT.chapters || [];
-  const completeNs = chapters.filter(c => c.status === 'complete').map(c => c.n);
-  const allSelected = completeNs.length > 0 && completeNs.every(n => MERGE_SELECTION.has(n));
-  if (allSelected) MERGE_SELECTION.clear();
-  else completeNs.forEach(n => MERGE_SELECTION.add(n));
-  renderChapterList();
+// Selection changes touch only the checkboxes and the action buttons, so a click never redraws the list.
+function paintSelection() {
+  $('chList').querySelectorAll('[data-n]').forEach(el => {
+    const on = SELECTION.has(+el.dataset.n);
+    el.classList.toggle('sel', on);
+    el.querySelector('.selCk').checked = on;
+  });
+  $('selCount').textContent = `${SELECTION.size} selected`;
+  updateMergeBar();
+  paintActionStates();
+}
+
+function runBlocker() {
+  if (batchActive()) return 'A pipeline is already running for this project.';
+  return SELECTION.size ? '' : 'Select at least one chapter to run the pipeline.';
+}
+
+// Actions that can't run say why, in their tooltip and (for the bulk bar) next to the button.
+function paintActionStates() {
+  const blocker = runBlocker();
+  $('batchRunBtn').disabled = !!blocker;
+  $('batchRunBtn').title = blocker;
+  $('runWhy').textContent = blocker;
+  $('batchRunBtn').querySelector('span').textContent = SELECTION.size ? `Run pipeline for ${SELECTION.size}` : 'Run pipeline';
+  $('chList').querySelectorAll('[data-act="pipeline"]').forEach(btn => {
+    btn.disabled = batchActive();
+    btn.title = batchActive() ? 'A pipeline is already running for this project.' : 'Choose which steps to run for this chapter';
+  });
+  paintTrackers();
+}
+
+function paintTrackers() {
+  $('chList').querySelectorAll('[data-n]').forEach(el => {
+    const html = progressHtml(chapterByNumber(+el.dataset.n));
+    const cell = el.querySelector('[data-progress]');
+    if (cell.dataset.html !== html) { cell.innerHTML = html; cell.dataset.html = html; }
+  });
+}
+
+$('chList').addEventListener('click', e => {
+  const holder = e.target.closest('[data-n]');
+  if (!holder) return;
+  const ch = chapterByNumber(+holder.dataset.n);
+  if (e.target.closest('.selCk')) { selectChapter(ch.n, e.target.checked, e.shiftKey); return; }
+  const act = e.target.closest('[data-act]');
+  if (!act) return;
+  const slug = CURRENT_PROJECT.slug;
+  if (act.dataset.act === 'open') {
+    if (ch.status === 'not_started') openChapterEditor(slug, ch.n, { autoDownload: true, url: CURRENT_PROJECT.url });
+    else navTo({ project: slug, chapter: ch.n });
+  } else if (act.dataset.act === 'toggle') toggleComplete(ch);
+  else if (act.dataset.act === 'preview') window.open(`/output/${encodeURIComponent(`${slug}_ch${ch.n}`)}/recap.mp4?project=${encodeURIComponent(slug)}&ch_no=${ch.n}`, '_blank');
+  else if (act.dataset.act === 'pipeline') openPipelineModal([ch.n]);
+});
+
+$('viewListBtn').onclick = () => setChapterView('list');
+$('viewCardsBtn').onclick = () => setChapterView('cards');
+$('selAllBtn').onclick = () => toggleSelection(CURRENT_PROJECT.chapters.map(c => c.n));
+$('selCompleteBtn').onclick = () => toggleSelection(CURRENT_PROJECT.chapters.filter(c => c.status === 'complete').map(c => c.n));
+$('selClearBtn').onclick = () => { SELECTION.clear(); selectionAnchor = null; paintSelection(); };
+
+function mergeBlocker() {
+  if (mergeES) return 'A merge is already running.';
+  if (SELECTION.size < 2) return 'Select at least 2 chapters to merge.';
+  const without = [...SELECTION].filter(n => !hasVideo(chapterByNumber(n)));
+  return without.length ? `Merge needs a video for every selected chapter. No video for ${listNumbers(without)}.` : '';
 }
 
 function updateMergeBar() {
-  const n = MERGE_SELECTION.size;
-  const total = [...MERGE_SELECTION].reduce((sum, no) => {
-    const ch = CURRENT_PROJECT.chapters.find(c => c.n === no);
-    return sum + ((ch && ch.duration) || 0);
-  }, 0);
-  $('mergeSelHint').textContent = n === 0 ? 'No chapters selected.'
-    : `${n} chapter(s) selected: ${[...MERGE_SELECTION].sort((a,b) => a - b).join(', ')} - merged video will be ${fmtClock(total)} (before any intro/outro)`;
-  $('mergeBtn').disabled = n < 2 || !!mergeES;
+  const total = [...SELECTION].reduce((sum, n) => sum + (chapterByNumber(n).duration || 0), 0);
+  const blocker = mergeBlocker();
+  $('mergeSelHint').textContent = SELECTION.size === 0 ? blocker
+    : `${SELECTION.size} chapter(s) selected: ${listNumbers(SELECTION)}. ${blocker || `The merged video will be ${fmtClock(total)} (before any intro/outro).`}`;
+  $('mergeBtn').disabled = !!blocker;
+  $('mergeBtn').title = blocker;
 }
+
+// --- Pipeline step modal -------------------------------------------------------------
+// Each chapter runs one contiguous stretch of steps, `first`..`last`, in order. `target` is the step
+// the user ticked (everything before it is a prerequisite); `first` is the earliest step that has
+// to run: a missing or out-of-date prerequisite, or the first step when completed ones are redone.
+// Steps before `first` are reused. `last` is `target` plus the built steps after `first` that its
+// re-running makes out of date; the user can untick those to keep them.
+const PIPE = { rows: [], target: PIPELINE_STEPS.length - 1, redo: false, ticks: new Map(), open: new Set(), groups: [] };
+const pipeChoiceKey = () => `recapper.pipeline.${CURRENT_PROJECT.slug}`;
+
+function stepStates(ch) {
+  return PIPELINE_STEPS.map(step => !ch.steps.done.includes(step) ? 'missing' : ch.steps.stale.includes(step) ? 'stale' : 'done');
+}
+
+function firstStep(states, target, redo) {
+  if (target < 0) return -1;
+  if (redo) return 0;
+  const gap = states.findIndex((state, i) => i <= target && state !== 'done');
+  return gap === -1 ? target : gap;
+}
+
+function tickTarget(states, target, redo) {
+  const first = firstStep(states, target, redo);
+  const lastBuilt = states.findLastIndex(state => state !== 'missing');
+  return { target, last: first >= 0 && lastBuilt > first ? Math.max(target, lastBuilt) : target };
+}
+
+function pipePlan(ch) {
+  const states = stepStates(ch), { target, last } = PIPE.ticks.get(ch.n), first = firstStep(states, target, PIPE.redo);
+  const steps = states.map((state, i) => {
+    if (i > last) return { ticked: false, kind: 'idle', tag: state === 'missing' ? '' : first >= 0 && i > first ? 'out of date, kept' : 'done' };
+    if (i < first) return { ticked: true, kind: 'reuse', tag: 'done, will reuse' };
+    if (state === 'missing') return { ticked: true, kind: 'run', tag: 'missing, will run' };
+    if (state === 'stale') return { ticked: true, kind: 'stale', tag: 'out of date, will run' };
+    if (PIPE.redo) return { ticked: true, kind: 'run', tag: 'redo' };
+    return i > first ? { ticked: true, kind: 'stale', tag: 'out of date, will re-run' } : { ticked: true, kind: 'run', tag: 'will run' };
+  });
+  steps.forEach((step, i) => { step.locked = states[i] === 'missing' && i < last; });
+  const runs = first < 0 ? [] : PIPELINE_STEPS.slice(first, last + 1);
+  const kept = PIPELINE_STEPS.filter((_, i) => steps[i].tag === 'out of date, kept');
+  const reused = first > 0 ? `${PIPELINE_STEPS[first - 1]} done, ` : '';
+  const what = !runs.length ? 'nothing selected'
+    : `${reused}will run ${runs.length === PIPELINE_STEPS.length ? 'all steps' : runs.join(' + ')}${kept.length ? `; ${kept.join(', ')} kept out of date` : ''}`;
+  return { ch, steps, runs, what };
+}
+
+function pipeTick(stepIndex, on, ch) {
+  (ch ? [ch] : PIPE.rows).forEach(row => {
+    const { target, last } = PIPE.ticks.get(row.n);
+    PIPE.ticks.set(row.n, on ? tickTarget(stepStates(row), stepIndex, PIPE.redo)
+      : { target: Math.min(target, stepIndex - 1), last: Math.min(last, stepIndex - 1) });
+  });
+  if (!ch) PIPE.target = on ? stepIndex : stepIndex - 1;
+}
+
+function pipeGlobalStepsHtml(plans) {
+  return PIPELINE_STEPS.map((step, i) => {
+    const ticked = plans.filter(p => p.steps[i].ticked).length;
+    const running = plans.filter(p => p.runs.includes(step)).length;
+    const stale = plans.filter(p => p.steps[i].kind === 'stale').length;
+    const tag = `${running ? `runs in ${running} of ${plans.length}` : ticked ? 'reused' : 'not selected'}${stale ? `, out of date in ${stale}` : ''}`;
+    return `<div class="pstep ${ticked ? 'on' : ''}"><label><input type="checkbox" data-step="${i}" data-focus="s${i}" ${ticked === plans.length ? 'checked' : ''} ${ticked && ticked < plans.length ? 'data-partial' : ''} />${step}</label><span class="ptag ${stale ? 'stale' : ''}">${tag}</span></div>`;
+  }).join('');
+}
+
+function pipeChapterHtml(plan) {
+  const cells = PIPELINE_STEPS.map((step, i) => {
+    const cell = plan.steps[i];
+    return `<div class="pcstep ${cell.locked ? 'locked' : ''}"><label><input type="checkbox" data-cn="${plan.ch.n}" data-cstep="${i}" data-focus="c${plan.ch.n}-${i}" ${cell.ticked ? 'checked' : ''} ${cell.locked ? 'disabled' : ''} />${step}</label>` +
+      `<span class="ptag ${cell.kind}">${cell.tag}</span></div>`;
+  }).join('');
+  return `<div class="pcrow"><div class="pctitle"><span class="chno">#${plan.ch.n}</span><b>${escHtml(plan.ch.title)}</b></div><div class="pcsteps">${cells}</div></div>`;
+}
+
+function pipeGroupsHtml(plans) {
+  const byWhat = new Map();
+  plans.forEach(plan => byWhat.set(plan.what, [...(byWhat.get(plan.what) || []), plan]));
+  PIPE.groups = [...byWhat.values()];
+  return PIPE.groups.map((group, gi) => {
+    const open = group.filter(p => PIPE.open.has(p.ch.n));
+    const allOpen = open.length === group.length;
+    return `<section class="pgroup"><div class="pghead"><div><b>${group.length} chapter${group.length === 1 ? '' : 's'}: ${group[0].what}</b>` +
+      `<div class="hint">Chapter ${listNumbers(group.map(p => p.ch.n))}</div></div>` +
+      `<button class="small ghost" data-group="${gi}" data-focus="g${gi}">${allOpen ? 'Hide chapters' : 'Adjust chapters'}</button></div>` +
+      `${open.length ? `<div class="pgrows">${open.map(pipeChapterHtml).join('')}</div>` : ''}</section>`;
+  }).join('');
+}
+
+function pipeSummary(plans) {
+  const running = plans.filter(p => p.runs.length);
+  if (!running.length) return 'Nothing to run: tick at least one step.';
+  const perStep = PIPELINE_STEPS.map(step => [step, running.filter(p => p.runs.includes(step)).length]).filter(([, count]) => count);
+  const skipped = plans.length - running.length;
+  return `Will run ${running.length} chapter${running.length === 1 ? '' : 's'} &times; steps (${running.reduce((sum, p) => sum + p.runs.length, 0)} step runs): ` +
+    `${perStep.map(([step, count]) => `${step} &times; ${count}`).join(', ')}.${skipped ? ` ${skipped} chapter${skipped === 1 ? ' has' : 's have'} nothing selected.` : ''}`;
+}
+
+function renderPipeModal() {
+  const focused = document.activeElement && document.activeElement.dataset.focus;
+  const plans = PIPE.rows.map(pipePlan);
+  $('pipeSteps').innerHTML = pipeGlobalStepsHtml(plans);
+  $('pipeSteps').querySelectorAll('[data-partial]').forEach(box => { box.indeterminate = true; });
+  $('pipeRedo').checked = PIPE.redo;
+  $('pipeGroups').innerHTML = pipeGroupsHtml(plans);
+  $('pipeSummary').innerHTML = pipeSummary(plans);
+  $('pipeRun').disabled = !plans.some(p => p.runs.length);
+  if (focused) {
+    const again = $('pipeModal').querySelector(`[data-focus="${focused}"]`);
+    if (again && !again.disabled) again.focus();
+  }
+}
+
+function readPipeChoice() {
+  try { return JSON.parse(localStorage.getItem(pipeChoiceKey())) || {}; } catch (_) { return {}; }
+}
+
+function savePipeChoice() {
+  try { localStorage.setItem(pipeChoiceKey(), JSON.stringify({ target: PIPE.target, redo: PIPE.redo })); } catch (_) { /* not remembered */ }
+}
+
+const closePipeModal = () => $('pipeModal').classList.remove('on');
+
+async function openPipelineModal(numbers) {
+  await loadCurrentProject(CURRENT_PROJECT.slug);   // the steps shown must be what the disk has now
+  renderChapterList();
+  const choice = readPipeChoice();
+  PIPE.rows = CURRENT_PROJECT.chapters.filter(c => numbers.includes(c.n));
+  PIPE.target = choice.target >= 0 ? choice.target : PIPELINE_STEPS.length - 1;
+  PIPE.redo = !!choice.redo;
+  PIPE.open = new Set(PIPE.rows.length === 1 ? [PIPE.rows[0].n] : []);
+  PIPE.ticks = new Map(PIPE.rows.map(ch => [ch.n, tickTarget(stepStates(ch), PIPE.target, PIPE.redo)]));
+  $('pipeTitle').textContent = PIPE.rows.length === 1 ? `Run pipeline: chapter ${PIPE.rows[0].n}` : `Run pipeline: ${PIPE.rows.length} chapters`;
+  renderPipeModal();
+  $('pipeModal').classList.add('on');
+  $('pipeModal').querySelector('[data-step]').focus();
+}
+
+$('pipeModal').addEventListener('change', e => {
+  const box = e.target;
+  if (box.id === 'pipeRedo') {
+    PIPE.redo = box.checked;
+    PIPE.rows.forEach(ch => PIPE.ticks.set(ch.n, tickTarget(stepStates(ch), PIPE.target, PIPE.redo)));
+  } else if (box.dataset.step !== undefined) pipeTick(+box.dataset.step, box.checked);
+  else if (box.dataset.cstep !== undefined) pipeTick(+box.dataset.cstep, box.checked, chapterByNumber(+box.dataset.cn));
+  renderPipeModal();
+});
+
+$('pipeModal').addEventListener('click', e => {
+  const toggle = e.target.closest('[data-group]');
+  if (!toggle) return;
+  const group = PIPE.groups[+toggle.dataset.group].map(p => p.ch.n);
+  const allOpen = group.every(n => PIPE.open.has(n));
+  group.forEach(n => allOpen ? PIPE.open.delete(n) : PIPE.open.add(n));
+  renderPipeModal();
+});
+
+$('pipeModal').addEventListener('keydown', e => { if (e.key === 'Escape') closePipeModal(); });
+$('pipeCancel').onclick = closePipeModal;
+$('pipeRun').onclick = startPipeline;
 
 // ---------------------------------------------------------------------------
 // merge selected "complete" chapters' recap.mp4 into one video, in chapter
@@ -4695,8 +5072,8 @@ const mergeLines = [];
 
 function setMergeBusy(b) {
   btnBusy($('mergeBtn'), b);
-  $('mergeBtn').disabled = b || MERGE_SELECTION.size < 2;
   $('mergeCancelBtn').disabled = !b;
+  if (!b) updateMergeBar();
 }
 function setMergeBar(frac, indet) {
   const wrap = $('mergeProgress'), bar = $('mergeBar');
@@ -4715,8 +5092,9 @@ function appendMergeLog(line) {
 
 function startMerge() {
   if (mergeES) { setStatus('A merge is already running.', true); return; }
-  const chapters = [...MERGE_SELECTION].sort((a, b) => a - b);
-  if (chapters.length < 2) { setStatus('Select at least 2 complete chapters.', true); return; }
+  const blocker = mergeBlocker();
+  if (blocker) { setStatus(blocker, true); return; }
+  const chapters = [...SELECTION].sort((a, b) => a - b);
   mergeLines.length = 0; mergeDone = false;
   $('mergeStatus').textContent = ''; $('mergeResult').innerHTML = '';
   setMergeBusy(true); setMergeBar(0, true);
@@ -4812,7 +5190,7 @@ async function refetchChapters() {
       { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ refetch:true }) });
     const d = await res.json();
     if (!res.ok || d.ok === false) throw new Error(d.error || 'Refetch failed.');
-    CURRENT_PROJECT = d.project;
+    await loadCurrentProject(CURRENT_PROJECT.slug);
     renderChapterList();
     showToast('Chapter list refreshed.', null, null, 'ok');
   } catch (e) { setStatus('Refetch error: ' + e.message, true); }
@@ -5373,7 +5751,6 @@ $('backToProjectBtn').onclick = backToProject;
 $('pjRefetchBtn').onclick = refetchChapters;
 $('mergeBtn').onclick = startMerge;
 $('mergeCancelBtn').onclick = cancelMerge;
-$('selectAllBtn').onclick = selectAllComplete;
 $('pjCrumbProjects').onclick = () => navTo({});
 $('pjSettingsBtn').onclick = () => navTo({ project: CURRENT_PROJECT.slug, view: 'settings' });
 $('pjChaptersNav').onclick = () => navTo({ project: CURRENT_PROJECT.slug });
@@ -5442,6 +5819,7 @@ $('genCancelBtn').onclick = cancelGenerate;
 $('frameModeBtn').onclick = () => setMode('frame');
 $('blurModeBtn').onclick = () => setMode('blur');
 $('blurStyle').onchange = e => { S.blurStyle = e.target.value; };
+$('blurShape').onchange = e => { S.blurShape = e.target.value; };
 $('undoBtn').onclick = undo;
 $('redoBtn').onclick = redo;
 $('saveProjBtn').onclick = async () => { btnBusy($('saveProjBtn'), true); await saveEditorState(false); btnBusy($('saveProjBtn'), false); };
