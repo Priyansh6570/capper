@@ -8,24 +8,12 @@ set "VENV_PYW=%~dp0.venv\Scripts\pythonw.exe"
 set "FFMPEG_BIN=%~dp0vendor\ffmpeg\bin"
 
 if not exist "%VENV_PY%" (
-    echo.
-    echo ============================================================
-    echo   Setup hasn't been run yet on this PC.
-    echo   Double-click setup.bat first ^(one-time, needs internet^),
-    echo   then come back and use start.bat.
-    echo ============================================================
-    pause
+    call :startup_error "Setup has not been run on this PC yet.|To fix it: double-click setup.bat in the ReCapper folder (one-time, needs internet), then start ReCapper again."
     exit /b 1
 )
 
 if not exist "%VENV_PYW%" (
-    echo.
-    echo ============================================================
-    echo   pythonw.exe is missing from this app's Python environment
-    echo   ^(.venv^). Delete the .venv folder in this app folder and run
-    echo   setup.bat again to rebuild it.
-    echo ============================================================
-    pause
+    call :startup_error "ReCapper's Python environment (.venv) is damaged: pythonw.exe is missing.|To fix it: delete the .venv folder in the ReCapper folder, then double-click setup.bat to rebuild it."
     exit /b 1
 )
 
@@ -55,3 +43,13 @@ REM this whole script itself never shows a window either; double-clicking
 REM start.bat directly still flashes one very briefly (unavoidable for any
 REM .bat file) but it closes itself right away.
 start "" "%VENV_PYW%" "%~dp0tools\framer\tray_launcher.py"
+exit /b 0
+
+REM This script usually runs hidden (start_hidden.vbs), where a console message or
+REM `pause` would never be seen: log the failure and show a real dialog instead.
+REM "|" in the message becomes a line break.
+:startup_error
+>>"%~dp0app_log.txt" echo [%DATE% %TIME%] start.bat: "%~1"
+set "RECAPPER_MSG=%~1||Details are logged in:|%~dp0app_log.txt"
+powershell -NoProfile -WindowStyle Hidden -Command "Add-Type -AssemblyName System.Windows.Forms; [void][System.Windows.Forms.MessageBox]::Show(($env:RECAPPER_MSG -replace '\|', [Environment]::NewLine), 'ReCapper could not start', 'OK', 'Error')"
+exit /b 0

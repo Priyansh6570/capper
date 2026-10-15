@@ -13,31 +13,80 @@ app.py and the stage modules) would crash with AttributeError the first time
 it ran. Redirecting them to a log file below - BEFORE importing app.py or its
 dependencies - fixes that at the source instead of hunting down every print().
 
+Any failure to start - a missing package, a busy port, an unwritable folder - is written to
+app_log.txt in full and shown in a Windows error dialog, because pythonw has no console to show it.
+
 Run:  pythonw.exe tools/framer/tray_launcher.py   (see start.bat)
 """
 from __future__ import annotations
 
+import ctypes
 import os
 import subprocess
 import sys
+import tempfile
 import threading
+import traceback
 import webbrowser
+from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
+LOG_PATH = ROOT / "app_log.txt"
+MB_ICONERROR, MB_TOPMOST = 0x10, 0x40000
 
-# Must happen before importing app.py (or Flask/Werkzeug, which log to
-# sys.stderr) - see the module docstring.
-if sys.stdout is None or sys.stderr is None:
-    log = open(ROOT / "app_log.txt", "a", buffering=1, encoding="utf-8", errors="replace")
-    sys.stdout = log
-    sys.stderr = log
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import app as framer_app  # noqa: E402 - see sys.path insert above
+def _explain(exc: BaseException) -> str:
+    if isinstance(exc, ModuleNotFoundError):
+        return (f"A component the app needs ('{exc.name}') is missing from this install.\n\n"
+                "To fix it: open the ReCapper folder and double-click setup.bat. It is safe to run again "
+                "and only installs what is missing. Then start ReCapper again.")
+    if isinstance(exc, OSError):
+        return ("ReCapper could not open its local web page, or could not read or write a file it needs.\n\n"
+                "To fix it: close any other copy of ReCapper (check the system tray), make sure the "
+                "ReCapper folder is not read-only, then start ReCapper again.")
+    return ("ReCapper hit an unexpected error while starting.\n\n"
+            "To fix it: start ReCapper again. If it keeps failing, run setup.bat in the ReCapper folder.")
 
-import pystray  # noqa: E402
-from PIL import Image  # noqa: E402
+
+def _write_failure_log(exc: BaseException) -> Path:
+    """Appends the full traceback to app_log.txt, or to the temp folder when the app folder is not writable."""
+    entry = (f"\n===== {datetime.now():%Y-%m-%d %H:%M:%S} ReCapper failed to start =====\n"
+             + "".join(traceback.format_exception(exc)))
+    for path in (LOG_PATH, Path(tempfile.gettempdir()) / "recapper_startup_error.txt"):
+        try:
+            with open(path, "a", encoding="utf-8") as log:
+                log.write(entry)
+            return path
+        except OSError:
+            continue
+    return LOG_PATH
+
+
+def _fail_startup(exc: BaseException) -> None:
+    """Logs the failure, tells the user in plain language, and ends the process from any thread."""
+    log_path = _write_failure_log(exc)
+    ctypes.windll.user32.MessageBoxW(
+        None,
+        f"{_explain(exc)}\n\nWhat went wrong: {type(exc).__name__}: {exc}\n\nFull details are in:\n{log_path}",
+        "ReCapper could not start", MB_ICONERROR | MB_TOPMOST)
+    os._exit(1)
+
+
+try:
+    # Must happen before importing app.py (or Flask/Werkzeug, which log to
+    # sys.stderr) - see the module docstring.
+    if sys.stdout is None or sys.stderr is None:
+        log = open(LOG_PATH, "a", buffering=1, encoding="utf-8", errors="replace")
+        sys.stdout = log
+        sys.stderr = log
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import app as framer_app  # noqa: E402 - see sys.path insert above
+    import pystray  # noqa: E402
+    from PIL import Image  # noqa: E402
+except Exception as exc:  # noqa: BLE001 - any import failure must reach the user, not vanish under pythonw
+    _fail_startup(exc)
 
 HOST, PORT = "127.0.0.1", 5005
 
@@ -108,6 +157,13 @@ def _stop_active_processes() -> None:
         pass
 
 
+def _serve(port: int) -> None:
+    try:
+        framer_app.app.run(host=HOST, port=port, debug=False, threaded=True)
+    except Exception as exc:  # noqa: BLE001
+        _fail_startup(exc)
+
+
 def main() -> None:
     port = framer_app._resolve_port(HOST, PORT)
     if port is None:
@@ -115,10 +171,7 @@ def main() -> None:
     url = f"http://{HOST}:{port}/"
 
     framer_app._resume_batches()
-    server_thread = threading.Thread(
-        target=lambda: framer_app.app.run(host=HOST, port=port, debug=False, threaded=True),
-        daemon=True,
-    )
+    server_thread = threading.Thread(target=_serve, args=(port,), daemon=True)
     server_thread.start()
 
     # Mirrors app.py's own main(): skipped after a self-restart (/api/restart
@@ -151,4 +204,7 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as exc:  # noqa: BLE001
+        _fail_startup(exc)

@@ -125,6 +125,23 @@ torch/torchaudio are pinned (`+cu128`) in `requirements-gpu.txt`, NOT in
 `setup.bat` installs `requirements-gpu.txt` first. `gpu.py` is the shared
 GPU/NVENC probe (stage 6, stage 7, setup, the framer's GPU status card).
 
+### Dependencies: three requirement files, one installer
+
+- `requirements-gpu.txt`: the CUDA torch/torchaudio. `requirements.txt`: everything else the
+  code imports (including opencv-python-headless, groq). `requirements-nodeps.txt`:
+  packages installed with `--no-deps` because their metadata conflicts with the rest
+  (chatterbox-tts, moviepy, kokoro, misaki); their real runtime deps live in `requirements.txt`.
+- `deps.py` is the only installer/checker (`python deps.py install|check`); `setup.bat`, the
+  installer (which runs setup.bat) and the framer's in-app updater all call it. It freezes the
+  installed torch with a constraints file, so a dependency can never swap the CUDA build, and
+  verifies `torch.cuda.is_available()` afterwards.
+- A new third-party import must be added to a requirements file in the same commit:
+  `tools/check_requirements.py` (the `.githooks/pre-commit` hook; enable once per clone with
+  `git config core.hooksPath .githooks`) fails otherwise. `tools/smoke_imports.py` imports the
+  app, every stage and the engine libraries; setup.bat runs it as its final check.
+- Startup failures (`tools/framer/tray_launcher.py`, `start.bat`) are logged to `app_log.txt`
+  and shown in a Windows dialog, because the app runs windowless.
+
 - **Laptop / this repo**: Python + `requirements.txt` (PyMuPDF, Pillow). Stages
   1, 2, 5, 3, 7 and the orchestrator run here. Target Windows; use `pathlib`,
   never hardcode path separators. Stage 2's OCR is optional/best-effort: install

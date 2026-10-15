@@ -519,6 +519,14 @@ end;
 // and always state the real GPU-acceleration status explicitly (CPU-only
 // fallback is supported and works, but the user should know it's active).
 // ----------------------------------------------------------------------------
+function ClaudeCodeInstalled(): Boolean;
+var
+  ResultCode: Integer;
+begin
+  Result := Exec(ExpandConstant('{cmd}'), '/c where claude >nul 2>&1', '', SW_HIDE,
+                 ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);
+end;
+
 procedure CurPageChanged(CurPageID: Integer);
 begin
   if CurPageID = wpFinished then
@@ -568,6 +576,14 @@ begin
           'not a real problem. The app will finish fetching it, with its own ' +
           'visible/resumable progress, the first time you generate narration - ' +
           'this needs internet and can take a while, but only once.';
+      // The one program setup can neither install nor bundle: only the
+      // "Claude" script engine uses it, so say so instead of failing later.
+      if not ClaudeCodeInstalled() then
+        WizardForm.FinishedLabel.Caption :=
+          WizardForm.FinishedLabel.Caption + #13#10#13#10 +
+          'Note: Claude Code is not installed on this PC. Only the "Claude" ' +
+          'script engine needs it: install it from https://claude.com/claude-code, ' +
+          'then run "claude auth login" in a terminal.';
     end;
   end;
 end;

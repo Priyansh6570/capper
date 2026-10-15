@@ -72,6 +72,21 @@ def _ffmpeg() -> dict:
     return _result("Video encoder", "ok", "ffmpeg found (libx264 encoding; required, there is no fallback renderer).")
 
 
+def system_tools() -> list[dict]:
+    """The programs pip cannot install. Setup downloads ffmpeg itself; git and Claude Code are the user's."""
+    git = shutil.which("git")
+    claude = shutil.which("claude")
+    return [
+        _ffmpeg(),
+        _result("Git (Check for updates)", "ok" if git else "warn",
+                "Git is installed." if git else "Git is not installed, so Check for updates cannot work. "
+                "Install it from https://git-scm.com/download/win."),
+        _result("Claude Code (Claude script engine)", "ok" if claude else "warn",
+                "Claude Code is installed." if claude else "Claude Code is not installed. Only the Claude script "
+                "engine needs it: install it from https://claude.com/claude-code, then run: claude auth login"),
+    ]
+
+
 def _disk(numbers: list[int]) -> dict:
     free_gb = shutil.disk_usage(PROJECTS_DIR).free / 1e9
     need = DISK_PER_CHAPTER_GB * len(numbers)

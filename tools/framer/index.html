@@ -5705,10 +5705,9 @@ function backToProject() { navTo(S.project ? { project: S.project } : {}); }
 
 // ---------------------------------------------------------------------------
 // in-app update - pulls the app's own code from git (see /api/update in
-// app.py). Never touches .venv/packages/the model cache - only tracked
-// source files change. A restart applies a code-only update; if the pull
-// touched requirements.txt, setup.bat needs re-running first (the message
-// says so explicitly either way).
+// app.py). The pull itself never touches .venv/packages/the model cache; any
+// package the new code needs is offered for install right after (see below)
+// BEFORE the restart, so the restarted app has everything it imports.
 // ---------------------------------------------------------------------------
 async function checkForUpdate() {
   const box = $('updateResult');
@@ -5719,6 +5718,7 @@ async function checkForUpdate() {
     const res = await fetch('/api/update', { method: 'POST' });
     const d = await res.json();
     const missing = d.missing_packages || [];
+    const tools = d.system_tools || [];
     const kind = (d.ok && !missing.length) ? 'ok' : 'warn';
     // An update was actually pulled (not "already up to date", not a
     // failure) - offer to apply it right now instead of leaving the user to
@@ -5726,7 +5726,7 @@ async function checkForUpdate() {
     setFetchResult(box, d.message || (d.ok ? 'Updated.' : 'Update check failed.'), kind,
                    d.ok && !d.already_up_to_date && !missing.length ? restartApp : null);
     if (!d.ok) showToast('Update check failed.', null, null, 'err');
-    else if (missing.length) showMissingPackagesPrompt(missing);
+    else if (missing.length || tools.length) showMissingPackagesPrompt(missing, tools);
     else if (d.already_up_to_date) showToast('Already up to date.', null, null, 'ok');
     else showToast(d.message, null, null, 'ok');
   } catch (e) {
@@ -5739,25 +5739,31 @@ async function checkForUpdate() {
 
 // --- dependency self-repair: missing packages after a pull (see api_deps_check
 // / api_deps_install_stream in app.py) --------------------------------------
-function showMissingPackagesPrompt(missing) {
+function showMissingPackagesPrompt(missing, tools) {
   const rows = missing.map(m =>
     `<div class="gprow"><span class="gpname">${escHtml(m.package)}</span>` +
     `<span class="gpmeta">needed for: ${escHtml(m.feature)}</span></div>`).join('');
+  const toolRows = tools.map(tool =>
+    `<div class="gprow"><span class="gpname">${escHtml(tool.name)}</span>` +
+    `<span class="gpmeta">${escHtml(tool.detail)}</span></div>`).join('');
+  const install = missing.length
+    ? `<div class="jobacts">
+         <button class="small primary" type="button" id="depsInstallBtn">${ic('download',13)}<span>Install missing packages</span></button>
+       </div>`
+    : '';
   $('depsResult').innerHTML =
     `<div class="jobcard">
-       <div class="jobhead">${ic('alert',15)}<b>${missing.length} package(s) not installed</b></div>
-       <div class="gplist">${rows}</div>
-       <div class="jobacts">
-         <button class="small primary" type="button" id="depsInstallBtn">${ic('download',13)}<span>Install missing packages</span></button>
-       </div>
+       <div class="jobhead">${ic('alert',15)}<b>${missing.length ? `${missing.length} package(s) not installed` : 'Programs missing from this PC'}</b></div>
+       <div class="gplist">${rows}${toolRows}</div>
+       ${install}
        <div class="progress" id="depsProgress"><div class="bar" id="depsBar"></div></div>
        <div class="genlog" id="depsLog"></div>
      </div>`;
-  $('depsInstallBtn').onclick = () => installMissingPackages(missing.map(m => m.package));
+  if (missing.length) $('depsInstallBtn').onclick = installMissingPackages;
 }
 
 let depsES = null;
-function installMissingPackages(packages) {
+function installMissingPackages() {
   if (depsES) { depsES.close(); depsES = null; }
   const btn = $('depsInstallBtn');
   btnBusy(btn, true);
@@ -5767,8 +5773,7 @@ function installMissingPackages(packages) {
   $('depsProgress').classList.remove('err');
   $('depsProgress').classList.add('indet');
 
-  const url = `/api/deps/install_stream?packages=${encodeURIComponent(packages.join(','))}`;
-  depsES = new EventSource(url);
+  depsES = new EventSource('/api/deps/install_stream');
   depsES.onmessage = e => { try { handleDepsInstallEvent(JSON.parse(e.data)); } catch (_) {} };
   depsES.onerror = () => {
     if (!depsES) return;
@@ -5786,7 +5791,10 @@ function handleDepsInstallEvent(ev) {
     finishDepsInstall(ev.ok, ev.ok
       ? 'All packages installed.' + cudaNote
       : `${ev.missing.length} package(s) still missing - see the log above.`);
-    if (ev.ok) $('depsInstallBtn').disabled = true;   // nothing left to install
+    if (ev.ok) {
+      $('depsInstallBtn').disabled = true;   // nothing left to install
+      setFetchResult($('updateResult'), 'Packages installed. Restart to apply the update.', 'ok', restartApp);
+    }
   } else if (ev.type === 'error') {
     finishDepsInstall(false, ev.message || 'Install failed.');
   }

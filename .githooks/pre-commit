@@ -1,0 +1,7 @@
+#!/bin/sh
+# Blocks a commit that imports a package no requirements file lists (see tools/check_requirements.py).
+# Enabled with: git config core.hooksPath .githooks
+python tools/check_requirements.py || {
+    echo "pre-commit: fix the problem above (list a missing package in requirements.txt or requirements-nodeps.txt), then commit again."
+    exit 1
+}

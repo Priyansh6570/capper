@@ -2449,13 +2449,12 @@ def set_settings():
 
 # --------------------------------------------------------------------------- #
 # Dependency self-repair - pulling new CODE (below) can't install a new
-# PACKAGE that code needs (e.g. google-genai, added for Gemini script
-# generation, after most installs already existed) - .venv is deliberately
-# untouched by git. Compares requirements.txt's declared packages against
-# what's actually importable in THIS venv via importlib.metadata (checking
-# installed *distributions*, not import names - PyMuPDF installs as `fitz`,
-# beautifulsoup4 as `bs4`, etc., but pip/importlib.metadata both key on the
-# distribution name either way, so this needs no import-name mapping).
+# PACKAGE that code needs, and .venv is deliberately untouched by git. deps.py
+# compares every requirements file against what the venv really has and runs
+# the same CUDA-torch-safe install that setup.bat uses. It runs as a subprocess,
+# never imported, so a pull that changes deps.py itself takes effect at once.
+# System tools pip can't install (ffmpeg, git, Claude Code) are reported by
+# preflight.system_tools().
 # --------------------------------------------------------------------------- #
 FEATURE_PACKAGES = {
     "flask": "the app itself",
@@ -2467,9 +2466,11 @@ FEATURE_PACKAGES = {
     "python-dotenv": "reading saved API keys from .env",
     "google-genai": "AI script generation (Settings -> Script generation)",
     "keyring": "storing the Gemini API key in Windows Credential Manager instead of a plaintext file",
+    "opencv-python-headless": "speech-bubble detection (Claude script engine)",
     "torch": "AI narration + GPU acceleration",
     "torchaudio": "AI narration + GPU acceleration",
-    "chatterbox-tts": "AI narration (voice generation)",
+    "chatterbox-tts": "AI narration (Chatterbox voice)",
+    "kokoro": "AI narration (Kokoro voice)",
     "soundfile": "voice reference processing",
     "numpy": "audio processing",
     "edge-tts": "the draft (fast, no-GPU) narration mode",
@@ -2478,58 +2479,19 @@ FEATURE_PACKAGES = {
 }
 
 
-def _requirement_specs(filename: str = "requirements.txt") -> list[str]:
-    path = ROOT / filename
-    if not path.exists():
-        return []
-    specs = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        line = line.split("#", 1)[0].strip()
-        if line and not line.startswith("-"):
-            specs.append(line)
-    return specs
-
-
-def _requirement_name(spec: str) -> str:
-    return re.split(r"[<>=!~\s]", spec, 1)[0].strip()
-
-
-def _missing_gpu_packages() -> list[str]:
-    """torch/torchaudio that are absent, or - on a PC with an NVIDIA GPU - installed as
-    a CPU-only build (no +cuXXX local version), which silently runs narration on the CPU."""
-    from importlib import metadata
-    missing, cpu_only = [], []
-    for spec in _requirement_specs("requirements-gpu.txt"):
-        name = _requirement_name(spec)
-        try:
-            version = metadata.version(name)
-        except metadata.PackageNotFoundError:
-            missing.append(name)
-            continue
-        if "+cu" not in version:
-            cpu_only.append(name)
-    return missing + (cpu_only if cpu_only and gpu.nvidia_gpu() else [])
+def _deps_cli(*args: str) -> list[str]:
+    return [sys.executable, str(ROOT / "deps.py"), *args]
 
 
 def _missing_packages() -> list[dict]:
-    import importlib
-    from importlib import metadata
-    # A package pip-installed after this process started (e.g. by the install
-    # flow below, in-process for the rest of the app's lifetime) isn't found
-    # without this - Python caches each sys.path directory's listing on first
-    # import-system access and won't otherwise notice new dist-info folders.
-    importlib.invalidate_caches()
-    names = [_requirement_name(spec) for spec in _requirement_specs()]
-    names = [n for n in names if not _is_installed(metadata, n)] + _missing_gpu_packages()
-    return [{"package": n, "feature": FEATURE_PACKAGES.get(n, "part of the app")} for n in names]
+    out = subprocess.run(_deps_cli("check", "--json"), cwd=str(ROOT), capture_output=True, text=True,
+                         encoding="utf-8", timeout=120, **NO_CONSOLE).stdout
+    return [{"package": n, "feature": FEATURE_PACKAGES.get(n, "part of the app")}
+            for n in json.loads(out.strip().splitlines()[-1])]
 
 
-def _is_installed(metadata, name: str) -> bool:
-    try:
-        metadata.version(name)
-        return True
-    except metadata.PackageNotFoundError:
-        return False
+def _system_tool_problems() -> list[dict]:
+    return [tool for tool in preflight.system_tools() if tool["status"] != "ok"]
 
 
 @app.get("/api/gpu/status")
@@ -2539,57 +2501,27 @@ def api_gpu_status():
 
 @app.get("/api/deps/check")
 def api_deps_check():
-    return jsonify(missing=_missing_packages())
+    return jsonify(missing=_missing_packages(), tools=_system_tool_problems())
 
 
-def _pip_install_stream(args: list[str]):
-    """Run `pip install <args>`, yielding its output as log events; returns the exit code."""
-    cmd = [sys.executable, "-m", "pip", "install", *args]
-    yield {"type": "log", "line": "$ " + " ".join(cmd)}
-    proc = subprocess.Popen(cmd, cwd=str(ROOT), stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
-                            text=True, bufsize=1, encoding="utf-8", errors="replace",
-                            **NO_CONSOLE)
+def _install_deps_stream():
+    proc = subprocess.Popen(_deps_cli("install"), cwd=str(ROOT), stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, text=True, bufsize=1,
+                            encoding="utf-8", errors="replace", **NO_CONSOLE)
     for line in proc.stdout:
         yield {"type": "log", "line": line.rstrip("\n")}
-    return proc.wait()
-
-
-def _install_deps_stream(packages: list[str]):
-    """Install the missing packages: torch/torchaudio from requirements-gpu.txt (the
-    CUDA build, first, so nothing else pulls in PyPI's CPU-only one), the rest as their
-    full requirements.txt spec so version constraints are respected."""
-    gpu_names = {_requirement_name(s) for s in _requirement_specs("requirements-gpu.txt")}
-    gpu_needed = [p for p in packages if p in gpu_names]
-    specs = [s for s in _requirement_specs() if _requirement_name(s) in packages]
-    if not specs and not gpu_needed:
-        yield {"type": "error", "message": "Nothing to install."}
+    if proc.wait() != 0:
+        yield {"type": "error", "message": "Installing the packages failed - see the log above."}
         return
-
-    if gpu_needed:
-        yield {"type": "log", "line": "Installing the CUDA build of PyTorch..."}
-        code = yield from _pip_install_stream(["-r", str(ROOT / "requirements-gpu.txt")])
-        if code != 0:
-            yield {"type": "error", "message": f"CUDA PyTorch install failed (exit code {code})."}
-            return
-    if specs:
-        yield {"type": "log", "line": f"Installing {len(specs)} package(s): {', '.join(specs)}"}
-        code = yield from _pip_install_stream(specs)
-        if code != 0:
-            yield {"type": "error", "message": f"pip install failed (exit code {code})."}
-            return
-
-    yield {"type": "result", "missing": _missing_packages(),
-           "cuda_ok": (gpu.torch_info() or {}).get("available") if gpu_needed else None}
+    cuda_ok = (gpu.torch_info() or {}).get("available") if gpu.nvidia_gpu() else None
+    yield {"type": "result", "missing": _missing_packages(), "cuda_ok": cuda_ok}
 
 
 @app.get("/api/deps/install_stream")
 def api_deps_install_stream():
-    packages = [p for p in (request.args.get("packages") or "").split(",") if p]
-
     def stream():
         try:
-            for item in _install_deps_stream(packages):
+            for item in _install_deps_stream():
                 if item["type"] == "result":
                     yield _sse({"type": "done", "ok": not item["missing"],
                                 "missing": item["missing"], "cuda_ok": item["cuda_ok"]})
@@ -2675,12 +2607,11 @@ def api_update():
 
         if new_hash == old_hash:
             return jsonify(ok=True, already_up_to_date=True, files_changed=0,
-                            requirements_changed=False, message="Already up to date.",
-                            missing_packages=_missing_packages())
+                            message="Already up to date.",
+                            missing_packages=_missing_packages(), system_tools=_system_tool_problems())
 
         diff = run_git("diff", "--name-only", old_hash, new_hash)
         changed = [ln for ln in (diff.stdout or "").splitlines() if ln.strip()]
-        requirements_changed = "requirements.txt" in changed
         missing = _missing_packages()
 
         if missing:
@@ -2690,8 +2621,7 @@ def api_update():
             message = f"Updated {len(changed)} file(s). Restart the app to apply."
 
         return jsonify(ok=True, already_up_to_date=False, files_changed=len(changed),
-                        requirements_changed=requirements_changed, message=message,
-                        missing_packages=missing)
+                        message=message, missing_packages=missing, system_tools=_system_tool_problems())
     except subprocess.TimeoutExpired:
         return jsonify(ok=False, message="Update timed out - check your internet "
                                           "connection and try again.")

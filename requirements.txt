@@ -1,16 +1,13 @@
-# Runtime dependencies for the CURRENT workflow: Framer (manual PDF stitch +
-# manual frame boxing, Gemini-generated or pasted script) -> Generate
-# audio+video. That flow only ever executes stage 1 (pages, called directly
-# by tools/framer/app.py) and stages 6+7 (audio, video - the only stages
-# orchestrator.py --from audio ever runs).
-# Stages 2/2a/2b/3/4/5 (auto panel detection, vision tagging, frame matching,
-# Groq context/emotion, inpainting, auto script) are STILL dead in this
-# workflow - orchestrator.py imports stage modules lazily, so their
-# dependencies (groq, ultralytics, opencv-python, pytesseract/easyocr/
-# paddleocr) are not required. python-dotenv and google-genai, however, ARE
-# required again: the Framer app itself now uses them directly (Gemini script
-# generation, .env-based API keys - see tools/framer/app.py), not just the
-# dead stages. See work_log.md.
+# Every third-party package the app, the pipeline stages and the tools import.
+# tools/check_requirements.py (a pre-commit hook) fails if an import is not covered
+# by this file, requirements-gpu.txt or requirements-nodeps.txt.
+#
+# Install order (tools/install_deps.py, used by setup.bat, the installer and the
+# in-app updater): requirements-gpu.txt, then this file, then requirements-nodeps.txt.
+# torch/torchaudio are NOT listed here: PyPI's Windows wheels are CPU-only.
+#
+# Deliberately not listed (optional, every import is guarded and non-fatal):
+# ultralytics, easyocr, pytesseract, paddleocr - stage 2/2a person detection and OCR.
 
 # --- Framer app: serving the UI, stitching a PDF, project metadata --------
 flask>=3.0
@@ -23,6 +20,10 @@ pystray>=0.19        # tools/framer/tray_launcher.py: system tray icon + Quit,
                      # the only way to stop the app now that start.bat launches
                      # it with no console window (see tray_launcher.py)
 python-dotenv>=1.0   # reads GEMINI_API_KEY (and GROQ_API_KEY/HF_TOKEN) from .env
+opencv-python-headless>=4.10  # tools/framer/bubbles.py: speech-bubble detection (Claude script engine); no GUI calls used
+httpx>=0.27          # llm.py: Ollama backend
+groq>=0.9            # llm.py + stage 3: Groq backend
+huggingface_hub      # stage 6 / tools/predownload_tts_models.py: model cache + download
 # Pinned exactly: google-genai>=1.0 (its real floor) makes pip's resolver
 # explore a huge, slow range of pydantic/google-auth candidates alongside
 # chatterbox-tts's own heavy tree below - can take 10+ minutes or hit pip's
@@ -38,7 +39,7 @@ keyring>=25.0        # stores GEMINI_API_KEY in Windows Credential Manager, not 
 soundfile>=0.12      # voice-reference preprocessing (float32/mono/24kHz)
 numpy>=2.0.0
 
-# chatterbox-tts is installed separately in setup.bat with --no-deps, NOT
+# chatterbox-tts is installed separately (requirements-nodeps.txt, --no-deps), NOT
 # through this file. Reason: its own metadata hard-requires `gradio==6.8.0`
 # (for a demo UI its own importable code never uses - verified: chatterbox-
 # tts's wheel contains zero references to "gradio" anywhere), and gradio's
@@ -71,8 +72,8 @@ mutagen>=1.47         # draft: read the real MP3 duration
 
 # --- Stage 7: render the 1920x1080 MP4 -------------------------------------
 # Primary path is a direct ffmpeg call (EXTERNAL tool, not pip-installable -
-# it must be on PATH). Encodes with h264_nvenc when available, else libx264.
-# moviepy itself is installed separately in setup.bat with --no-deps (fallback
+# setup.bat downloads it into vendor/ffmpeg, else it must be on PATH). Encodes with h264_nvenc when available, else libx264.
+# moviepy itself is installed separately (requirements-nodeps.txt, --no-deps; fallback
 # ONLY, used if the direct ffmpeg path fails): its latest release pins
 # `pillow<12`, directly conflicting with webtoon-downloader's `pillow>=12`
 # above - tested working fine against the newer Pillow already installed.
@@ -82,9 +83,11 @@ imageio-ffmpeg>=0.6
 proglog>=0.1
 decorator>=5.3
 
-# --- Kokoro narration engine ---
-# kokoro and misaki themselves are installed in setup.bat with --no-deps (pip's resolver
-# cannot be trusted near torch); these are the dependencies they actually use.
+# --- Kokoro narration engine (stages/tts_kokoro.py) ---
+# kokoro and misaki themselves are in requirements-nodeps.txt; these are the runtime
+# dependencies they actually use. espeak-ng ships inside espeakng-loader's wheel.
+scipy
+regex
 spacy
 loguru
 addict
