@@ -147,7 +147,8 @@ class PageAssetsTest(ApiTest):
     """The page is index.html plus its stylesheet and scripts served from static/."""
 
     def test_the_page_references_its_assets_and_has_nothing_inline(self):
-        html = self.client.get("/").get_data(as_text=True)
+        with self.client.get("/") as response:
+            html = response.get_data(as_text=True)
         for reference in ('href="/static/css/app.css"', 'src="/static/js/icons.js"', 'src="/static/js/app.js"'):
             self.assertIn(reference, html)
         self.assertNotIn("<style", html)
@@ -161,5 +162,6 @@ class PageAssetsTest(ApiTest):
             self.assertGreater(len(response.get_data()), 1000)
 
     def test_scripts_load_in_dependency_order(self):
-        html = self.client.get("/").get_data(as_text=True)
+        with self.client.get("/") as response:
+            html = response.get_data(as_text=True)
         self.assertLess(html.index("/static/js/icons.js"), html.index("/static/js/app.js"))

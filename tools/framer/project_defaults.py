@@ -32,7 +32,7 @@ ASSET_FIELDS = {
 GROUP_LABELS = {
     "music": "Background music", "voice": "Narration voice", "watermark": "Watermark",
     "background": "Video background", "animation": "Frame animation", "video": "Video size",
-    "branding": "Intro / outro", "gemini": "Script tone and style", "script_engine": "Script engine",
+    "branding": "Intro / outro", "script": "Script tone and style",
     "claude": "Claude script settings", "batch": "Batch automation", "framing": "Frame text blur",
 }
 

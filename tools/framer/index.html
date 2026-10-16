@@ -327,7 +327,7 @@
       <div class="settingsbody">
         <nav class="settingsnav">
           <span class="navlabel">Script</span>
-          <a href="#s-gemini" class="on">Script generation</a>
+          <a href="#s-script" class="on">Script generation</a>
           <a href="#s-batch">Batch automation</a>
           <span class="navlabel" style="margin-top:14px">Output</span>
           <a href="#s-video">Video size</a>
@@ -346,12 +346,12 @@
         </nav>
         <div class="settingscontent">
 
-          <div class="setcard" id="s-gemini">
+          <div class="setcard" id="s-script">
             <div class="setlabel"><b>Script generation</b><span>Auto-generate the narration script for a chapter. Claude Code reads the chapter's panels through your local Claude login. Tone and style below are per-project.</span></div>
             <div class="setbody">
               <div class="setgridpair">
                 <label class="field" style="margin:0"><span class="lbl" style="text-transform:none;letter-spacing:0;font-weight:400;color:var(--muted)">Default tone (each chapter can set its own)</span>
-                  <select id="geminiTone">
+                  <select id="scriptTone">
                     <option value="epic">Epic</option>
                     <option value="serious">Serious</option>
                     <option value="dramatic">Dramatic</option>
@@ -359,7 +359,7 @@
                   </select>
                 </label>
                 <label class="field" style="margin:0"><span class="lbl" style="text-transform:none;letter-spacing:0;font-weight:400;color:var(--muted)">Narration type</span>
-                  <select id="geminiNarrationType">
+                  <select id="scriptNarrationType">
                     <option value="first_person">First-person hero POV</option>
                     <option value="third_person">Third-person recap</option>
                   </select>
@@ -395,7 +395,7 @@
 
               <label class="field" style="margin:10px 0 0">
                 <span class="lbl" style="text-transform:none;letter-spacing:0;font-weight:400;color:var(--muted)">Style reference (optional)</span>
-                <textarea id="geminiStyleRef" placeholder="Paste an example script whose language/tone/humor should be imitated…" style="width:100%;height:110px"></textarea>
+                <textarea id="scriptStyleRef" placeholder="Paste an example script whose language/tone/humor should be imitated…" style="width:100%;height:110px"></textarea>
               </label>
             </div>
           </div>

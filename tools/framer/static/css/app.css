@@ -150,7 +150,6 @@
              gap:12px; padding:12px; }
   #srcpanel { display:flex; flex-direction:column; gap:12px; }
   #srcpanel[hidden] { display:none; }
-  #geminiKeyBlock[hidden], #claudeBlock[hidden], .geminiOnly[hidden] { display:none; }
   .sidecard { background:var(--surface); border:1px solid var(--line); border-radius:var(--r);
               padding:12px; display:flex; flex-direction:column; gap:9px; }
   .sidecard h2 { margin:0; display:flex; align-items:center; gap:8px; font-size:11px;

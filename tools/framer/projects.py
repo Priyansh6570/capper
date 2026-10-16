@@ -35,7 +35,6 @@ import shutil
 import tempfile
 import threading
 import zipfile
-from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Optional
@@ -50,7 +49,7 @@ from atomic_io import atomic_write_text, read_json_with_backup_fallback
 
 # Status rank - forward-only transitions (never downgraded automatically).
 STATUS_RANK = {"not_started": 0, "downloaded": 1, "boxed": 2, "rendered": 3, "complete": 4}
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 CHAPTER_FILE = "chapter.json"
 
 _LOCK = threading.RLock()  # guards read-modify-write of project and chapter files; re-entrant because load() migrates
@@ -214,18 +213,9 @@ def default_settings() -> dict:
         # The flags are the project's remembered choice for its next merge.
         "branding": {"intro": {"enabled": True, "file": None},
                      "outro": {"enabled": True, "file": None}},
-        # Gemini-driven script generation (tools/framer/app.py's
-        # /gemini_script_stream) - the API key itself is NEVER stored here
-        # (like every other key in this app, it's .env-only, see
-        # _gemini_env_key_* in app.py); this is just the per-project prompt
-        # knobs so different projects can want a different voice.
-        "gemini": {"tone": tones.DEFAULT_TONE, "narration_type": "first_person",
-                   "style_reference": "", "model": "gemini-3.1-pro-preview"},
-        # Which engine writes the script: "gemini" (API) or "claude" (the local
-        # Claude Code CLI, see claude_engine.py). Tone / narration type / style
-        # reference above apply to both (`tone` is the project's default; a chapter can
-        # override it); the series brief and per-pass models below are Claude-only.
-        "script_engine": "gemini",
+        # The voice the script is written in and the narration is delivered in. `tone` is the
+        # project's default; a chapter can override it.
+        "script": {"tone": tones.DEFAULT_TONE, "narration_type": "first_person", "style_reference": ""},
         # min_frame_s: the least time any one frame stays on screen (caps frames per block).
         "claude": {"series_brief": "", "comprehension_model": "opus", "narration_model": "sonnet",
                    "min_frame_s": 3},
@@ -338,6 +328,28 @@ def _chapters_from_index(slug: str, data: dict) -> list[dict]:
     return chapters
 
 
+def _has_legacy_settings(data: dict) -> bool:
+    settings = data.get("settings", {})
+    return "gemini" in settings or "script_engine" in settings
+
+
+def _migrate_settings(slug: str, data: dict) -> None:
+    """Schema 2 kept the script voice under settings.gemini, beside a Gemini model and a script engine
+    choice. Keep the voice as settings.script and drop the rest. The old file is kept once as
+    project.json.v2."""
+    path = project_json_path(slug)
+    original = path.with_name(path.name + ".v2")
+    if not original.exists():
+        shutil.copy2(path, original)
+    settings = data["settings"]
+    voice = settings.pop("gemini", {})
+    settings.pop("script_engine", None)
+    settings["script"] = {**{k: voice[k] for k in ("tone", "narration_type", "style_reference") if k in voice},
+                          **settings.get("script", {})}
+    data["schema"] = SCHEMA_VERSION
+    _atomic_write(path, json.dumps(data, indent=2, ensure_ascii=False))
+
+
 def load(slug: str) -> dict:
     # Falls back to project.json.bak if the primary file is missing, empty,
     # or unparsable - see atomic_io.py.
@@ -348,6 +360,12 @@ def load(slug: str) -> dict:
             if "chapters" in data:
                 _migrate_chapters(slug, data)
                 data = read_json_with_backup_fallback(project_json_path(slug))
+    if _has_legacy_settings(data):
+        with _LOCK:
+            data = read_json_with_backup_fallback(project_json_path(slug))
+            if _has_legacy_settings(data):
+                _migrate_settings(slug, data)
+                data = read_json_with_backup_fallback(project_json_path(slug))
     data["chapters"] = _chapters_from_index(slug, data)
     data.setdefault("schema", SCHEMA_VERSION)
     data.setdefault("site", None)
@@ -357,7 +375,7 @@ def load(slug: str) -> dict:
     data["settings"] = settings
     for ch in data["chapters"]:
         ch["tone"] = tones.normalize(ch.get("tone"))
-    data["settings"]["gemini"]["tone"] = tones.normalize(data["settings"]["gemini"].get("tone")) or tones.DEFAULT_TONE
+    data["settings"]["script"]["tone"] = tones.normalize(data["settings"]["script"].get("tone")) or tones.DEFAULT_TONE
     return data
 
 
@@ -482,7 +500,7 @@ def set_status(slug: str, n, status: str, *, force: bool = False) -> dict:
 
 def chapter_tone(project: dict, n) -> str:
     """The tone chapter `n` is written and voiced in: its own, else the project's default."""
-    return get_chapter(project, n)["tone"] or project["settings"]["gemini"]["tone"]
+    return get_chapter(project, n)["tone"] or project["settings"]["script"]["tone"]
 
 
 def set_chapter_tone(slug: str, n, tone: Optional[str]) -> dict:
@@ -595,17 +613,12 @@ def update_settings(slug: str, settings: dict) -> dict:
             project["settings"]["video"]["quality"] = DEFAULT_QUALITY
         for clip in project["settings"]["branding"].values():
             clip["enabled"] = bool(clip.get("enabled"))
-        gm = project["settings"]["gemini"]
-        gm["tone"] = tones.normalize(gm.get("tone")) or tones.DEFAULT_TONE
-        if gm.get("narration_type") not in ("first_person", "third_person"):
-            gm["narration_type"] = "first_person"
-        if gm.get("model") not in ("gemini-3.1-pro-preview", "gemini-3.8-flash"):
-            gm["model"] = "gemini-3.1-pro-preview"
-        gm["style_reference"] = str(gm.get("style_reference") or "")[:12000]
-        settings = project["settings"]
-        if settings.get("script_engine") not in ("gemini", "claude"):
-            settings["script_engine"] = "gemini"
-        cl = settings["claude"]
+        script = project["settings"]["script"]
+        script["tone"] = tones.normalize(script.get("tone")) or tones.DEFAULT_TONE
+        if script.get("narration_type") not in ("first_person", "third_person"):
+            script["narration_type"] = "first_person"
+        script["style_reference"] = str(script.get("style_reference") or "")[:12000]
+        cl = project["settings"]["claude"]
         cl["series_brief"] = str(cl.get("series_brief") or "")[:12000]
         for key in ("comprehension_model", "narration_model"):
             if cl.get(key) not in claude_cli.MODELS:

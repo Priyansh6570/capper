@@ -47,13 +47,11 @@
       "file": null
     }
   },
-  "gemini": {
+  "script": {
     "tone": "comedic",
     "narration_type": "first_person",
-    "style_reference": "",
-    "model": "gemini-3.1-pro-preview"
+    "style_reference": ""
   },
-  "script_engine": "claude",
   "claude": {
     "comprehension_model": "sonnet",
     "narration_model": "sonnet",

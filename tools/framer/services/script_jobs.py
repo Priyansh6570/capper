@@ -118,7 +118,7 @@ def run_script_job(job: "Job") -> None:
             job.note(f"{len(panels)} panels ready ({time.monotonic() - split_started:.0f}s)")
             job.claude = {"pass": None, "panels_read": 0, "panels_total": len(panels), "current": None,
                           "pass1": None, "pass2": None, "total": None}
-            voice = settings["gemini"]
+            voice = settings["script"]
             tone = projects.chapter_tone(projects.load(slug), ch_no)
             job.note(f"Tone: {tones.TONES[tone]['label']}")
             style = [narration_voice(tone, voice["narration_type"])]

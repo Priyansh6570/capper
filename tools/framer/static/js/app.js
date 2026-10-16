@@ -2937,7 +2937,7 @@ function chapterActionsHtml(ch) {
 const TONE_LABELS = { epic: 'Epic', serious: 'Serious', dramatic: 'Dramatic', comedic: 'Comedic' };
 
 function toneSelectHtml(ch) {
-  const inherited = TONE_LABELS[CURRENT_PROJECT.settings.gemini.tone];
+  const inherited = TONE_LABELS[CURRENT_PROJECT.settings.script.tone];
   const options = [`<option value="" ${ch.tone ? '' : 'selected'}>Project default (${inherited})</option>`,
     ...Object.entries(TONE_LABELS).map(([id, label]) => `<option value="${id}" ${ch.tone === id ? 'selected' : ''}>${label}</option>`)];
   return `<label class="chtone" title="Tone of this chapter's script and narration voice">Tone<select data-tone>${options.join('')}</select></label>`;
@@ -3505,10 +3505,10 @@ function fillSettingsForm() {
   $('animZoomAmountLbl').textContent = `${(+$('animZoomAmount').value / 100).toFixed(2)}x`;
   $('framingBlur').checked = !!(s.framing || {}).blur_text;
 
-  const gm = s.gemini || {};
-  $('geminiTone').value = gm.tone || 'dramatic';
-  $('geminiNarrationType').value = gm.narration_type || 'first_person';
-  $('geminiStyleRef').value = gm.style_reference || '';
+  const sc = s.script || {};
+  $('scriptTone').value = sc.tone || 'dramatic';
+  $('scriptNarrationType').value = sc.narration_type || 'first_person';
+  $('scriptStyleRef').value = sc.style_reference || '';
   const cl = s.claude || {};
   $('claudeBrief').value = cl.series_brief || '';
   $('claudeComprehensionModel').value = cl.comprehension_model || 'opus';
@@ -3624,10 +3624,10 @@ function currentSettingsFromForm() {
       zoom_amount: (+$('animZoomAmount').value) / 100,
     },
     framing: { blur_text: $('framingBlur').checked },
-    gemini: {
-      tone: $('geminiTone').value,
-      narration_type: $('geminiNarrationType').value,
-      style_reference: $('geminiStyleRef').value,
+    script: {
+      tone: $('scriptTone').value,
+      narration_type: $('scriptNarrationType').value,
+      style_reference: $('scriptStyleRef').value,
     },
     claude: {
       series_brief: $('claudeBrief').value,
@@ -4070,9 +4070,9 @@ $('animZoomAmount').oninput = () => {
 };
 $('framingBlur').onchange = saveSettingsDebounced;
 ['wmOpacity', 'wmSize', 'wmSpacing', 'wmAngle', 'bgDim', 'animDuration'].forEach(id => { $(id).oninput = saveSettingsDebounced; });
-$('geminiTone').onchange = saveSettingsDebounced;
-$('geminiNarrationType').onchange = saveSettingsDebounced;
-$('geminiStyleRef').oninput = saveSettingsDebounced;
+$('scriptTone').onchange = saveSettingsDebounced;
+$('scriptNarrationType').onchange = saveSettingsDebounced;
+$('scriptStyleRef').oninput = saveSettingsDebounced;
 $('claudeBrief').oninput = saveSettingsDebounced;
 $('claudeComprehensionModel').onchange = saveSettingsDebounced;
 $('claudeNarrationModel').onchange = saveSettingsDebounced;
