@@ -7,7 +7,7 @@
 <link rel="icon" type="image/png" href="/assets/ReCapper.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/static/css/app.css">
 </head>
 <body class="light">
@@ -163,18 +163,19 @@
         </div>
         <div class="batchcard" id="batchCard" hidden>
           <div class="batchhead">
+            <button class="ghost icon small chev" data-fold="batchCard" data-icon="chevdown" data-ic-size="14" aria-expanded="true" title="Collapse the pipeline"></button>
             <div class="bhtitle">
-              <button class="ghost icon small chev" data-fold="batchCard" data-icon="chevdown" data-ic-size="14" aria-expanded="true" title="Collapse the pipeline"></button>
-              <h2>Pipeline</h2><span class="bpill" id="batchPill"></span><span class="workingnote" data-working hidden></span>
+              <div class="bhline"><h2>Pipeline</h2><span class="bpill" id="batchPill"></span><span class="workingnote" data-working hidden></span></div>
+              <span class="bsub" id="batchSub"></span>
             </div>
+            <div class="bstats" id="batchStats"></div>
             <div class="macts">
               <button id="batchPauseBtn" class="small ghost"><span>Pause</span></button>
               <button id="batchCancelBtn" class="small danger" data-icon="stop" data-ic-size="13"><span>Cancel</span></button>
+              <button id="batchNextBtn" class="small ghost" hidden><span></span></button>
+              <button id="batchDismissBtn" class="small plain" hidden><span>Dismiss</span></button>
             </div>
           </div>
-          <div class="bstats" id="batchStats"></div>
-          <div class="bmeters" id="batchMeters"></div>
-          <div class="blanes" id="batchLanes"></div>
           <div class="batchhold" id="batchHold" hidden>
             <span class="holdtext" id="batchHoldText"></span>
             <div class="macts">
@@ -182,7 +183,18 @@
               <button id="batchContinueBtn" class="small ghost"><span>Continue anyway</span></button>
             </div>
           </div>
-          <div id="batchList"></div>
+          <div class="brail" id="batchLanes"></div>
+          <div class="bresults" id="batchResults" hidden></div>
+          <div class="bsection bwhere" id="batchWhere"></div>
+          <div class="bsection" id="batchTimeline"></div>
+          <div class="bsplit">
+            <div class="bsection" id="batchActivity"></div>
+            <div class="bsection" id="batchMeters"></div>
+          </div>
+          <details class="bdetails" id="batchDetails">
+            <summary>Chapter details</summary>
+            <div id="batchList"></div>
+          </details>
         </div>
         <div class="chaptercard" id="chaptersCard">
           <div class="chaptercardhead">

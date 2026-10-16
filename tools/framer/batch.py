@@ -172,6 +172,7 @@ class Batch:
                 if chapter:
                     chapter.update(state="running", error=None, stage_started_at=_now(),
                                    started_at=chapter["started_at"] or _now())
+                    chapter.setdefault("stage_spans", {})[stage] = [time.time(), None]
                     self._live[chapter["n"]] = {"started": time.time()}
                     self._warnings.pop(chapter["n"], None)
                     self._busy.add(chapter["n"])
@@ -200,6 +201,9 @@ class Batch:
             self.log(n, f"== {stage} failed: {error} ==" if error else f"== {stage} finished in {seconds:.0f}s ==")
             chapter["stage_seconds"][stage] = round(chapter["stage_seconds"].get(stage, 0) + seconds, 1)
             chapter["stage_started_at"] = None
+            span = chapter.setdefault("stage_spans", {}).get(stage)
+            if span:
+                span[1] = time.time()
             started = self._live.get(n, {}).get("started", 0)
             if self.status == "cancelled":
                 chapter["state"] = "cancelled"
@@ -422,7 +426,8 @@ def _new_chapter(env: BatchEnv, n: int, plan: list[str]) -> dict:
     with env.scope(n):
         completed = [s for s in env.done_stages(n) if s not in plan]
     chapter = {"n": n, "plan": plan, "completed": completed, "stage": None, "state": "queued", "error": None,
-               "started_at": None, "finished_at": None, "stage_started_at": None, "stage_seconds": {}}
+               "started_at": None, "finished_at": None, "stage_started_at": None, "stage_seconds": {},
+               "stage_spans": {}}
     _advance(chapter, None, review=False)
     return chapter
 

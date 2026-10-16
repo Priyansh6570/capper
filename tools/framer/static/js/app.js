@@ -2045,50 +2045,11 @@ function dayAndTime(epoch) {
     : when.toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' });
 }
 
-function statTile(label, value, sub) {
-  return `<div class="bstat"><span class="k">${label}</span><span class="v">${value}</span><span class="s">${sub || '&nbsp;'}</span></div>`;
-}
-
 function claudeTotals(chapters) {
   return chapters.reduce((sum, c) => {
     if (c.claude) for (const k of ['input', 'output', 'seconds', 'cost_usd']) sum[k] += c.claude[k] || 0;
     return sum;
   }, { input: 0, output: 0, seconds: 0, cost_usd: 0 });
-}
-
-function batchStatsHtml(data) {
-  const live = ['running', 'paused'].includes(data.status);
-  const done = data.chapters.filter(c => c.state === 'done').length;
-  const failed = data.chapters.filter(c => c.state === 'failed').length;
-  const claude = claudeTotals(data.chapters);
-  const clock = `<span data-since="${data.created_at}" data-until="${data.finished_at || ''}"></span>`;
-  const left = live && data.finish_at
-    ? statTile('Time left', `<span data-left="${data.finish_at}"></span>`,
-        `done about ${dayAndTime(data.finish_at)}${data.hold ? ' · includes the usage wait' : ''}`)
-    : statTile('Time left', '-', live ? 'working it out' : '');
-  return statTile('Pipeline clock', clock, live ? 'since you started it' : 'total time') + left +
-    statTile('Chapters', `${done}/${data.chapters.length}`, failed ? `${failed} failed` : 'complete') +
-    statTile('Claude', fmtTokens(claude.input + claude.output), claude.seconds
-      ? `${fmtTokens(claude.output)} out · ${clockSeconds(claude.seconds)} of Claude time` : 'tokens so far');
-}
-
-function meterHtml(window, usage, limit) {
-  const u = usage[window];
-  if (!u) return `<div class="bmeter"><div class="top"><span><b>${WINDOW_LABELS[window]}</b> usage</span><span>no reading yet</span></div><div class="track"></div></div>`;
-  const hot = u.percent >= limit;
-  return `<div class="bmeter"><div class="top"><span><b>${WINDOW_LABELS[window]}</b> usage ${Math.round(u.percent)}%</span>` +
-    `<span>limit ${limit}% · resets ${dayAndTime(u.resets_at)} (in <span data-left="${u.resets_at}"></span>)</span></div>` +
-    `<div class="track"><div class="fill ${hot ? 'hot' : ''}" style="width:${Math.min(100, u.percent)}%"></div>` +
-    `<div class="limit" style="left:${limit}%"></div></div></div>`;
-}
-
-function lanesHtml(data) {
-  return BATCH_STAGES.map(stage => {
-    const here = data.chapters.filter(c => c.stage === stage);
-    const running = here.find(c => c.state === 'running' || c.state === 'waiting');
-    const queued = here.filter(c => c.state === 'queued').length;
-    return `<span class="blane ${running ? 'busy' : ''}"><b>${stage}</b> ${running ? '#' + running.n : '-'}${queued ? ` · ${queued} waiting` : ''}</span>`;
-  }).join('');
 }
 
 function holdText(hold) {
@@ -2179,29 +2140,301 @@ function batchChapterHtml(c) {
   </div>`;
 }
 
+const STAGE_HUE = { download: 250, stitch: 190, script: 40, export: 320, review: 95, audio: 70, video: 155 };
+const stageColor = (stage, alpha = 1) => `oklch(var(--pc-seg-l) var(--pc-seg-c) ${STAGE_HUE[stage]} / ${alpha})`;
+const GANTT_STEPS = [30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 14400];
+const GANTT_MAX_TICKS = 8;
+let BATCH_FILTER = 'all';
+
+const spanText = t => {
+  const s = Math.max(0, Math.round(t)), m = Math.floor(s / 60);
+  return m ? `${m}m ${String(s % 60).padStart(2, '0')}s` : `${s}s`;
+};
+const clockText = epoch => new Date(epoch * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+const money = usd => `$${usd.toFixed(2)}`;
+const sumOf = values => values.reduce((a, b) => a + b, 0);
+const epochOf = iso => Date.parse(iso) / 1000;
+const stagesOf = data => BATCH_STAGES.filter(s => data.chapters.some(c => c.plan.includes(s) || c.completed.includes(s) || c.stage === s));
+
+const dismissKey = () => `recapper.pipelineDismissed.${CURRENT_PROJECT.slug}`;
+function dismissedBatch() {
+  try { return localStorage.getItem(dismissKey()); } catch (_) { return null; }
+}
+function dismissBatch(createdAt) {
+  try { localStorage.setItem(dismissKey(), createdAt); } catch (_) { /* it just comes back on reload */ }
+}
+
+function statBlock(label, value, tone = '') {
+  return `<div class="bstat"><span class="k">${label}</span><span class="v ${tone}">${value}</span></div>`;
+}
+
+function batchStatsHtml(data, live) {
+  const done = data.chapters.filter(c => c.state === 'done').length;
+  const claude = claudeTotals(data.chapters);
+  const clock = `<span data-since="${data.created_at}" data-until="${data.finished_at || ''}"></span>`;
+  if (!live) {
+    return statBlock('Total', clock) + statBlock('Chapters', `${done}/${data.chapters.length}`, 'green') +
+      statBlock('Claude out', fmtTokens(claude.output)) + statBlock('API-equiv.', money(claude.cost_usd));
+  }
+  const left = data.finish_at ? `~<span data-left="${data.finish_at}"></span>` : '-';
+  return statBlock('Elapsed', clock) + statBlock('Time left', left, 'blue') +
+    statBlock('Done', `${done}/${data.chapters.length}`) + statBlock('ETA', data.finish_at ? dayAndTime(data.finish_at) : '-');
+}
+
+function batchSubText(data, live) {
+  const total = data.chapters.length, done = data.chapters.filter(c => c.state === 'done').length;
+  if (live) return `${total} chapter${total === 1 ? '' : 's'} in parallel · started ${dayAndTime(epochOf(data.created_at))}`;
+  const when = data.finished_at ? ` · finished ${dayAndTime(epochOf(data.finished_at))}` : '';
+  return data.status === 'cancelled' ? `Cancelled · ${done} of ${total} chapters rendered${when}` : `${done} of ${total} chapters rendered${when}`;
+}
+
+function stageAverages(chapters) {
+  const lengths = {};
+  for (const c of chapters) {
+    for (const [stage, [start, end]] of Object.entries(c.stage_spans || {})) {
+      if (end !== null) (lengths[stage] ||= []).push(end - start);
+    }
+  }
+  return Object.fromEntries(Object.entries(lengths).map(([stage, list]) => [stage, sumOf(list) / list.length]));
+}
+
+function railHtml(data) {
+  const avg = stageAverages(data.chapters), total = data.chapters.length;
+  return stagesOf(data).map(stage => {
+    const here = data.chapters.filter(c => c.stage === stage && ['running', 'waiting'].includes(c.state)).length;
+    const passed = data.chapters.filter(c => c.completed.includes(stage)).length;
+    const failed = data.chapters.filter(c => c.stage === stage && c.state === 'failed').length;
+    const wait = total - here - passed;
+    const cls = here ? 'on' : passed === total ? 'all' : passed ? 'some' : '';
+    const count = here ? `<span class="pdot"></span>${here}` : passed === total ? '✓' : passed ? '' : '—';
+    const meta = passed === total && avg[stage] ? `avg ${spanText(avg[stage])}`
+      : `${passed}✓ · ${wait} wait${failed ? ` · ${failed} failed` : ''}`;
+    const bar = [[passed, 'var(--pc-green)'], [here, 'var(--pc-blue)'], [wait, 'transparent']]
+      .map(([grow, color]) => `<i style="flex-grow:${grow};background:${color}"></i>`).join('');
+    return `<div class="bstep ${cls}"><div class="top"><span class="name">${stage}</span><span class="count">${count}</span></div>` +
+      `<div class="bar">${bar}</div><span class="meta">${meta}</span></div>`;
+  }).join('');
+}
+
+// What a chapter's row draws: the stages that ran, the running one with its estimated remainder,
+// and (while the pipeline is live) the stages still to come, sized by the average of finished ones.
+function chapterSegments(c, now, avg, live) {
+  const spans = c.stage_spans || {};
+  const segs = [];
+  for (const stage of BATCH_STAGES) {
+    const span = spans[stage];
+    if (!span) continue;
+    const running = span[1] === null && c.state === 'running' && c.stage === stage;
+    segs.push({ stage, start: span[0], end: span[1] ?? (running ? now : span[0]), kind: running ? 'run' : 'done' });
+  }
+  if (!live || !['queued', 'running'].includes(c.state)) return segs;
+  const current = segs.find(s => s.kind === 'run');
+  if (current && avg[current.stage] > current.end - current.start) {
+    segs.push({ stage: current.stage, start: now, end: current.start + avg[current.stage], kind: 'est' });
+  }
+  let at = Math.max(now, ...segs.map(s => s.end));
+  for (const stage of BATCH_STAGES.filter(s => c.plan.includes(s) && !c.completed.includes(s) && !spans[s])) {
+    if (!avg[stage]) break;
+    segs.push({ stage, start: at, end: at + avg[stage], kind: 'plan' });
+    at += avg[stage];
+  }
+  return segs;
+}
+
+function segmentHtml(s, origin, span) {
+  const left = (s.start - origin) / span * 100, width = (s.end - s.start) / span * 100;
+  const look = {
+    est: [`repeating-linear-gradient(135deg,${stageColor(s.stage, .4)} 0 4px,transparent 4px 8px)`, `1px solid ${stageColor(s.stage, .5)}`],
+    plan: ['transparent', `1px dashed ${stageColor(s.stage, .5)}`],
+    run: [stageColor(s.stage), '0'],
+    done: [stageColor(s.stage, .95), '0'],
+  }[s.kind];
+  const solid = s.kind === 'run' || s.kind === 'done';
+  const note = { est: ' left (est.)', plan: ' (est.)', run: ' running', done: '' }[s.kind];
+  return `<div class="gseg" title="${s.stage} · ${spanText(s.end - s.start)}${note}" style="left:${left}%;width:${width}%;background:${look[0]};border:${look[1]}">` +
+    `${solid && width >= 5 ? s.stage : ''}</div>`;
+}
+
+function rowStatus(c) {
+  const progress = c.job && c.job.status === 'running' && c.job.progress ? ` ${Math.round(c.job.progress * 100)}%` : '';
+  if (c.state === 'done') return ['done', '✓ done'];
+  if (c.state === 'failed') return ['bad', `${c.stage} failed`];
+  if (c.state === 'waiting') return ['wait', 'review'];
+  if (c.state === 'cancelled') return ['', 'cancelled'];
+  return ['', c.state === 'queued' ? `${c.stage} · queued` : `${c.stage}${progress}`];
+}
+
+function timelineRowHtml(c, segs, geometry, live, now) {
+  const [tone, label] = rowStatus(c);
+  const ch = CURRENT_PROJECT.chapters.find(x => x.n === c.n);
+  const status = !live && c.state === 'done' && ch && ch.duration != null ? `${spanText(ch.duration)} video` : label;
+  const first = segs.length ? Math.min(...segs.map(s => s.start)) : now;
+  const worked = sumOf(segs.filter(s => ['done', 'run'].includes(s.kind)).map(s => s.end - s.start));
+  const top = c.state === 'done' ? spanText(worked) : live ? spanText(now - first) : spanText(worked);
+  const last = Math.max(0, ...segs.map(s => s.end));
+  const bottom = c.state === 'done' ? timeOfDay(last) : live && c.finish_at ? `~${spanText(c.finish_at - now)}` : '';
+  return `<div class="grow4 line"><span class="ch">${c.n}</span><span class="st ${tone}">${escHtml(status)}</span>` +
+    `<div class="gtrack" style="background-size:${geometry.step / geometry.span * 100}% 100%">${segs.map(s => segmentHtml(s, geometry.origin, geometry.span)).join('')}</div>` +
+    `<span class="tm"><b>${top}</b> <span>${bottom}</span></span></div>`;
+}
+
+function timelineHtml(data, live, now) {
+  const avg = stageAverages(data.chapters);
+  const all = data.chapters.map(c => ({ c, segs: chapterSegments(c, now, avg, live) }));
+  const ends = all.flatMap(r => r.segs.map(s => s.end));
+  const origin = Math.min(epochOf(data.created_at), ...all.flatMap(r => r.segs.map(s => s.start)));
+  const last = Math.max(origin + 1, ...ends, live ? now : 0);
+  const step = GANTT_STEPS.find(s => (last - origin) / s <= GANTT_MAX_TICKS) || GANTT_STEPS[GANTT_STEPS.length - 1];
+  const span = Math.ceil((last - origin) / step) * step;
+  const geometry = { origin, span, step };
+  const running = all.filter(r => !['done', 'failed', 'cancelled'].includes(r.c.state));
+  const finished = all.filter(r => r.c.state === 'done');
+  const shown = !live || BATCH_FILTER === 'all' ? all : BATCH_FILTER === 'done' ? finished : running;
+  const filters = live ? `<div class="bfilters">${[['all', 'All', all.length], ['run', 'Running', running.length], ['done', 'Done', finished.length]]
+    .map(([key, label, count]) => `<button data-filter="${key}" class="${BATCH_FILTER === key ? 'on' : ''}">${label} <span>${count}</span></button>`).join('')}</div>` : '';
+  const sub = live ? 'hatched = estimate' : `${spanText(last - origin)} wall clock for ${spanText(sumOf(data.chapters.map(c => sumOf(Object.values(c.stage_seconds)))))} of work`;
+  const legend = stagesOf(data).map(s => `<span><i style="background:${stageColor(s, .95)}"></i>${s}</span>`).join('');
+  const ticks = Array.from({ length: span / step }, (_, i) =>
+    `<span style="left:${i * step / span * 100}%">${i ? (step * i >= 3600 && step % 3600 === 0 ? `${step * i / 3600}h` : step < 60 ? `${step * i}s` : `${step * i / 60}m`) : '0'}</span>`).join('');
+  const nowMark = live ? `<div class="gnow" style="left:calc(204px + (100% - 368px) * ${(now - origin) / span})"><span>now</span></div>` : '';
+  return `<div class="bhead"><b>Timeline</b>${filters}<span class="sub">${sub}</span><span class="grow"></span><div class="blegend">${legend}</div></div>` +
+    `<div class="gantt"><div class="grow4 axis"><span>CH</span><span>STAGE</span><div class="gticks">${ticks}</div><span style="text-align:right">ELAPSED · LEFT</span></div>` +
+    `${shown.map(r => timelineRowHtml(r.c, r.segs, geometry, live, now)).join('')}${nowMark}</div>`;
+}
+
+function activityHtml(data) {
+  const events = data.chapters.flatMap(c => [
+    ...Object.entries(c.stage_spans || {}).filter(([, span]) => span[1] !== null)
+      .map(([stage, span]) => ({ at: span[1], n: c.n, text: `${stage} ✓`, dur: spanText(span[1] - span[0]), tone: stage === 'video' ? 'ok' : '' })),
+    ...(c.state === 'failed' && c.finished_at ? [{ at: epochOf(c.finished_at), n: c.n, text: `${c.stage} failed`, dur: '', tone: 'bad' }] : []),
+  ]).sort((a, b) => b.at - a.at).slice(0, 8);
+  const rows = events.map(e => `<div class="${e.tone}"><span>${clockText(e.at)}</span><span>ch ${e.n}</span><span>${escHtml(e.text)}</span><span>${e.dur}</span></div>`).join('');
+  return `<div class="bhead"><b>Activity</b><span class="grow"></span><span class="sub">Full logs are under Chapter details</span></div>` +
+    `<div class="blog2">${rows || '<div><span></span><span></span><span>Nothing has finished yet.</span><span></span></div>'}</div>`;
+}
+
+function claudeSummaryHtml(data, live) {
+  const u = claudeTotals(data.chapters);
+  const fields = live
+    ? [['Tokens out', fmtTokens(u.output)], ['Claude time', spanText(u.seconds)], ['API-equivalent', money(u.cost_usd)]]
+    : [['Tokens in', fmtTokens(u.input)], ['Tokens out', fmtTokens(u.output)], ['Claude time', spanText(u.seconds)], ['API-equivalent', money(u.cost_usd)]];
+  return live ? `<div class="bclaudes">${fields.map(([k, v]) => `<div><span>${k}</span><b>${v}</b></div>`).join('')}</div>`
+    : `<div class="bhead"><b>Claude this run</b></div>${fields.map(([k, v]) => `<div class="bfact"><span>${k}</span><span>${v}</span></div>`).join('')}` +
+      '<span class="bnote">API-equivalent cost, not charged on a subscription.</span>';
+}
+
+function meterHtml(window, usage, limit) {
+  const u = usage[window], label = `<b>${WINDOW_LABELS[window]}</b> usage`;
+  if (!u) return `<div class="bmeter"><div class="top"><span>${label}</span><span>no reading yet</span></div><div class="track"></div></div>`;
+  const hot = u.percent >= limit;
+  return `<div class="bmeter"><div class="top"><span>${label} <span class="pct ${hot ? 'hot' : ''}">${Math.round(u.percent)}%</span></span>` +
+    `<span>limit ${limit}% · resets ${dayAndTime(u.resets_at)} (in <span data-left="${u.resets_at}"></span>)</span></div>` +
+    `<div class="track"><div class="fill ${hot ? 'hot' : ''}" style="width:${Math.min(100, u.percent)}%"></div><div class="limit" style="left:${limit}%"></div></div></div>`;
+}
+
+function metersHtml() {
+  return ['five_hour', 'seven_day'].map(w => meterHtml(w, BATCH.usage, BATCH.thresholds[w === 'five_hour' ? 'five_hour_pct' : 'seven_day_pct'])).join('');
+}
+
+function resultsHtml(data) {
+  const done = data.chapters.filter(c => c.state === 'done');
+  const cards = done.map(c => {
+    const ch = CURRENT_PROJECT.chapters.find(x => x.n === c.n), on = SELECTION.has(c.n);
+    const segs = BATCH_STAGES.filter(s => c.stage_seconds[s]).map(s =>
+      `<i title="${s} · ${spanText(c.stage_seconds[s])}" style="flex-grow:${c.stage_seconds[s]};background:${stageColor(s, .95)}"></i>`).join('');
+    return `<div class="bvideo ${on ? 'on' : ''}" data-n="${c.n}"><div class="thumb">` +
+      `<div class="cb" data-act="toggle" title="Select for merge">${on ? '✓' : ''}</div><button class="play" data-act="open" title="Open in the editor">▶</button>` +
+      `${ch && ch.duration != null ? `<span class="len">${spanText(ch.duration)}</span>` : ''}</div>` +
+      `<div class="body"><div class="line"><b>Chapter ${c.n}</b><span>${spanText(sumOf(Object.values(c.stage_seconds)))}</span></div>` +
+      `<div class="segs">${segs}</div><div class="btns"><button class="soft" data-act="open">Editor</button>` +
+      `<span class="cost">${c.claude ? money(c.claude.cost_usd) : ''}</span></div></div></div>`;
+  }).join('');
+  return `<div class="bhead"><b>${done.length} video${done.length === 1 ? '' : 's'} ready</b><span class="sub">Tick videos to merge them</span><span class="grow"></span>` +
+    `<button class="plainbtn" data-act="all">Select all</button><button class="plainbtn" data-act="none">Clear</button></div><div class="bvideos">${cards}</div>`;
+}
+
+function whereTimeHtml(data) {
+  const stages = stagesOf(data).filter(s => data.chapters.some(c => c.stage_seconds[s]));
+  const totals = stages.map(s => sumOf(data.chapters.map(c => c.stage_seconds[s] || 0)));
+  const all = sumOf(totals);
+  if (!all) return '';
+  const bar = stages.map((s, i) => `<i title="${s} · ${spanText(totals[i])}" style="flex-grow:${totals[i]};background:${stageColor(s, .95)}"></i>`).join('');
+  const cols = stages.map((s, i) => {
+    const share = totals[i] / all * 100, count = data.chapters.filter(c => c.stage_seconds[s]).length;
+    return `<div style="border-color:${stageColor(s, .95)}"><span>${s}</span><b>${spanText(totals[i])}</b><em>${share.toFixed(share < 1 ? 1 : 0)}% · avg ${spanText(totals[i] / count)}</em></div>`;
+  }).join('');
+  return `<div class="bhead"><b>Where the time went</b><span class="sub">${spanText(all)} of work across ${data.chapters.length} chapters</span></div>` +
+    `<div class="bar">${bar}</div><div class="cols">${cols}</div>`;
+}
+
+function nextChapters(data) {
+  const last = Math.max(...data.chapters.map(c => c.n));
+  return CURRENT_PROJECT.chapters.filter(c => c.n > last && c.status === 'not_started').slice(0, data.chapters.length).map(c => c.n);
+}
+
+const attentionKey = data => data.chapters.filter(c => ['failed', 'waiting'].includes(c.state)).map(c => `${c.n}:${c.state}`).join(',');
+let lastAttention = '';
+
 function renderBatch() {
   const data = BATCH && BATCH.batch;
-  $('batchCard').hidden = !data;
+  const live = batchActive();
+  const hidden = !data || (!live && dismissedBatch() === data.created_at);
+  $('batchCard').hidden = hidden;
   paintWorking();
   paintActionStates();
-  if (!data) return;
+  if (hidden) return;
+  const now = Date.now() / 1000, next = live ? [] : nextChapters(data);
   const pill = $('batchPill');
   pill.textContent = data.hold ? 'waiting for usage reset' : data.status;
   pill.className = `bpill ${data.hold ? 'paused' : data.status}`;
-  $('batchStats').innerHTML = batchStatsHtml(data);
-  $('batchMeters').innerHTML = ['five_hour', 'seven_day'].map(w => meterHtml(w, BATCH.usage, BATCH.thresholds[w === 'five_hour' ? 'five_hour_pct' : 'seven_day_pct'])).join('');
-  $('batchLanes').innerHTML = lanesHtml(data);
+  $('batchSub').textContent = batchSubText(data, live);
+  $('batchStats').innerHTML = batchStatsHtml(data, live);
   $('batchPauseBtn').querySelector('span').textContent = data.status === 'paused' ? 'Resume' : 'Pause';
-  $('batchPauseBtn').disabled = $('batchCancelBtn').disabled = !batchActive();
+  $('batchPauseBtn').hidden = $('batchCancelBtn').hidden = !live;
+  $('batchNextBtn').hidden = live || !next.length;
+  $('batchNextBtn').querySelector('span').textContent = `Run next ${next.length} →`;
+  $('batchNextBtn').dataset.chapters = next.join(',');
+  $('batchDismissBtn').hidden = live;
   $('batchHold').hidden = !data.hold;
   if (data.hold) {
     $('batchHoldText').innerHTML = holdText(data.hold);
     $('batchWaitBtn').hidden = data.hold.choice === 'wait';
   }
+  $('batchLanes').innerHTML = live ? railHtml(data) : '';
+  const finished = !live && data.chapters.some(c => c.state === 'done');
+  $('batchResults').hidden = !finished;
+  $('batchResults').innerHTML = finished ? resultsHtml(data) : '';
+  $('batchWhere').innerHTML = finished ? whereTimeHtml(data) : '';
+  $('batchTimeline').innerHTML = timelineHtml(data, live, now);
+  $('batchActivity').innerHTML = live ? activityHtml(data) : claudeSummaryHtml(data, false);
+  $('batchMeters').innerHTML = `<div class="bmeters">${live ? claudeSummaryHtml(data, true) : ''}${metersHtml()}</div>`;
   rememberBatchLogs();
   $('batchList').innerHTML = data.chapters.map(batchChapterHtml).join('');
   restoreBatchLogs();
+  const attention = attentionKey(data);
+  if (attention && attention !== lastAttention) $('batchDetails').open = true;
+  lastAttention = attention;
   tickBatchClocks();
+  wireBatch();
+  refreshProjectWhenStepsFinish(data);
+}
+
+function wireBatch() {
+  $('batchTimeline').querySelectorAll('[data-filter]').forEach(btn => {
+    btn.onclick = () => { BATCH_FILTER = btn.dataset.filter; renderBatch(); };
+  });
+  $('batchResults').querySelectorAll('[data-act]').forEach(el => {
+    el.onclick = () => {
+      const n = +el.closest('.bvideo')?.dataset.n;
+      if (el.dataset.act === 'open') return navTo({ project: CURRENT_PROJECT.slug, chapter: n });
+      const done = BATCH.batch.chapters.filter(c => c.state === 'done').map(c => c.n);
+      if (el.dataset.act === 'toggle') SELECTION.has(n) ? SELECTION.delete(n) : SELECTION.add(n);
+      else done.forEach(x => el.dataset.act === 'all' ? SELECTION.add(x) : SELECTION.delete(x));
+      selectionAnchor = null;
+      paintSelection();
+      renderBatch();
+    };
+  });
   $('batchList').querySelectorAll('[data-act]').forEach(btn => {
     const n = +btn.closest('.bchap').dataset.n;
     btn.onclick = () => {
@@ -2214,7 +2447,6 @@ function renderBatch() {
     const n = +chip.closest('.bchap').dataset.n, stage = chip.dataset.stage;
     chip.onclick = () => openPipelineModal([n], PIPELINE_STEPS.indexOf(stage));
   });
-  refreshProjectWhenStepsFinish(data);
 }
 
 let batchStepCount = null;   // finished steps seen by the last poll; null until the first poll sets the baseline
@@ -2256,6 +2488,8 @@ $('batchPauseBtn').onclick = () => batchCall(BATCH.batch.status === 'paused' ? '
 $('batchCancelBtn').onclick = async () => {
   if (await askConfirm({ title: 'Cancel the pipeline?', body: 'Running steps are stopped. Finished steps are kept, and you can run any step again from the chapter cards.', confirmLabel: 'Cancel pipeline' })) batchCall('/cancel');
 };
+$('batchNextBtn').onclick = () => openPipelineModal($('batchNextBtn').dataset.chapters.split(',').map(Number));
+$('batchDismissBtn').onclick = () => { dismissBatch(BATCH.batch.created_at); renderBatch(); };
 $('batchWaitBtn').onclick = () => batchCall('/usage', { choice: 'wait' });
 $('batchContinueBtn').onclick = () => batchCall('/usage', { choice: 'continue' });
 

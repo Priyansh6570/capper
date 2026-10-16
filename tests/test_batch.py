@@ -1,7 +1,11 @@
 """A saved batch must still load after a pipeline step was removed."""
 from __future__ import annotations
 
+import contextlib
+import tempfile
+import threading
 import unittest
+from pathlib import Path
 
 import batch
 
@@ -40,6 +44,30 @@ class RetiredStageTest(unittest.TestCase):
         chapter = saved_chapter(plan=["download", "split"], completed=["download"])
         batch._drop_retired_stages(chapter)
         self.assertEqual((chapter["state"], chapter["stage"]), ("done", None))
+
+
+class StageSpanTest(unittest.TestCase):
+    def run_one_chapter(self, plan: list[str]) -> dict:
+        env = batch.BatchEnv(
+            runners={stage: (lambda b, n: None) for stage in batch.LANE_STAGES},
+            scope=lambda n: contextlib.nullcontext(), done_stages=lambda n: [], review_enabled=lambda: False,
+            thresholds=lambda: {"five_hour": 100, "seven_day": 100}, auto_wait=lambda: False,
+            cancel_job=lambda job: None, notify=lambda title, message: None, claude_total=lambda n: None,
+            usage=lambda: {})
+        with tempfile.TemporaryDirectory() as tmp:
+            run = batch.Batch.create(Path(tmp) / "batch.json", env, {1: plan})
+            for _ in range(200):
+                if run.status == "finished":
+                    break
+                threading.Event().wait(0.05)
+            run.close()
+            return run.chapters[0]
+
+    def test_every_run_stage_records_when_it_started_and_ended(self):
+        chapter = self.run_one_chapter(["download", "stitch"])
+        self.assertEqual(sorted(chapter["stage_spans"]), ["download", "stitch"])
+        for start, end in chapter["stage_spans"].values():
+            self.assertLessEqual(start, end)
 
 
 if __name__ == "__main__":
