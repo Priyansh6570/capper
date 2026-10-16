@@ -1,28 +1,28 @@
 # Work log
 
-Slow project page, slow pipeline modal, refetch on returning from settings, and thousands of empty folders.
+Performance and structure refactor, on branch `perf-refactor` (not pushed). One commit per step:
 
-**Cause:** `GET /api/projects/<slug>` re-read and re-parsed the whole `project.json` once per chapter (564 times for the
-mgeko project, 13 s), and every chapter got its detail computed and its folders created on each read.
+| Commit | What |
+|---|---|
+| `c08eba4` (main) | All earlier uncommitted work, as-is |
+| `fe8b521` | Tests: project loading, chapter state, bulk download/resume, pipeline step data, bulk actions, delete |
+| `8d03220` | Each chapter's state in its own `chapters/<n>/chapter.json`; `project.json` keeps the chapter index; automatic migration |
+| `1f75885` | Cached per-project totals (speaking pace, Claude tokens), keyed by the files they come from |
+| `24b6c75` | Job/batch polling pauses while the tab is hidden and resumes at once |
+| `a4014be` | App runs on waitress (`make_server`), `waitress` in requirements.txt |
+| `2a09376` | Select all / range select cover every chapter; details loaded on demand |
+| `eb22f82` | `app.py` split into `routes/` (blueprints) and `services/` |
+| `bf3023e` | `index.html` split into HTML + `static/css/app.css` + `static/js/icons.js` + `static/js/app.js` |
+| `f218d94` | Fix: migration race that could replace the `project.json.v1` original |
 
-**Backend (`projects.py`, `app.py`):**
-- `projects.derive_all`: one load and at most one save for all chapters (was one per chapter).
-- `GET /api/projects/<slug>?limit=N`: every chapter gets its stored fields and status, but the costly detail (tone,
-  narration estimate, video length, steps, thumbnail) only for the first N. 13 s -> about 0.4 s.
-- Path getters no longer create folders: `chapter_work_path` / `chapter_output_path` are pure, `chapter_work_dir` /
-  `chapter_output_dir` create. `_framer_dir` and `_claude_state_path` are pure and the writers (upload, export, editor
-  save, script job) create their folder with `_ensure_dir`. Reading the list now creates no folders; a chapter gets its
-  folders only when something is written for it (download, editor save, pipeline).
+**Storage:** chapter files exist only for chapters with progress, in the project folder (the Drive folder for shared
+projects), so two people saving different chapters never write the same file. Status changes no longer touch
+`project.json`. Schema 1 projects migrate on first load (original kept as `project.json.v1`). The real projects have
+already migrated; `project.json.v1` of `my-disciples-are-all-big-villains` is not the original (see fix commit); its chapter
+data is intact.
 
-**Frontend (`index.html`):**
-- Chapter list shows 50 at a time with a "Show 50 more" button (`CHAPTER_PAGE`); select-all and range select cover the
-  shown chapters.
-- Pipeline modal opens at once with a spinner ("Checking each chapter's progress...") while the chapters load.
-- Returning from Project settings reuses the loaded project (refreshes in the background only after 60 s). The batch
-  poller no longer reloads the project on its first poll.
+**Tests:** `.venv\Scripts\python.exe -m unittest discover -s tests -t .` (85 tests, no new dependency).
 
-**Run next:** restart the app (done here). Empty folders from before can be removed with
-`find projects/<slug>/chapters -depth -type d -empty -delete` (already done for the mgeko project).
+**Not done in code:** `deps.py check` reports `google-genai` off-pin; it did before these changes.
 
-**Ideas not done:** cache the per-project aggregates, store only touched chapters in `project.json`, pause polling on
-hidden tabs, split `app.py`/`index.html`, production server, tests.
+**Empty chapter folders** were removed from every project under `projects/` (local, git-ignored, no commit).
