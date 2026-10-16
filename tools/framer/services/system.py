@@ -27,8 +27,6 @@ FEATURE_PACKAGES = {
     "beautifulsoup4": "chapter metadata lookup",
     "pystray": "the system tray icon",
     "python-dotenv": "reading saved API keys from .env",
-    "google-genai": "AI script generation (Settings -> Script generation)",
-    "keyring": "storing the Gemini API key in Windows Credential Manager instead of a plaintext file",
     "opencv-python-headless": "speech-bubble detection (Claude script engine)",
     "torch": "AI narration + GPU acceleration",
     "torchaudio": "AI narration + GPU acceleration",

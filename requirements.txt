@@ -20,17 +20,11 @@ webtoon-downloader>=2.4  # Framer's "Download PDF" button (webtoons.com chapters
 pystray>=0.19        # tools/framer/tray_launcher.py: system tray icon + Quit,
                      # the only way to stop the app now that start.bat launches
                      # it with no console window (see tray_launcher.py)
-python-dotenv>=1.0   # reads GEMINI_API_KEY (and GROQ_API_KEY/HF_TOKEN) from .env
+python-dotenv>=1.0   # reads GROQ_API_KEY/HF_TOKEN from .env
 opencv-python-headless>=4.10  # tools/framer/bubbles.py: speech-bubble detection (Claude script engine); no GUI calls used
 httpx>=0.27          # llm.py: Ollama backend
 groq>=0.9            # llm.py + stage 3: Groq backend
 huggingface_hub      # stage 6 / tools/predownload_tts_models.py: model cache + download
-# Pinned exactly: google-genai>=1.0 (its real floor) makes pip's resolver
-# explore a huge, slow range of pydantic/google-auth candidates alongside
-# chatterbox-tts's own heavy tree below - can take 10+ minutes or hit pip's
-# "resolution-too-deep" error. Pinning collapses that search to nothing.
-google-genai==2.25.0  # tools/framer/app.py: Gemini API script generation
-keyring>=25.0        # stores GEMINI_API_KEY in Windows Credential Manager, not plaintext
 
 # --- Stage 6: Chatterbox TTS, runs locally (GPU with CPU fallback) --------
 # torch/torchaudio are deliberately NOT listed here: PyPI's Windows wheels are

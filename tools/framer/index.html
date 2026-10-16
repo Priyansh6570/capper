@@ -347,25 +347,9 @@
         <div class="settingscontent">
 
           <div class="setcard" id="s-gemini">
-            <div class="setlabel"><b>Script generation</b><span>Auto-generate the narration script for a chapter. Gemini reads the chapter PDF through Google's API; Claude Code reads the split panels through your local Claude login. Tone and style below apply to both and are per-project; the Gemini API key is shared across all projects.</span></div>
+            <div class="setlabel"><b>Script generation</b><span>Auto-generate the narration script for a chapter. Claude Code reads the chapter's panels through your local Claude login. Tone and style below are per-project.</span></div>
             <div class="setbody">
-              <label class="field" style="margin:0 0 10px"><span class="lbl" style="text-transform:none;letter-spacing:0;font-weight:400;color:var(--muted)">Engine</span>
-                <select id="scriptEngine">
-                  <option value="gemini">Gemini API</option>
-                  <option value="claude">Claude Code (local, uses your Claude subscription)</option>
-                </select>
-              </label>
-              <div id="geminiKeyBlock">
-              <div class="filerow">
-                <input id="geminiKeyInput" type="password" placeholder="Paste your Gemini API key" style="flex:1;min-width:220px" autocomplete="off" />
-                <button type="button" id="geminiKeySaveBtn" class="small ghost" data-icon="check" data-ic-size="14"><span>Save key</span></button>
-                <button type="button" id="geminiKeyClearBtn" class="small ghost icon" data-icon="x" data-ic-size="12" title="Remove the saved key"></button>
-              </div>
-              <div class="hint" id="geminiKeyStatus"></div>
-              <div class="setnote"><span class="tag">NOTE</span><span>Get a free key at <a href="javascript:void(0)" id="geminiKeyLinkBtn">aistudio.google.com/apikey</a>. Saved in Windows Credential Manager when available (plain <b>.env</b> otherwise) - never committed, never sent anywhere but Google's API. This keeps it out of a plaintext file, not absolutely secret: it's still readable on this machine by whoever controls it, same as any local app's saved credential - the real protection is that it's yours alone and never leaves this PC.</span></div>
-              </div>
-
-              <div class="setgridpair" style="margin-top:10px">
+              <div class="setgridpair">
                 <label class="field" style="margin:0"><span class="lbl" style="text-transform:none;letter-spacing:0;font-weight:400;color:var(--muted)">Default tone (each chapter can set its own)</span>
                   <select id="geminiTone">
                     <option value="epic">Epic</option>
@@ -382,40 +366,31 @@
                 </label>
               </div>
 
-              <label class="field geminiOnly" style="margin:10px 0 0"><span class="lbl" style="text-transform:none;letter-spacing:0;font-weight:400;color:var(--muted)">Model</span>
-                <select id="geminiModel">
-                  <option value="gemini-3.1-pro-preview">Gemini 3.1 Pro - highest quality (slower, lower rate limit)</option>
-                  <option value="gemini-3.8-flash">Gemini 3.8 Flash - faster (higher rate limit)</option>
-                </select>
+              <div class="hint" id="claudeStatus"></div>
+              <label class="field" style="margin:10px 0 0">
+                <span class="lbl" style="text-transform:none;letter-spacing:0;font-weight:400;color:var(--muted)">Series brief (optional)</span>
+                <textarea id="claudeBrief" placeholder="Who the main characters are, the setting, the premise - anything Claude should know before chapter 1…" style="width:100%;height:110px"></textarea>
               </label>
-
-              <div id="claudeBlock">
-                <div class="hint" id="claudeStatus"></div>
-                <label class="field" style="margin:10px 0 0">
-                  <span class="lbl" style="text-transform:none;letter-spacing:0;font-weight:400;color:var(--muted)">Series brief (optional)</span>
-                  <textarea id="claudeBrief" placeholder="Who the main characters are, the setting, the premise - anything Claude should know before chapter 1…" style="width:100%;height:110px"></textarea>
+              <div class="setgridpair" style="margin-top:10px">
+                <label class="field" style="margin:0"><span class="lbl" style="text-transform:none;letter-spacing:0;font-weight:400;color:var(--muted)">Model: reading the panels</span>
+                  <select id="claudeComprehensionModel">
+                    <option value="opus">Opus</option>
+                    <option value="sonnet">Sonnet</option>
+                    <option value="haiku">Haiku</option>
+                  </select>
                 </label>
-                <div class="setgridpair" style="margin-top:10px">
-                  <label class="field" style="margin:0"><span class="lbl" style="text-transform:none;letter-spacing:0;font-weight:400;color:var(--muted)">Model: reading the panels</span>
-                    <select id="claudeComprehensionModel">
-                      <option value="opus">Opus</option>
-                      <option value="sonnet">Sonnet</option>
-                      <option value="haiku">Haiku</option>
-                    </select>
-                  </label>
-                  <label class="field" style="margin:0"><span class="lbl" style="text-transform:none;letter-spacing:0;font-weight:400;color:var(--muted)">Model: writing the narration</span>
-                    <select id="claudeNarrationModel">
-                      <option value="opus">Opus</option>
-                      <option value="sonnet">Sonnet</option>
-                      <option value="haiku">Haiku</option>
-                    </select>
-                  </label>
-                </div>
-                <div class="setgridpair" style="margin-top:10px">
-                  <label class="field" style="margin:0"><span class="lbl" style="text-transform:none;letter-spacing:0;font-weight:400;color:var(--muted)">Shortest time a frame stays on screen (seconds)</span>
-                    <input id="claudeMinFrame" type="number" min="1" max="10" step="0.5" />
-                  </label>
-                </div>
+                <label class="field" style="margin:0"><span class="lbl" style="text-transform:none;letter-spacing:0;font-weight:400;color:var(--muted)">Model: writing the narration</span>
+                  <select id="claudeNarrationModel">
+                    <option value="opus">Opus</option>
+                    <option value="sonnet">Sonnet</option>
+                    <option value="haiku">Haiku</option>
+                  </select>
+                </label>
+              </div>
+              <div class="setgridpair" style="margin-top:10px">
+                <label class="field" style="margin:0"><span class="lbl" style="text-transform:none;letter-spacing:0;font-weight:400;color:var(--muted)">Shortest time a frame stays on screen (seconds)</span>
+                  <input id="claudeMinFrame" type="number" min="1" max="10" step="0.5" />
+                </label>
               </div>
 
               <label class="field" style="margin:10px 0 0">
@@ -812,7 +787,7 @@
           <button id="scriptOnlyBtn" class="small ghost" data-icon="layout" data-ic-size="13" title="Show just the script, without the strip" style="margin-left:auto"><span>Script only</span></button>
           <span id="saveState" class="hint"></span></div>
         <div class="rmeta" style="margin:0 0 8px">
-          <button id="genScriptBtn" class="small primary" data-icon="text" data-ic-size="13" title="Send each Gemini part (see Chapter Source) to the Gemini API in order and stitch the result in here"><span>Generate script with Gemini</span></button>
+          <button id="genScriptBtn" class="small primary" data-icon="text" data-ic-size="13" title="Have Claude read the chapter's panels and write the narration script"><span>Generate script with Claude</span></button>
           <span class="hint" id="genScriptStatus"></span>
         </div>
         <div id="genScriptResult"></div>

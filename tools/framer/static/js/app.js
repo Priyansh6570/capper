@@ -284,76 +284,10 @@ function finishGeminiParts() {
 }
 
 // ---------------------------------------------------------------------------
-// Generate the narration script with the Gemini API (see /gemini_script_stream
-// in app.py) - reads the SAME gemini_parts/*.pdf this panel already prepared,
-// sends each to Gemini in order, and stitches the result. Mirrors the
-// gpES/handleGeminiPartsEvent pattern above; the final script is dropped into
-// #scriptText and run through the EXISTING loadScript() splitter, exactly as
-// if it had been pasted in by hand.
-// ---------------------------------------------------------------------------
-let ggES = null;
-
-function startGeminiScript() {
-  if (!S.chapter_id) { setStatus('Load/Export a chapter first.', true); return; }
-  if (ggES) { ggES.close(); ggES = null; }
-  btnBusy($('genScriptBtn'), true);
-  $('genScriptStatus').textContent = 'Starting…';
-  $('genScriptResult').innerHTML = '';
-
-  const url = `/gemini_script_stream?chapter_id=${encodeURIComponent(S.chapter_id)}${scopeQS()}`;
-  ggES = new EventSource(url);
-  ggES.onmessage = e => { try { handleGeminiScriptEvent(JSON.parse(e.data)); } catch (_) {} };
-  ggES.onerror = () => {
-    if (!ggES) return;   // already closed on a clean done/error
-    $('genScriptStatus').textContent = 'Gemini-script stream disconnected.';
-    setStatus('Gemini-script stream disconnected.', true);
-    finishGeminiScript();
-  };
-}
-
-function handleGeminiScriptEvent(ev) {
-  if (ev.type === 'start') {
-    $('genScriptStatus').textContent = ev.message || 'Generating…';
-  } else if (ev.type === 'log') {
-    $('genScriptStatus').textContent = ev.line || '';
-  } else if (ev.type === 'progress') {
-    $('genScriptStatus').textContent = `Generating part ${ev.part} of ${ev.of_parts}…`;
-  } else if (ev.type === 'done') {
-    $('scriptText').value = ev.script || '';
-    showToast('Gemini script generated.', null, null, 'ok');
-    finishGeminiScript();
-    $('genScriptStatus').textContent = 'Script generated - boxing into lines…';
-    loadScript();   // same paragraph -> line splitting as a manual paste
-  } else if (ev.type === 'error') {
-    $('genScriptStatus').innerHTML = escHtml(ev.message || 'Script generation failed.') +
-      ' <button type="button" class="small ghost" onclick="startGeminiScript()">Retry</button>';
-    setStatus(ev.message || 'Script generation failed.', true);
-    finishGeminiScript();
-  }
-}
-
-function finishGeminiScript() {
-  if (ggES) { ggES.close(); ggES = null; }
-  btnBusy($('genScriptBtn'), false);
-}
-
-// ---------------------------------------------------------------------------
 // Claude Code script engine (see claude_engine.py): a "script" job on the same
 // polled queue as renders. When it finishes, the chapter's editor state is
 // reloaded - the server pre-fills every narration block boxed to its panels.
 // ---------------------------------------------------------------------------
-const currentScriptEngine = () => (CURRENT_PROJECT && CURRENT_PROJECT.settings.script_engine) || 'gemini';
-
-function paintScriptEngine(engine) {
-  engine = engine || $('scriptEngine').value;
-  const claude = engine === 'claude';
-  $('geminiKeyBlock').hidden = claude;
-  $('claudeBlock').hidden = !claude;
-  document.querySelectorAll('.geminiOnly').forEach(el => { el.hidden = claude; });
-  $('genScriptBtn').querySelector('span').textContent = claude ? 'Generate script with Claude' : 'Generate script with Gemini';
-  if (claude) loadClaudeStatus();
-}
-
 async function loadClaudeStatus() {
   try {
     const d = await (await fetch('/api/claude/status')).json();
@@ -361,10 +295,6 @@ async function loadClaudeStatus() {
     $('claudeStatus').style.color = d.ready ? '' : 'var(--warn)';
     if (SCREEN === 'editor' && !d.ready) $('genScriptStatus').textContent = d.message;
   } catch (_) { $('claudeStatus').textContent = ''; }
-}
-
-function startScript() {
-  return currentScriptEngine() === 'claude' ? startClaudeScript() : startGeminiScript();
 }
 
 async function startClaudeScript() {
@@ -2869,7 +2799,6 @@ async function openSettingsScreen(slug) {
     paintProjectChrome();
     fillSettingsForm();
     loadBackgroundOptions();
-    loadGeminiKeyStatus();
     loadGpuStatus();
   } catch (e) {
     setStatus('Open settings error: ' + e.message, true);
@@ -2899,39 +2828,6 @@ async function loadGpuStatus() {
   }
 }
 $('gpuRecheckBtn').onclick = loadGpuStatus;
-
-// --- Gemini API key (global, .env-only - see api_gemini_key_status in app.py) ---
-async function loadGeminiKeyStatus() {
-  try {
-    const d = await (await fetch('/api/gemini/key_status')).json();
-    const where = d.source === 'keyring' ? 'Windows Credential Manager' : '.env (plaintext)';
-    $('geminiKeyStatus').textContent = d.set
-      ? `Key saved in ${where}, ends in ${d.hint || '…'}.` : 'No key saved yet.';
-    $('geminiKeyInput').placeholder = d.set ? 'Paste a new key to replace it' : 'Paste your Gemini API key';
-  } catch (e) { $('geminiKeyStatus').textContent = ''; }
-}
-async function saveGeminiKey() {
-  const key = $('geminiKeyInput').value.trim();
-  if (!key) { setStatus('Paste a Gemini API key first.', true); return; }
-  btnBusy($('geminiKeySaveBtn'), true);
-  try {
-    const res = await fetch('/api/gemini/key', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ key }) });
-    const d = await res.json();
-    if (!res.ok) throw new Error(d.error || 'save failed');
-    $('geminiKeyInput').value = '';
-    showToast('Gemini API key saved.', null, null, 'ok');
-    loadGeminiKeyStatus();
-  } catch (e) { setStatus('Save key error: ' + e.message, true); }
-  finally { btnBusy($('geminiKeySaveBtn'), false); }
-}
-async function clearGeminiKey() {
-  try {
-    await fetch('/api/gemini/key', { method: 'DELETE' });
-    showToast('Gemini API key removed.', null, null, 'warn');
-    loadGeminiKeyStatus();
-  } catch (e) { setStatus('Remove key error: ' + e.message, true); }
-}
 
 // --- Chapter list: a list view and a card view over one shared selection ---------------
 const PIPELINE_STEPS = ['download', 'split', 'stitch', 'script', 'export', 'audio', 'video'];
@@ -3612,10 +3508,8 @@ function fillSettingsForm() {
   const gm = s.gemini || {};
   $('geminiTone').value = gm.tone || 'dramatic';
   $('geminiNarrationType').value = gm.narration_type || 'first_person';
-  $('geminiModel').value = gm.model || 'gemini-3.1-pro-preview';
   $('geminiStyleRef').value = gm.style_reference || '';
   const cl = s.claude || {};
-  $('scriptEngine').value = s.script_engine || 'gemini';
   $('claudeBrief').value = cl.series_brief || '';
   $('claudeComprehensionModel').value = cl.comprehension_model || 'opus';
   $('claudeNarrationModel').value = cl.narration_model || 'sonnet';
@@ -3627,7 +3521,7 @@ function fillSettingsForm() {
   $('batchNotify').checked = bt.notifications !== false;
   $('batchFiveHour').value = bt.five_hour_pct || 70;
   $('batchSevenDay').value = bt.seven_day_pct || 60;
-  paintScriptEngine();
+  loadClaudeStatus();
 
   updateSliderLabels();
   refreshWatermarkPreview();
@@ -3733,10 +3627,8 @@ function currentSettingsFromForm() {
     gemini: {
       tone: $('geminiTone').value,
       narration_type: $('geminiNarrationType').value,
-      model: $('geminiModel').value,
       style_reference: $('geminiStyleRef').value,
     },
-    script_engine: $('scriptEngine').value,
     claude: {
       series_brief: $('claudeBrief').value,
       comprehension_model: $('claudeComprehensionModel').value,
@@ -3949,7 +3841,7 @@ async function openChapterEditor(slug, chNo, opts) {
   showScreen('editor');
   pollJobs();   // don't wait for the next 1.5s tick - this chapter may already have a job
   if (!CURRENT_PROJECT || CURRENT_PROJECT.slug !== slug) await loadCurrentProject(slug);
-  paintScriptEngine(currentScriptEngine());
+  loadClaudeStatus();
 
   if (opts.autoDownload) {
     $('dlUrl').value = opts.url || '';
@@ -4180,9 +4072,7 @@ $('framingBlur').onchange = saveSettingsDebounced;
 ['wmOpacity', 'wmSize', 'wmSpacing', 'wmAngle', 'bgDim', 'animDuration'].forEach(id => { $(id).oninput = saveSettingsDebounced; });
 $('geminiTone').onchange = saveSettingsDebounced;
 $('geminiNarrationType').onchange = saveSettingsDebounced;
-$('geminiModel').onchange = saveSettingsDebounced;
 $('geminiStyleRef').oninput = saveSettingsDebounced;
-$('scriptEngine').onchange = () => { paintScriptEngine(); saveSettingsDebounced(); };
 $('claudeBrief').oninput = saveSettingsDebounced;
 $('claudeComprehensionModel').onchange = saveSettingsDebounced;
 $('claudeNarrationModel').onchange = saveSettingsDebounced;
@@ -4193,9 +4083,6 @@ $('batchAutoWait').onchange = saveSettingsDebounced;
 $('batchNotify').onchange = saveSettingsDebounced;
 $('batchFiveHour').oninput = saveSettingsDebounced;
 $('batchSevenDay').oninput = saveSettingsDebounced;
-$('geminiKeySaveBtn').onclick = saveGeminiKey;
-$('geminiKeyClearBtn').onclick = clearGeminiKey;
-$('geminiKeyLinkBtn').onclick = () => window.open('https://aistudio.google.com/apikey', '_blank');
 $('musicFile').onchange = e => uploadAsset('music', e.target.files[0]);
 $('voiceFile').onchange = e => uploadAsset('voice', e.target.files[0]);
 $('wmFile').onchange = e => uploadAsset('watermark', e.target.files[0]);
@@ -4208,7 +4095,7 @@ $('bgBrowseBtn').onclick = () => $('bgFile').click();
 $('dlBtn').onclick = doDownload;
 $('loadPdfBtn').onclick = loadPdf;
 $('loadScriptBtn').onclick = loadScript;
-$('genScriptBtn').onclick = startScript;
+$('genScriptBtn').onclick = startClaudeScript;
 $('addLineBtn').onclick = addLine;
 $('exportBtn').onclick = doExport;
 $('genAVBtn').onclick = () => startGenerate('both');

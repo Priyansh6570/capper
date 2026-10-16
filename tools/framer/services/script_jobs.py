@@ -17,7 +17,6 @@ from config import chapter_work_dir
 from manifest import Manifest, Page, Panel
 from services.chapter_files import _strip_path, downloaded_pdf, ensure_dir, make_preview, stitch_pdf
 from services.editor_state import claude_state_path, manifest_panels
-from services.gemini import narration_voice, style_reference_directive
 
 if TYPE_CHECKING:
     from services.jobs import Job
@@ -43,6 +42,23 @@ def _ensure_panels(chapter_id: str) -> list[Panel]:
     m.pages = [Page(index=1, image=str(strip_path), panels=panels)]
     m.save()
     return panels
+
+
+NARRATION_TYPES = {
+    "first_person": 'first-person, as the hero living through these events ("I", "me")',
+    "third_person": 'third-person recap narration ("he", "she", "they")',
+}
+
+
+def narration_voice(tone: str, narration_type: str) -> str:
+    narr_desc = NARRATION_TYPES.get(narration_type, NARRATION_TYPES["first_person"])
+    return f"Narrate {narr_desc}.\n\n{tones.style_instruction(tone)}"
+
+
+def style_reference_directive(style_reference: str) -> str:
+    return ("Match the LANGUAGE, TONE, and HUMOR of this example script as closely "
+            "as you can - imitate its voice and style, not its plot or content:\n\n"
+            + style_reference.strip())
 
 
 def run_script_job(job: "Job") -> None:

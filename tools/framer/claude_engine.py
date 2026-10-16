@@ -1,5 +1,5 @@
 """Script engine that turns a chapter's panels into narration blocks with the local
-`claude` CLI instead of the Gemini API.
+`claude` CLI.
 
 Pass 1 sends the panel images (downscaled copies, in batches carrying the previous
 breakdown forward) and returns a factual breakdown plus a per-panel catalogue whose entries
