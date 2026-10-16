@@ -4,7 +4,6 @@ Standard library only, and it never looks at the venv: the answer must be the sa
 machine with leftovers from older versions and on a fresh install. Run by the git pre-commit
 hook (.githooks/pre-commit); `--unused` also lists requirements nothing imports directly.
 
-kaggle/ is skipped: those scripts run in Kaggle's own environment.
 """
 from __future__ import annotations
 
@@ -17,7 +16,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 REQUIREMENT_FILES = ("requirements.txt", "requirements-gpu.txt", "requirements-nodeps.txt")
-SKIPPED_DIRS = ("kaggle",)
 
 # Import name -> the distribution(s) that provide it, where the two names differ.
 DISTRIBUTIONS = {
@@ -43,7 +41,7 @@ def normalize(name: str) -> str:
 
 def tracked_python_files() -> list[Path]:
     out = subprocess.run(["git", "ls-files", "*.py"], cwd=ROOT, capture_output=True, text=True, check=True).stdout
-    return [ROOT / line for line in out.splitlines() if line.split("/")[0] not in SKIPPED_DIRS]
+    return [ROOT / line for line in out.splitlines()]
 
 
 def imported_modules(path: Path) -> set[str]:

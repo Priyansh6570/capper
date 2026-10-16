@@ -50,7 +50,7 @@ Stages branch on it:
   exposing one `Page` (index 1). Page breaks in webtoon exports are arbitrary
   slices, so they are glued back together.
 - **s2**: a **local candidate cutter** for the stitched strip — runs on the
-  laptop (CPU), no ML, no Kaggle, no network. It reads each `Page.image` strip,
+  laptop (CPU), no ML, no network. It reads each `Page.image` strip,
   finds whitespace/gutter rows (low per-row pixel variance) and cuts there,
   deliberately OVER-cutting (better too many candidates than too few; a later
   selection stage trims). A min-height floor merges slivers upward; a max-height
@@ -59,7 +59,7 @@ Stages branch on it:
   with a `_debug_pNNN.png` overlay. OCR is best-effort/non-fatal (pytesseract →
   easyocr → paddleocr if installed, else skipped) and its text lands in
   `Panel.dialogue`. Cut aggressiveness lives in tunable constants at the top of
-  the file. (The old Kaggle detection notebook + `_kaggle/` loader is retired.)
+  the file.
 
 ## Pipeline is STORY-FIRST (script before frames)
 
@@ -147,11 +147,6 @@ GPU/NVENC probe (stage 6, stage 7, setup, the framer's GPU status card).
   never hardcode path separators. Stage 2's OCR is optional/best-effort: install
   pytesseract (+ the Tesseract binary), easyocr, or paddleocr to fill dialogue;
   without one, cutting still runs and dialogue is left empty.
-- **Kaggle (GPU stages 4, 6)**: these need heavy ML deps (torch, transformers,
-  iopaint, a TTS package) that do NOT belong in this repo's requirements.
-  Develop each GPU stage so it can run as a standalone Kaggle script over a
-  `work/<chapter>/` folder synced up, then sync results back. Keep
-  `run(m) -> m` identical so the orchestrator is unchanged.
 - **APIs (stages 3, 5)**: read keys from environment variables
   (`GEMINI_API_KEY`, `GROQ_API_KEY`); never hardcode secrets. Respect free-tier
   rate limits (Gemini ~1,500/day) - batch and add simple retry/backoff.
