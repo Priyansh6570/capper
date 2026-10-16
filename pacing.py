@@ -40,7 +40,7 @@ PACES = {
 }
 DEFAULT_PACE = "calm"
 
-# the shared emotion vocabulary of stage 3 (`s3_context.EMOTIONS`) in pace terms
+# older emotion tags in pace terms
 _ALIASES = {"neutral": "calm", "excited": "action", "angry": "tense", "surprised": "reveal"}
 
 BREATH = 0.12             # after a line that stops mid-sentence

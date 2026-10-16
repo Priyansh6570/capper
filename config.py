@@ -14,9 +14,8 @@ ROOT = Path(__file__).resolve().parent
 # once launched via tray_launcher.py's pythonw.exe. Spread into every
 # subprocess call the app makes: `subprocess.run(cmd, **NO_CONSOLE)`.
 NO_CONSOLE = {"creationflags": subprocess.CREATE_NO_WINDOW} if sys.platform == "win32" else {}
-INPUTS_DIR = ROOT / "inputs"     # source PDFs go here
 WORK_DIR = ROOT / "work"         # per-chapter intermediate files
-OUTPUT_DIR = ROOT / "output"     # final artifacts (storyboard / video)
+OUTPUT_DIR = ROOT / "output"     # final artifacts (the video)
 PROJECTS_DIR = ROOT / "projects"  # framer project system (tools/framer/projects.py)
 
 # --------------------------------------------------------------------------- #
@@ -26,8 +25,7 @@ PROJECTS_DIR = ROOT / "projects"  # framer project system (tools/framer/projects
 # below, imported as bare functions (`from config import chapter_work_dir`), so
 # the redirect must live INSIDE these function bodies - and must keep reading
 # the module-global WORK_DIR/OUTPUT_DIR at call time, not a captured default,
-# because stages/s2_detect_panels.py's self-test monkeypatches config.WORK_DIR
-# directly and must keep working.
+# so a test that patches config.WORK_DIR directly keeps working.
 #
 # Two ways a redirect gets installed:
 #   - `chapter_scope()` sets a ContextVar - used by the Flask app (in-process,

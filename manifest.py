@@ -1,89 +1,59 @@
-"""The manifest is the spine of the whole pipeline.
+"""The manifest is the spine of the pipeline.
 
-Every stage reads it, does its work on disk, adds its fields, and advances
-`stage`. Nothing is passed in memory between stages — only files + this JSON.
-That is what makes each stage independently testable and swappable.
+Each stage reads it, does its work on disk, adds its fields and advances `stage`. Nothing is passed
+in memory between stages - only files and this JSON, which keeps every stage independently testable.
 
-The pipeline is STORY-FIRST: stage 5 writes the whole recap script from ALL the
-chapter's OCR, then stage 2b matches one character frame to each script segment.
+The editor's export writes the manifest (the stitched strip as the only Page, one beat per narration
+line) and leaves it at the "frames" marker; the orchestrator then runs the stages after it.
 
-Field ownership (which stage fills what):
-    s1  -> Page.image
-    s2  -> Page.panels (bbox, order, crop, speaker, dialogue)
-    s2a -> Panel.has_person/has_face/person_count/face_count/is_text_only
-           (+ white_fraction): LOCAL CPU vision tags so matching looks at the
-           art (faces/people) instead of only OCR text. Also Panel.frame_kind
-           ("closeup"/"impact"/"full") and Panel.crop_clean: close-ups are cropped
-           tight (bubbles trimmed) while impact/splash panels are kept whole.
-           Downstream stages SHOW the right image via Panel.frame_image.
-    s5  -> STAGE A (story-first script): reads every candidate panel's OCR and
-           writes the full hero-POV recap as ordered SEGMENTS to
-           work/<ch>/script/segments.json (+ script.txt). Touches no panels.
-    s2b -> STAGE B (frame matching): picks one eligible cropped frame per segment
-           and fills `Manifest.beats` - the ordered matched narration beats (each
-           a frame-panel clone carrying that segment's `script_line`). Also flags
-           the matched candidates' `Panel.selected` for inspection.
-    s3  -> Panel.context, Panel.emotion (on the beats)
-    s4  -> Page.clean_image
-    s6  -> Panel.audio, Panel.duration_s (on the beats)
-    s7  -> reads the beats, renders the video
+Field ownership:
+    s1      -> Page.image (the stitched strip)
+    export  -> Page.panels and Manifest.beats (crop, script_line, emotion = the line's pace, duration_s)
+    s6      -> Panel.audio, Panel.duration_s
+    s7      -> reads the beats and renders the video
 
-Candidate panels (Page.panels) are never reduced: STAGE A and STAGE B both read
-the FULL candidate set via `ordered_panels()` on every run. The matched output
-lives separately in `Manifest.beats`, which `Manifest.kept_panels()` returns so a
-frame can be REUSED across segments (each beat is its own panel) without mutating
-the candidate reading order.
+Manifests written before the terminal pipeline was removed carry fields and stage markers that no
+longer exist; loading ignores the fields and maps the markers (see LEGACY_STAGES).
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import List, Optional
 
 from atomic_io import atomic_write_json, read_json_with_backup_fallback
 
 # Ordered progress markers. Each stage SETS the next marker when it finishes.
-# Keep in sync with orchestrator.STAGES. STORY-FIRST order: the full script is
-# written ("script") before frames are matched to it ("match").
-STAGE_ORDER = ["init", "pages", "panels", "vision", "script", "match", "context", "clean", "audio", "video"]
+# Keep in sync with orchestrator.STAGES.
+STAGE_ORDER = ["init", "pages", "frames", "audio", "video"]
+
+# Markers of the removed stages, mapped to where a manifest that carried them stands now.
+LEGACY_STAGES = {"panels": "pages", "vision": "pages", "script": "pages", "match": "pages",
+                 "context": "pages", "clean": "frames"}
+
+
+def _known(cls, data: dict) -> dict:
+    """`data` without the keys `cls` has no field for (written by an older version)."""
+    names = {f.name for f in fields(cls)}
+    return {k: v for k, v in data.items() if k in names}
 
 
 @dataclass
 class Panel:
     id: str
-    bbox: List[float]                   # [x, y, w, h] in page-image pixels
+    bbox: List[float]                   # [x, y, w, h] in strip pixels
     order: int                          # global reading order across the chapter
-    crop: Optional[str] = None          # cropped panel image            (s2)
-    speaker: Optional[str] = None       # speaker id / name              (s2)
-    dialogue: Optional[str] = None      # raw bubble text                (s2)
-    has_person: bool = False            # YOLO found >=1 person          (s2a)
-    has_face: bool = False              # OpenCV found >=1 face (close-up)(s2a)
-    person_count: int = 0               # number of persons detected     (s2a)
-    face_count: int = 0                 # number of faces detected        (s2a)
-    is_text_only: bool = False          # mostly white/text, no character (s2a)
-    white_fraction: Optional[float] = None  # near-white pixel fraction   (s2a)
-    crop_clean: Optional[str] = None    # crop tightened to the character, bubbles trimmed (s2a)
-    frame_kind: Optional[str] = None    # "closeup" (cropped) | "impact"/"full" (kept whole) (s2a)
-    selected: bool = True               # kept for the recap?           (s2b)
-    context: Optional[str] = None       # scene / expression description (s3)
-    emotion: Optional[str] = None       # emotion tag for TTS            (s3)
-    script_line: Optional[str] = None   # narration line                (s5)
+    crop: Optional[str] = None          # the frame image shown for this panel / beat
+    emotion: Optional[str] = None       # the narration line's pace (see pacing.py)
+    script_line: Optional[str] = None   # narration line
     audio: Optional[str] = None         # voiceover clip path           (s6)
     duration_s: Optional[float] = None  # clip length -> slide timing   (s6)
-
-    @property
-    def frame_image(self) -> Optional[str]:
-        """The image downstream stages (s3 context, s7 video) should SHOW for
-        this panel: the clean character crop (bubbles trimmed) when s2a produced
-        one, else the raw candidate crop. A property, so it is never serialized."""
-        return self.crop_clean or self.crop
 
 
 @dataclass
 class Page:
     index: int                          # 1-based page number
     image: str                          # rendered page image            (s1)
-    clean_image: Optional[str] = None   # text removed                   (s4)
     panels: List[Panel] = field(default_factory=list)
 
 
@@ -95,7 +65,7 @@ class Manifest:
     stage: str = "init"
     doc_type: str = "manga"             # "manga" (page-based) or "webtoon" (strip)
     pages: List[Page] = field(default_factory=list)
-    beats: List[Panel] = field(default_factory=list)  # matched narration beats (s2b)
+    beats: List[Panel] = field(default_factory=list)  # one per narration line
 
     @property
     def path(self) -> Path:
@@ -115,38 +85,20 @@ class Manifest:
         # empty, or unparsable - see atomic_io.py.
         data = read_json_with_backup_fallback(Path(work_dir) / "manifest.json")
         pages = [
-            Page(
-                index=p["index"],
-                image=p["image"],
-                clean_image=p.get("clean_image"),
-                panels=[Panel(**pan) for pan in p.get("panels", [])],
-            )
-            for p in data.get("pages", [])
+            Page(**{**_known(Page, page), "panels": [Panel(**_known(Panel, p)) for p in page.get("panels", [])]})
+            for page in data.get("pages", [])
         ]
+        stage = LEGACY_STAGES.get(data.get("stage"), data.get("stage"))
         return cls(
             chapter_id=data["chapter_id"],
             source_pdf=data["source_pdf"],
             work_dir=data["work_dir"],
-            stage=data.get("stage", "init"),
+            stage=stage if stage in STAGE_ORDER else "init",
             doc_type=data.get("doc_type", "manga"),
             pages=pages,
-            beats=[Panel(**b) for b in data.get("beats", [])],
+            beats=[Panel(**_known(Panel, b)) for b in data.get("beats", [])],
         )
 
-    def all_panels(self):
-        for page in self.pages:
-            for panel in page.panels:
-                yield page, panel
-
-    def ordered_panels(self) -> List[Panel]:
-        return sorted((pan for _, pan in self.all_panels()), key=lambda p: p.order)
-
     def kept_panels(self) -> List[Panel]:
-        """The matched narration beats (STAGE B), in segment order - what the
-        render stages (s3 context, s6 tts, s7 video) consume. Falls back to the
-        legacy `selected` candidate panels for old manifests with no beats.
-        `ordered_panels()` still returns the FULL candidate set so STAGE A/B always
-        reconsider everything."""
-        if self.beats:
-            return list(self.beats)
-        return [p for p in self.ordered_panels() if p.selected]
+        """The narration beats, in line order - what the render stages (s6 tts, s7 video) consume."""
+        return list(self.beats)

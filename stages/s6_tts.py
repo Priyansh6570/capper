@@ -107,10 +107,8 @@ def _ensure_model_cached(kind: str) -> None:
         except Exception:  # noqa: BLE001 - not (fully) cached; fetch it below
             pass
         # A saved HF_TOKEN (see setup.bat step 5 / SETUP_GUIDE.md) avoids
-        # anonymous-IP throttling, but nothing else in this process necessarily
-        # loaded .env yet - a render started with --from audio never touches
-        # llm.py (which is what normally does this). load_dotenv() never
-        # overwrites an already-set env var, so this is a no-op if it did.
+        # anonymous-IP throttling, but nothing else in this process loaded .env yet.
+        # load_dotenv() never overwrites an already-set env var.
         try:
             from dotenv import load_dotenv
             load_dotenv()

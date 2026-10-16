@@ -160,8 +160,7 @@ def export_chapter(chapter_id: str, entries: list[dict], slug: str | None, ch_no
             "mode": mode,
             "frames": out_frames,
         })
-        # One beat per LINE (one narration -> one audio). The visible image is the
-        # first frame; has_face so downstream treats it as a real character frame.
+        # One beat per LINE (one narration -> one audio). The visible image is the first frame.
         beats.append(Panel(
             id=f"L{i:03d}",
             bbox=[float(v) for v in frames[0]["bbox"]],
@@ -170,10 +169,6 @@ def export_chapter(chapter_id: str, entries: list[dict], slug: str | None, ch_no
             script_line=line_text,
             emotion=pace,
             duration_s=duration_s,
-            selected=True,
-            has_person=True,
-            has_face=True,
-            is_text_only=False,
         ))
 
     framer_dir = ensure_dir(_framer_dir(chapter_id))
@@ -183,14 +178,14 @@ def export_chapter(chapter_id: str, entries: list[dict], slug: str | None, ch_no
     # to a half-written file.
     atomic_write_json(mapping_path, {"chapter_id": chapter_id, "lines": mapping})
 
-    # A manifest the orchestrator can resume from. stage="clean" means the next
-    # stages to run are audio (s6) then video (s7); everything before is skipped.
+    # A manifest the orchestrator can resume from. stage="frames" means the next
+    # stages to run are audio (s6) then video (s7).
     m = Manifest(
         chapter_id=chapter_id,
         source_pdf=str(framer_dir / "_upload.pdf"),
         work_dir=str(chapter_work_dir(chapter_id)),
         doc_type="webtoon",
-        stage="clean",
+        stage="frames",
         pages=[Page(index=1, image=str(strip_path), panels=manifest_panels(chapter_id))],
         beats=beats,
     )

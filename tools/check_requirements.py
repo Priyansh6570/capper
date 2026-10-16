@@ -26,13 +26,8 @@ DISTRIBUTIONS = {
     "dotenv": ("python-dotenv",),
     "edge_tts": ("edge-tts",),
     "fitz": ("PyMuPDF",),
-    "google": ("google-genai",),
     "phonemizer": ("phonemizer-fork",),
 }
-
-# Used only inside try/except ImportError fallbacks (stage 2 / 2a OCR and person detection);
-# ultralytics alone would pull a second torch into the venv.
-OPTIONAL = {"ultralytics", "easyocr", "pytesseract", "paddleocr"}
 
 
 def normalize(name: str) -> str:
@@ -74,7 +69,7 @@ def main(argv: list[str]) -> int:
         except SyntaxError as error:
             print(f"[ERROR] cannot parse {path.relative_to(ROOT).as_posix()}: {error}")
             return 1
-        for module in modules - local - set(sys.stdlib_module_names) - OPTIONAL:
+        for module in modules - local - set(sys.stdlib_module_names):
             importers[module].add(path.relative_to(ROOT).as_posix())
 
     listed = listed_requirements()

@@ -1,115 +1,38 @@
-"""Resumable pipeline runner.
+"""Resumable runner for the stages after the editor's export: narration (s6), then video (s7).
 
-Each stage reads the manifest + files on disk, does its work, writes files, and
-advances manifest.stage. Progress is checkpointed after every stage, so a crash
-or a Kaggle session timeout just means re-running - completed stages are
-skipped. This file-based isolation keeps each stage independently testable and
-easy to swap.
+The export leaves the chapter's manifest at the "frames" marker. Each stage reads the manifest and the
+files on disk, writes its files and advances the marker, and the manifest is saved after every stage,
+so a crash just means running again: completed stages are skipped. The app starts this as a subprocess.
 
 Usage (run from the project root):
-    python make_fixture.py                 # create inputs/ch_001.pdf to test with
-    python orchestrator.py                 # run ch_001, resuming where it left off
-    python orchestrator.py --chapter ch_002
-    python orchestrator.py --from script   # re-run from a given stage onward
-    python orchestrator.py --force         # re-run everything from scratch
-    python orchestrator.py --from audio --to audio   # regenerate ONLY the
-        # narration (s6), e.g. after changing the voice sample or speed,
-        # without re-running frame selection or touching the existing video
+    python orchestrator.py --chapter <id>                          # run whatever is left
+    python orchestrator.py --chapter <id> --from video             # re-run from a given stage onward
+    python orchestrator.py --chapter <id> --from audio --to audio  # regenerate ONLY the narration,
+        # e.g. after changing the voice sample or speed, without touching the existing video
 """
 from __future__ import annotations
 
 import argparse
 import importlib
 
-from config import INPUTS_DIR, chapter_work_dir
+from config import chapter_work_dir
 from manifest import Manifest, STAGE_ORDER
-from stages import s1_pdf_to_pages  # also used directly by list_input_images() below
 
-# (marker this stage produces, module name under stages/). Order must match
-# manifest.STAGE_ORDER. STORY-FIRST: s5 writes the full script (STAGE A) BEFORE
-# s2b matches frames to its segments (STAGE B); context/audio/video then consume
-# the matched beats.
-#
-# Modules are imported LAZILY (importlib, right before a stage actually runs -
-# see run() below), not at the top of this file: the current real workflow
-# (Framer boxing -> Generate audio+video) always hands the orchestrator a
-# manifest already at stage "clean", so only s6_tts and s7_assemble ever import,
-# and dead-stage-only deps (groq, httpx, ultralytics, opencv, the OCR engines,
-# ...) are never required just to launch `orchestrator.py --from audio`.
+# (marker this stage produces, module name under stages/). Order must match manifest.STAGE_ORDER.
+# Modules are imported lazily, right before the stage runs, so launching a later stage does not load
+# the heavy dependencies of an earlier one.
 STAGES = [
-    ("pages",   "s1_pdf_to_pages"),
-    ("panels",  "s2_detect_panels"),
-    ("vision",  "s2a_vision"),
-    ("script",  "s5_script"),     # STAGE A - story-first full script -> segments
-    ("match",   "s2b_select"),    # STAGE B - match one frame to each segment
-    ("context", "s3_context"),
-    ("clean",   "s4_inpaint"),
-    ("audio",   "s6_tts"),
-    ("video",   "s7_assemble"),
+    ("audio", "s6_tts"),
+    ("video", "s7_assemble"),
 ]
 
 
-def prompt_doc_type() -> str:
-    """Ask once, interactively, when creating a new chapter and no --type given."""
-    while True:
-        choice = input(
-            "PDF type? [1] page-based manga  [2] vertical webtoon: "
-        ).strip()
-        if choice == "1":
-            return "manga"
-        if choice == "2":
-            return "webtoon"
-        print("  please enter 1 or 2.")
-
-
-def load_or_init(chapter_id: str, doc_type: str | None = None) -> Manifest:
+def run(chapter_id: str, from_stage: str | None = None, to_stage: str | None = None) -> None:
     work = chapter_work_dir(chapter_id)
-    if (work / "manifest.json").exists():
-        # doc_type is decided once at creation and persisted; ignore --type now.
-        return Manifest.load(work)
-
-    # Image-folder chapter: slices pre-downloaded to work/<chapter>/input/. No
-    # PDF needed; such a chapter is inherently a vertical strip -> webtoon.
-    images = s1_pdf_to_pages.list_input_images(chapter_id)
-    if images:
-        m = Manifest(
-            chapter_id=chapter_id,
-            source_pdf="",
-            work_dir=str(work),
-            doc_type="webtoon",
-        )
-        m.save()
-        return m
-
-    pdf = INPUTS_DIR / f"{chapter_id}.pdf"
-    if not pdf.exists():
-        raise SystemExit(
-            f"No manifest, no images at {s1_pdf_to_pages.chapter_input_dir(chapter_id)}, "
-            f"and no PDF at {pdf}. Run: python make_fixture.py"
-        )
-    resolved = doc_type or prompt_doc_type()
-    m = Manifest(
-        chapter_id=chapter_id,
-        source_pdf=str(pdf),
-        work_dir=str(work),
-        doc_type=resolved,
-    )
-    m.save()
-    return m
-
-
-def run(chapter_id: str, from_stage: str | None, force: bool,
-        doc_type: str | None = None, to_stage: str | None = None) -> None:
-    m = load_or_init(chapter_id, doc_type)
-    if m.stage not in STAGE_ORDER:
-        # A manifest from the old (pre-story-first) pipeline used a marker that no
-        # longer exists (e.g. "selection"); restart it cleanly.
-        print(f"  manifest marker {m.stage!r} is from an older pipeline; "
-              f"re-running from the start")
-        m.stage = "init"
-    if force:
-        m.stage = "init"
-    elif from_stage:
+    if not (work / "manifest.json").exists():
+        raise SystemExit(f"No manifest for {chapter_id} in {work}. Export the chapter from the editor first.")
+    m = Manifest.load(work)
+    if from_stage:
         m.stage = STAGE_ORDER[STAGE_ORDER.index(from_stage) - 1]
 
     stop_at = STAGE_ORDER.index(to_stage) if to_stage else None
@@ -118,8 +41,7 @@ def run(chapter_id: str, from_stage: str | None, force: bool,
         if STAGE_ORDER.index(m.stage) >= STAGE_ORDER.index(produces):
             print(f"[skip] {produces}")
             continue
-        module = importlib.import_module(f"stages.{module_name}")  # lazy: only
-        # this stage's (and its dependencies') import happens, nothing skipped
+        module = importlib.import_module(f"stages.{module_name}")
         print(f"[run ] {module_name} -> {produces}")
         m = module.run(m)
         m.save()
@@ -127,21 +49,18 @@ def run(chapter_id: str, from_stage: str | None, force: bool,
             print(f"\nStopped after stage {produces!r} (--to {to_stage}).")
             return
     print(f"\nDone. Final stage: {m.stage}")
-    print(f"Open output/{chapter_id}/storyboard.html in your browser to see the result.")
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Manhwa recap pipeline orchestrator")
-    ap.add_argument("--chapter", default="ch_001")
-    ap.add_argument("--from", dest="from_stage", default=None, choices=STAGE_ORDER[1:])
-    ap.add_argument("--to", dest="to_stage", default=None, choices=STAGE_ORDER[1:],
-                    help="stop after this stage (e.g. --from audio --to audio to "
-                         "regenerate only narration, without re-rendering video)")
-    ap.add_argument("--force", action="store_true", help="re-run all stages")
-    ap.add_argument("--type", dest="doc_type", default=None, choices=["manga", "webtoon"],
-                    help="document type for a NEW chapter (else prompted once)")
+    stage_names = [produces for produces, _ in STAGES]
+    ap = argparse.ArgumentParser(description="Narration and video runner")
+    ap.add_argument("--chapter", required=True)
+    ap.add_argument("--from", dest="from_stage", default=None, choices=stage_names)
+    ap.add_argument("--to", dest="to_stage", default=None, choices=stage_names,
+                    help="stop after this stage (e.g. --from audio --to audio regenerates only "
+                         "the narration, without re-rendering the video)")
     args = ap.parse_args()
-    run(args.chapter, args.from_stage, args.force, args.doc_type, args.to_stage)
+    run(args.chapter, args.from_stage, args.to_stage)
 
 
 if __name__ == "__main__":

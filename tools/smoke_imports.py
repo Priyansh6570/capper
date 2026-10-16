@@ -14,7 +14,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT), str(ROOT / "tools" / "framer")]
 
-ROOT_MODULES = ("orchestrator", "llm", "deps")
+ROOT_MODULES = ("orchestrator", "deps")
 SCRIPTS = {"tray_launcher"}     # exits the process when its own imports fail, so it is tested by running it
 ENGINE_MODULES = (
     "chatterbox.tts", "chatterbox.tts_turbo", "kokoro", "espeakng_loader",

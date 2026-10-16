@@ -37,8 +37,7 @@ already baked into those PNGs, so s7 only ARRANGES them, per the line's `mode`:
   - "together": all the line's frames are shown at once in one still - side by
     side (2) or a simple grid (2x2 ...) - held for the whole line like a normal
     beat.
-A one-frame line behaves exactly as before. With no mapping (legacy manifests)
-each beat falls back to its single `frame_image`.
+A one-frame line behaves exactly as before. With no mapping each beat falls back to its single `crop`.
 
 Output: output/<chapter>/recap.mp4 (+ video_plan.json). Prints total render time.
 
@@ -211,7 +210,7 @@ def _resolve_animation(settings: dict) -> tuple[str, float, float | None]:
 
 def _line_frames(b: Panel, mapping: dict[int, dict]) -> tuple[list[str | None], str]:
     """Resolve a beat (line) to its (frame image paths, mode), reading the framer
-    mapping by `order` and falling back to the beat's single `frame_image` when
+    mapping by `order` and falling back to the beat's single `crop` when
     there is no mapping entry. Frames are already flipped/blurred on disk."""
     info = mapping.get(b.order)
     if info:
@@ -219,7 +218,7 @@ def _line_frames(b: Panel, mapping: dict[int, dict]) -> tuple[list[str | None], 
         mode = "together" if info.get("mode") == "together" else "sequence"
         if frames:
             return frames, mode
-    return [b.frame_image], "sequence"
+    return [b.crop], "sequence"
 
 
 def _plan(beats: list[Panel], mapping: dict[int, dict], crossfade: float = CROSSFADE
