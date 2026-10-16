@@ -1,17 +1,26 @@
 """Project storage for the framer's project system - no Flask here.
 
 A "project" is one manhwa/manhua/manga series. Its folder holds `project.json`
-(name, source URL, chapter list + status, media settings) plus per-chapter work
-and output directories:
+(name, source URL, media settings and the chapter index: count, numbers, titles)
+plus one folder per chapter that has been worked on:
 
-    projects/<slug>/
+    <projects folder>/<slug>/       the app's projects/, or the shared (Drive) projects folder
       project.json
       assets/                       uploaded music / voice ref / watermark / background / intro / outro
+      chapters/<n>/
+        chapter.json                that chapter's status/tone/...; only exists once it has progress
+        <chapter>.pdf               the downloaded chapter (projects with a remembered source)
+
+    projects/<slug>/                always on this PC's disk: working files that must not sync
       merged/                       merged videos (+ their _branded.mp4 finals)
       cache/branding/               normalized intro/outro clips (regenerable)
       chapters/<n>/
         work/                       download/ pages/ framer/ frames/ audio/ ...
         output/                     recap.mp4, video_plan.json
+
+Every chapter's state is its own file, so two people saving different chapters of one shared
+project never write the same file. Schema 1 projects (all chapters inside project.json) are
+migrated on first load.
 
 `config.chapter_work_dir()`/`chapter_output_dir()` are redirected to a
 project's `chapters/<n>/{work,output}` via `config.chapter_scope()` - see
@@ -41,9 +50,10 @@ from atomic_io import atomic_write_text, read_json_with_backup_fallback
 
 # Status rank - forward-only transitions (never downgraded automatically).
 STATUS_RANK = {"not_started": 0, "downloaded": 1, "boxed": 2, "rendered": 3, "complete": 4}
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+CHAPTER_FILE = "chapter.json"
 
-_LOCK = threading.Lock()  # guards read-modify-write of any project.json
+_LOCK = threading.RLock()  # guards read-modify-write of project and chapter files; re-entrant because load() migrates
 
 
 def _now_iso() -> str:
@@ -228,9 +238,16 @@ def default_settings() -> dict:
     }
 
 
+def _default_title(n: int) -> str:
+    return f"Episode {n}"
+
+
+def _default_state() -> dict:
+    return {"status": "not_started", "pdf": None, "video": None, "updated_at": None, "tone": None}
+
+
 def _default_chapter(n: int, title: str = "") -> dict:
-    return {"n": n, "title": title or f"Episode {n}", "status": "not_started",
-             "pdf": None, "video": None, "updated_at": None, "tone": None}
+    return {"n": n, "title": title or _default_title(n), **_default_state()}
 
 
 def new_project(name: str, url: str, slug: Optional[str] = None) -> dict:
@@ -252,23 +269,87 @@ def exists(slug: str) -> bool:
     return project_json_path(slug).is_file()
 
 
+def _to_ranges(numbers: list[int]) -> list[list[int]]:
+    ranges: list[list[int]] = []
+    for n in sorted(numbers):
+        if ranges and n == ranges[-1][1] + 1:
+            ranges[-1][1] = n
+        else:
+            ranges.append([n, n])
+    return ranges
+
+
+def _from_ranges(ranges: list[list[int]]) -> list[int]:
+    return [n for first, last in ranges for n in range(first, last + 1)]
+
+
+def _chapter_state_path(slug: str, n) -> Path:
+    return stored_chapter_dir(slug, n) / CHAPTER_FILE
+
+
+def _stored_states(slug: str) -> dict[int, dict]:
+    """The state of every chapter that has a chapter.json, keyed by chapter number."""
+    root = project_dir(slug) / "chapters"
+    states = {}
+    for folder in root.iterdir() if root.is_dir() else []:
+        if not folder.name.isdigit() or not (folder / CHAPTER_FILE).is_file():
+            continue
+        try:
+            states[int(folder.name)] = read_json_with_backup_fallback(folder / CHAPTER_FILE)
+        except (OSError, ValueError):
+            continue
+    return states
+
+
+def save_chapter(slug: str, ch: dict) -> None:
+    """Write chapter `ch`'s state to its own file, in its own folder, and only when it has any: two people
+    saving different chapters never write the same file."""
+    state = {k: v for k, v in ch.items() if k not in ("n", "title")}
+    path = _chapter_state_path(slug, ch["n"])
+    if state == _default_state() and not path.exists():
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _atomic_write(path, json.dumps({"n": ch["n"], **state}, indent=2, ensure_ascii=False))
+
+
+def _migrate_chapters(slug: str, data: dict) -> None:
+    """Schema 1 kept every chapter in project.json. Move each chapter's state into its own file and
+    rewrite project.json without them. The old file is kept once as project.json.v1."""
+    legacy = project_json_path(slug)
+    shutil.copy2(legacy, legacy.with_name(legacy.name + ".v1"))
+    for ch in data["chapters"]:
+        save_chapter(slug, {**_default_chapter(ch["n"]), **ch})
+    data["schema"] = SCHEMA_VERSION
+    save(data)
+
+
+def _chapters_from_index(slug: str, data: dict) -> list[dict]:
+    titles = data.get("chapter_titles", {})
+    states = _stored_states(slug)
+    chapters = []
+    for n in _from_ranges(data.get("chapter_ranges", [])):
+        ch = _default_chapter(n, titles.get(str(n), ""))
+        ch.update({k: v for k, v in states.get(n, {}).items() if k not in ("n", "title")})
+        chapters.append(ch)
+    return chapters
+
+
 def load(slug: str) -> dict:
     # Falls back to project.json.bak if the primary file is missing, empty,
     # or unparsable - see atomic_io.py.
     data = read_json_with_backup_fallback(project_json_path(slug))
+    with _LOCK:
+        if "chapters" in data:
+            _migrate_chapters(slug, data)
+            data = read_json_with_backup_fallback(project_json_path(slug))
+    data["chapters"] = _chapters_from_index(slug, data)
     data.setdefault("schema", SCHEMA_VERSION)
-    data.setdefault("chapters", [])
     data.setdefault("site", None)
     data.setdefault("settings", default_settings())
     settings = default_settings()
     _deep_merge(settings, data["settings"])
     data["settings"] = settings
     for ch in data["chapters"]:
-        ch.setdefault("title", f"Episode {ch.get('n')}")
-        ch.setdefault("status", "not_started")
-        ch.setdefault("pdf", None)
-        ch.setdefault("video", None)
-        ch.setdefault("updated_at", None)
         ch["tone"] = tones.normalize(ch.get("tone"))
     data["settings"]["gemini"]["tone"] = tones.normalize(data["settings"]["gemini"].get("tone")) or tones.DEFAULT_TONE
     return data
@@ -286,8 +367,15 @@ def _deep_merge(base: dict, override: dict) -> None:
 
 
 def save(project: dict) -> None:
+    """Write the project-level data: settings, the source and the chapter index (count, numbers, titles).
+    A chapter's own state is saved with save_chapter."""
+    chapters = project["chapters"]
     project["updated_at"] = _now_iso()
-    _atomic_write(project_json_path(project["slug"]), json.dumps(project, indent=2, ensure_ascii=False))
+    document = {k: v for k, v in project.items() if k not in ("chapters", "detail_limit")}
+    document.update(
+        chapter_count=len(chapters), chapter_ranges=_to_ranges([ch["n"] for ch in chapters]),
+        chapter_titles={str(ch["n"]): ch["title"] for ch in chapters if ch["title"] != _default_title(ch["n"])})
+    _atomic_write(project_json_path(project["slug"]), json.dumps(document, indent=2, ensure_ascii=False))
 
 
 def create(name: str, url: str) -> dict:
@@ -329,7 +417,7 @@ def list_projects() -> list[dict]:
         out.append({
             "slug": p["slug"], "name": p["name"], "url": p["url"],
             "chapters": len(p["chapters"]), "counts": counts,
-            "updated_at": p.get("updated_at"),
+            "updated_at": max([p.get("updated_at") or "", *(ch["updated_at"] or "" for ch in p["chapters"])]),
         })
     out.sort(key=lambda r: r.get("updated_at") or "", reverse=True)
     return out
@@ -382,7 +470,7 @@ def set_status(slug: str, n, status: str, *, force: bool = False) -> dict:
         if force or STATUS_RANK[status] > STATUS_RANK.get(ch["status"], 0):
             ch["status"] = status
             ch["updated_at"] = _now_iso()
-            save(project)
+            save_chapter(slug, ch)
         return ch
 
 
@@ -401,7 +489,7 @@ def set_chapter_tone(slug: str, n, tone: Optional[str]) -> dict:
         if ch is None:
             raise KeyError(f"no chapter {n} in project {slug}")
         ch["tone"] = tones.normalize(tone)
-        save(project)
+        save_chapter(slug, ch)
     write_media_snapshot(slug, n)
     return ch
 
@@ -434,16 +522,18 @@ def derive_status(slug: str, n) -> dict:
         if ch is None:
             raise KeyError(f"no chapter {n} in project {slug}")
         if _apply_derived_status(slug, ch):
-            save(project)
+            save_chapter(slug, ch)
         return ch
 
 
 def derive_all(slug: str) -> dict:
-    """derive_status for every chapter with one load and at most one save. Returns the project."""
+    """derive_status for every chapter with one load; only the chapters that changed are written.
+    Returns the project."""
     with _LOCK:
         project = load(slug)
-        if any([_apply_derived_status(slug, ch) for ch in project["chapters"]]):
-            save(project)
+        for ch in project["chapters"]:
+            if _apply_derived_status(slug, ch):
+                save_chapter(slug, ch)
         return project
 
 
