@@ -82,6 +82,7 @@ import app_settings  # noqa: E402 - app-wide settings (the shared projects folde
 import bulk_download  # noqa: E402 - bulk chapter download for browser-only sources
 import pacing  # noqa: E402 - per-line mood: where the narration pauses and how fast it runs
 import tones  # noqa: E402 - chapter tones: script voice and speech delivery
+import totals  # noqa: E402 - cached project totals: speaking pace, Claude tokens
 import sites  # noqa: E402 - per-site adapters (tools/framer/sites/): metadata + chapter download
 from stages import s7_assemble as s7  # noqa: E402 - reused by the settings live-preview routes
 from stages import tts_kokoro  # noqa: E402 - the Kokoro voices and their preview
@@ -1536,7 +1537,6 @@ _RENDER_HISTORY_CAP = 20
 # Jobs whose length isn't per-beat: a branded join is a copy once the clips are
 # cached; a script is two Claude calls over a whole chapter (a rough guess).
 FIXED_ESTIMATE_S = {"brand": 15.0, "script": 600.0}
-MIN_RATE_CHARS = 20           # shorter clips are mostly pauses and say little about speaking rate
 
 
 class Job:
@@ -2021,21 +2021,6 @@ def _ensure_panels(chapter_id: str) -> list[Panel]:
     return panels
 
 
-def _speech_rate(slug: str) -> float | None:
-    """Characters per second of the project's generated narration audio, else None."""
-    chars = seconds = 0.0
-    for chapter in projects.load(slug)["chapters"]:
-        try:
-            beats = Manifest.load(projects.chapter_work_path(slug, chapter["n"])).beats
-        except (OSError, ValueError, KeyError):
-            continue
-        for beat in beats:
-            if beat.duration_s and beat.audio and Path(beat.audio).is_file() and len(beat.script_line or "") >= MIN_RATE_CHARS:
-                chars += len(beat.script_line)
-                seconds += beat.duration_s
-    return chars / seconds if seconds else None
-
-
 def _narration_estimate(slug: str, n: int, chars_per_sec: float) -> dict | None:
     """Words and estimated spoken length (seconds, at the project's speaking pace) of chapter
     `n`'s current script, or None when it has none yet."""
@@ -2112,7 +2097,7 @@ def _run_script_job(job: "Job") -> None:
                 style.append(_style_reference_directive(voice["style_reference"]))
             state_path = _claude_state_path(chapter_id)
             _ensure_dir(state_path.parent)
-            rate = _speech_rate(slug)
+            rate = totals.speech_rate(slug)
             job.note(f"Speaking rate: {rate:.1f} chars/s, measured from this project's generated audio" if rate else
                      f"No generated audio in this project yet; assuming {claude_engine.DEFAULT_CHARS_PER_SEC} chars/s")
             narration = claude_engine.run_chapter(
@@ -2870,7 +2855,7 @@ def api_get_project(slug):
     project = projects.derive_all(slug)
     limit = request.args.get("limit", type=int)
     project["detail_limit"] = limit if limit is not None else len(project["chapters"])
-    chars_per_sec = _speech_rate(slug) or claude_engine.DEFAULT_CHARS_PER_SEC
+    chars_per_sec = totals.speech_rate(slug) or claude_engine.DEFAULT_CHARS_PER_SEC
     for ch in project["chapters"][:project["detail_limit"]]:
         ch["effective_tone"] = projects.chapter_tone(project, ch["n"])
         ch["narration"] = _narration_estimate(slug, ch["n"], chars_per_sec)
@@ -2878,9 +2863,7 @@ def api_get_project(slug):
         ch["duration"] = branding.duration_of(video) if video.is_file() else None
         ch["steps"] = _chapter_steps(slug, ch["n"])
         ch["has_thumb"] = _thumb_source(slug, ch["n"]) is not None
-    chapter_totals = [(claude_engine.read_usage(projects.chapter_dir(slug, ch["n"]) / "work" / "claude" / "state.json")
-                       or {}).get("total") for ch in project["chapters"]]
-    project["claude_usage"] = claude_cli.sum_usage([t for t in chapter_totals if t])
+    project["claude_usage"] = totals.claude_usage(slug)
     return jsonify(project=project)
 
 
