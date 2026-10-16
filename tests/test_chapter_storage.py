@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import threading
 
 import projects
 from tests.support import IsolatedProjects
@@ -126,3 +127,43 @@ class MigrationTest(IsolatedProjects):
         loaded = projects.load(slug)
         self.assertEqual((loaded["name"], loaded["url"], loaded["site"]), ("Old Series", "https://example.test/old", None))
         self.assertIn("music", loaded["settings"])
+
+
+class MigrationRaceTest(MigrationTest):
+    """Several requests can load a schema 1 project at the same moment."""
+
+    def test_concurrent_loads_keep_the_original_and_migrate_once(self):
+        slug = self.legacy_project()
+        folder = projects.project_dir(slug)
+        original = (folder / "project.json").read_text(encoding="utf-8")
+        results, barrier = [], threading.Barrier(8)
+
+        def load():
+            barrier.wait()
+            results.append(projects.load(slug)["chapters"])
+
+        threads = [threading.Thread(target=load) for _ in range(8)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=20)
+        self.assertEqual(len(results), 8)
+        self.assertTrue(all(chapters == results[0] for chapters in results))
+        self.assertEqual((folder / "project.json.v1").read_text(encoding="utf-8"), original)
+
+    def test_migration_never_overwrites_a_chapter_file_that_already_exists(self):
+        slug = self.legacy_project()
+        newer = {"n": 1, "status": "complete", "pdf": "a.pdf", "video": "v.mp4", "updated_at": "2026-02-02T00:00:00+00:00", "tone": None}
+        path = projects.stored_chapter_dir(slug, 1) / "chapter.json"
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps(newer), encoding="utf-8")
+        projects.load(slug)
+        self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["status"], "complete")
+        self.assertEqual(projects.get_chapter(projects.load(slug), 1)["status"], "complete")
+
+    def test_an_existing_original_copy_is_never_replaced(self):
+        slug = self.legacy_project()
+        folder = projects.project_dir(slug)
+        (folder / "project.json.v1").write_text("the real original", encoding="utf-8")
+        projects.load(slug)
+        self.assertEqual((folder / "project.json.v1").read_text(encoding="utf-8"), "the real original")

@@ -314,11 +314,15 @@ def save_chapter(slug: str, ch: dict) -> None:
 
 def _migrate_chapters(slug: str, data: dict) -> None:
     """Schema 1 kept every chapter in project.json. Move each chapter's state into its own file and
-    rewrite project.json without them. The old file is kept once as project.json.v1."""
+    rewrite project.json without them. The old file is kept once as project.json.v1, and a chapter
+    file that already exists (written by someone who migrated first) is never replaced."""
     legacy = project_json_path(slug)
-    shutil.copy2(legacy, legacy.with_name(legacy.name + ".v1"))
+    original = legacy.with_name(legacy.name + ".v1")
+    if not original.exists():
+        shutil.copy2(legacy, original)
     for ch in data["chapters"]:
-        save_chapter(slug, {**_default_chapter(ch["n"]), **ch})
+        if not _chapter_state_path(slug, ch["n"]).exists():
+            save_chapter(slug, {**_default_chapter(ch["n"]), **ch})
     data["schema"] = SCHEMA_VERSION
     save(data)
 
@@ -338,10 +342,12 @@ def load(slug: str) -> dict:
     # Falls back to project.json.bak if the primary file is missing, empty,
     # or unparsable - see atomic_io.py.
     data = read_json_with_backup_fallback(project_json_path(slug))
-    with _LOCK:
-        if "chapters" in data:
-            _migrate_chapters(slug, data)
-            data = read_json_with_backup_fallback(project_json_path(slug))
+    if "chapters" in data:
+        with _LOCK:
+            data = read_json_with_backup_fallback(project_json_path(slug))   # it may have been migrated while we waited
+            if "chapters" in data:
+                _migrate_chapters(slug, data)
+                data = read_json_with_backup_fallback(project_json_path(slug))
     data["chapters"] = _chapters_from_index(slug, data)
     data.setdefault("schema", SCHEMA_VERSION)
     data.setdefault("site", None)
