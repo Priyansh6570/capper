@@ -141,3 +141,25 @@ class ChapterDetailsTest(ApiTest):
     def test_asking_for_details_creates_no_chapter_folders(self):
         self.details(",".join(map(str, range(12))))
         self.assertEqual(self.chapter_folders(self.slug), [])
+
+
+class PageAssetsTest(ApiTest):
+    """The page is index.html plus its stylesheet and scripts served from static/."""
+
+    def test_the_page_references_its_assets_and_has_nothing_inline(self):
+        html = self.client.get("/").get_data(as_text=True)
+        for reference in ('href="/static/css/app.css"', 'src="/static/js/icons.js"', 'src="/static/js/app.js"'):
+            self.assertIn(reference, html)
+        self.assertNotIn("<style", html)
+        self.assertNotRegex(html, r"<script>")
+
+    def test_each_asset_is_served_with_its_type(self):
+        for path, mimetype in (("/static/css/app.css", "text/css"), ("/static/js/icons.js", "text/javascript"),
+                               ("/static/js/app.js", "text/javascript")):
+            response = self.client.get(path)
+            self.assertEqual((response.status_code, response.mimetype), (200, mimetype), path)
+            self.assertGreater(len(response.get_data()), 1000)
+
+    def test_scripts_load_in_dependency_order(self):
+        html = self.client.get("/").get_data(as_text=True)
+        self.assertLess(html.index("/static/js/icons.js"), html.index("/static/js/app.js"))
