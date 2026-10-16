@@ -1,12 +1,7 @@
-"""Pre-download Chatterbox's Hugging Face model weights during setup, instead
-of on the app's first render (see stages/s6_tts.py - ChatterboxTurboTTS /
-ChatterboxTTS both call `from_pretrained()`, which lazily downloads on first
-use with no resume/retry of its own). Run by setup.bat as a dedicated step.
-
-Both repos are pre-fetched, not just the fast-default Turbo one: `_candidates()`
-in s6_tts.py always keeps "full" Chatterbox on cuda/cpu as the CPU-OOM-recovery
-and emotion-mode fallback, so a run that starts on Turbo can still hit a live
-download mid-render if only Turbo were cached here.
+"""Pre-download Chatterbox-Turbo's Hugging Face model weights during setup, instead
+of on the app's first render (see stages/s6_tts.py - ChatterboxTurboTTS calls
+`from_pretrained()`, which lazily downloads on first use with no resume/retry
+of its own). Run by setup.bat as a dedicated step.
 
 Unauthenticated Hugging Face downloads are heavily rate-limited and can crawl
 at a trickle for 10+ minutes without ever raising an error to retry on - the
@@ -48,16 +43,9 @@ STALL_POLL_S = 5
 HEARTBEAT_S = 10              # print a "still downloading" line at least this often while healthy
 BACKOFF_S = [5, 15, 30, 60, 90]   # between attempts; the last value repeats
 
-# kind -> (repo_id, allow_patterns) - mirrors exactly what stages/s6_tts.py's two
-# Chatterbox loaders request via chatterbox.tts_turbo/tts .from_pretrained(), and
-# is imported directly from there (see s6_tts._ensure_model_cached) so the two
-# can never drift apart - keyed by the same "turbo"/"full" names s6_tts.py uses.
-MODELS: dict[str, tuple[str, list[str]]] = {
-    "turbo": ("ResembleAI/chatterbox-turbo",
-              ["*.safetensors", "*.json", "*.txt", "*.pt", "*.model"]),
-    "full": ("ResembleAI/chatterbox",
-             ["ve.safetensors", "t3_cfg.safetensors", "s3gen.safetensors", "tokenizer.json", "conds.pt"]),
-}
+# (repo_id, allow_patterns) - mirrors exactly what chatterbox.tts_turbo's from_pretrained() requests,
+# and is imported directly from here (see s6_tts._ensure_model_cached) so the two can never drift apart.
+MODEL: tuple[str, list[str]] = ("ResembleAI/chatterbox-turbo", ["*.safetensors", "*.json", "*.txt", "*.pt", "*.model"])
 
 
 def _hf_cache_dir() -> Path:
@@ -150,12 +138,10 @@ def main() -> int:
               "Face's anonymous-IP throttling. See SETUP_GUIDE.md - 'Speeding up "
               "the voice model download' - for how to add one (free, ~1 minute).")
 
-    ok = True
-    for repo_id, patterns in MODELS.values():
-        ok = download_with_retry(repo_id, patterns) and ok
+    ok = download_with_retry(*MODEL)
 
     if not ok:
-        print("\nOne or more Chatterbox model downloads did not finish after every "
+        print("\nThe Chatterbox model download did not finish after every "
               "retry. This is NOT fatal: the app will fall back to downloading the "
               "rest on first use, same as before this step existed. If your "
               "connection can't reliably reach Hugging Face at all, see "

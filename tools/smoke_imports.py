@@ -18,7 +18,7 @@ ROOT_MODULES = ("orchestrator", "deps")
 SCRIPTS = {"tray_launcher"}     # exits the process when its own imports fail, so it is tested by running it
 ENGINE_MODULES = (
     "chatterbox.tts", "chatterbox.tts_turbo", "kokoro", "espeakng_loader",
-    "phonemizer.backend.espeak.wrapper", "torchaudio.functional", "edge_tts", "mutagen.mp3",
+    "phonemizer.backend.espeak.wrapper", "torchaudio.functional",
     "huggingface_hub",
 )
 

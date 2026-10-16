@@ -11,11 +11,7 @@ DEFAULT_TONE = "dramatic"
 
 
 class Delivery(NamedTuple):
-    """Adjustments applied on top of the voice's own settings: Chatterbox exaggeration / cfg_weight
-    offsets (full model only), and a speaking-rate factor (above 1 is faster) applied with each line's
-    own pace (see pacing.py)."""
-    exaggeration: float
-    cfg_weight: float
+    """A speaking-rate factor (above 1 is faster) applied on top of each line's own pace (see pacing.py)."""
     speed: float
 
 
@@ -26,7 +22,7 @@ TONES = {
                   "and cut short and hard on impact. Use elevated, concrete words (vow, ruin, reckoning) only "
                   "where the notes show high stakes, and plain wording elsewhere. Frame turning points as "
                   "moments that change the course of things. No jokes."),
-        "delivery": Delivery(0.15, -0.05, 0.96),
+        "delivery": Delivery(0.96),
     },
     "serious": {
         "label": "Serious",
@@ -34,7 +30,7 @@ TONES = {
                   "declarative sentences, no exclamation marks, no flourish. Let tension and feeling come "
                   "through what characters do and say, stated with restraint. Humour only when a character "
                   "plainly says something funny, and then deadpan."),
-        "delivery": Delivery(-0.10, 0.0, 0.98),
+        "delivery": Delivery(0.98),
     },
     "dramatic": {
         "label": "Dramatic",
@@ -42,7 +38,7 @@ TONES = {
                   "moments of shock or pain, a longer sentence that lingers on a feeling, contrast between "
                   "what a character hoped and what came. Dwell on what they feel at the emotional peaks the "
                   "notes mark. Intense but not melodramatic: no stacked exclamation marks."),
-        "delivery": Delivery(0.10, -0.05, 0.95),
+        "delivery": Delivery(0.95),
     },
     "comedic": {
         "label": "Comedic",
@@ -50,7 +46,7 @@ TONES = {
                   "a character believes and what happens, punchlines placed at the end of a sentence, playful "
                   "word choice. Joke only about things the notes show, never at the plot's expense; when a "
                   "scene is truly sad or frightening, play it straight."),
-        "delivery": Delivery(0.10, 0.05, 1.06),
+        "delivery": Delivery(1.06),
     },
 }
 
@@ -70,7 +66,7 @@ def style_instruction(tone: str | None) -> str:
             "the narration neither longer nor shorter.")
 
 
-NEUTRAL = Delivery(0.0, 0.0, 1.0)
+NEUTRAL = Delivery(1.0)
 
 
 def delivery(tone: str | None) -> Delivery:

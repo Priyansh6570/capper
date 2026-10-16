@@ -24,7 +24,6 @@ DISTRIBUTIONS = {
     "chatterbox": ("chatterbox-tts",),
     "cv2": ("opencv-python-headless", "opencv-python"),
     "dotenv": ("python-dotenv",),
-    "edge_tts": ("edge-tts",),
     "fitz": ("PyMuPDF",),
     "phonemizer": ("phonemizer-fork",),
 }

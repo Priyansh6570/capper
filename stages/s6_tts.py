@@ -1,6 +1,6 @@
-"""Stage 6 - Emotional voiceover.  Runs on: laptop (Chatterbox TTS, local).
+"""Stage 6 - Voiceover.  Runs on: laptop (Chatterbox-Turbo TTS, local).
 
-Synthesizes a narration clip per panel with Resemble AI's **Chatterbox** TTS
+Synthesizes a narration clip per panel with Resemble AI's **Chatterbox-Turbo** TTS
 running locally (package `chatterbox-tts`). Tuned to survive a 4GB RTX 3050:
 the model is loaded ONCE, panels are synthesized sequentially (no batching), and
 CUDA cache is freed between lines. The model is loaded in its native fp32; on the
@@ -10,7 +10,7 @@ and automatic (half-casting the submodules left some internal tensors fp32 and
 broke the matmuls).
 
 Model selection falls back automatically on failure/OOM:
-    Chatterbox-Turbo on GPU  ->  full Chatterbox on GPU  ->  CPU
+    Chatterbox-Turbo on GPU  ->  Chatterbox-Turbo on CPU
 Each candidate is validated with a tiny test synth at load time, so a runtime or
 VRAM problem is caught immediately and we drop to the next option instead of
 crashing mid-run. If an individual line OOMs during the run, that one line is
@@ -18,21 +18,10 @@ retried on CPU (a CPU model is lazily loaded once) and the run continues.
 
 Pacing: each line is voiced one sentence at a time and joined by `pacing.voice_line`, which trims the
 silence the engine leaves around a sentence and lays the pauses itself, from the line's mood
-(`panel.emotion`: a pace such as tense, reveal or sad, or a stage 3 emotion). Pauses therefore fall
-only between sentences and after the line, and speaking speed follows the mood and the chapter's tone
+(`panel.emotion`: a pace such as tense, reveal or sad). Pauses therefore fall only between
+sentences and after the line, and speaking speed follows the mood and the chapter's tone
 (Turbo has no speed control, so its sentences are time-stretched). The clip written to disk includes
 those pauses; stage 7 adds none of its own.
-
-Emotion -> prosody: `panel.emotion` maps to small, deliberately subtle
-exaggeration + cfg_weight tweaks (tense/angry more expressive, excited up and a
-touch faster, sad softer and slower; neutral is baseline). These knobs only take
-effect on the FULL model - Turbo's generate() ignores them (flat affect). So the
-emotion mapping is a no-op under the default Turbo path.
-
-Emotional voice: set env `MANHWA_TTS_EMOTION=1` to DROP Turbo and use the full
-Chatterbox model, where the per-emotion exaggeration/cfg_weight actually apply.
-Turbo stays the fast default; the full model is slower but emotional. The run
-prints which model is active and whether emotion is being applied.
 
 Voice cloning: a PROJECT-specific reference clip (set in the framer's project
 settings, uploaded as `projects/<slug>/assets/voice.wav`) is used if set,
@@ -51,14 +40,10 @@ Kokoro: a project can choose Kokoro instead (Project settings -> Narration voice
 chapter's media settings then carry `tts: {engine: "kokoro", kokoro_voice}` and the whole chapter
 is voiced by `tts_kokoro.run`; everything above applies to the Chatterbox engine only.
 
-Draft mode: set env `MANHWA_TTS_DRAFT=1` to use the fast edge-tts path instead
-(no GPU, seconds per chapter) when you just want timings to iterate on stage 7.
 """
 from __future__ import annotations
 
-import asyncio
 import json
-import os
 import sys
 from pathlib import Path
 
@@ -67,7 +52,7 @@ import numpy as np
 from atomic_io import clear_directory
 import pacing
 import tones
-from config import ROOT, chapter_work_dir, TTS_VOICE
+from config import ROOT, chapter_work_dir
 from gpu import nvidia_gpu, record_usage
 from manifest import Manifest
 from stages import tts_kokoro
@@ -79,7 +64,7 @@ VOICE_REF = ROOT / "assets" / "voice_ref.wav"
 # --------------------------------------------------------------------------- #
 # Render-time safety net for a missing/incomplete model cache
 # --------------------------------------------------------------------------- #
-# setup.bat pre-downloads both Chatterbox repos at install time (see
+# setup.bat pre-downloads the Chatterbox repo at install time (see
 # tools/predownload_tts_models.py) specifically so this never has to happen
 # here - but that step is best-effort (it can exhaust its retries on a bad
 # connection, and on an installer-driven unattended install its own warning
@@ -92,14 +77,14 @@ VOICE_REF = ROOT / "assets" / "voice_ref.wav"
 # logic here instead, but only when the cache actually needs it - a fully
 # cached model (the normal case, post-setup) hits the local_files_only check
 # below and returns immediately, no network touched.
-def _ensure_model_cached(kind: str) -> None:
+def _ensure_model_cached() -> None:
     try:
         tools_dir = str(ROOT / "tools")
         if tools_dir not in sys.path:
             sys.path.insert(0, tools_dir)
         import predownload_tts_models as _pm
 
-        repo_id, patterns = _pm.MODELS[kind]
+        repo_id, patterns = _pm.MODEL
         try:
             from huggingface_hub import snapshot_download
             snapshot_download(repo_id=repo_id, allow_patterns=patterns, local_files_only=True)
@@ -208,81 +193,25 @@ def _patch_chatterbox_float32() -> None:
 
 _patch_chatterbox_float32()
 
-# Load order. Each tuple is (kind, device). Tried top to bottom; the first that
-# loads AND passes a tiny validation synth wins. The model is always loaded in
-# its native fp32; on cuda, generation runs under torch.autocast fp16 instead of
-# half-casting the modules (which left some internal tensors fp32 and broke the
-# matmuls with "mat1 and mat2 must have the same dtype").
-#
-# Turbo is the FAST DEFAULT but its generate() ignores the exaggeration/cfg_weight
-# kwargs (see `_generate`'s TypeError fallback) -> flat affect. MANHWA_TTS_EMOTION=1
-# drops Turbo and uses the FULL model, which honours those per-emotion knobs (the
-# slower, genuinely emotional option).
-_CANDIDATES_FAST = [
-    ("turbo", "cuda"),  # Chatterbox-Turbo, GPU  (lightest, fastest; flat affect)
-    ("full",  "cuda"),  # full Chatterbox, GPU
-    ("full",  "cpu"),   # full Chatterbox, CPU   (always works)
-]
-_CANDIDATES_EMOTION = [
-    ("full",  "cuda"),  # full Chatterbox, GPU   (honours emotion knobs)
-    ("full",  "cpu"),   # full Chatterbox, CPU   (always works)
-]
-
-
-def _emotion_mode() -> bool:
-    """MANHWA_TTS_EMOTION=1 -> use the FULL Chatterbox model so the per-emotion
-    exaggeration/cfg_weight actually apply (Turbo ignores them). Slower; the fast
-    default stays Turbo."""
-    return os.environ.get("MANHWA_TTS_EMOTION", "").strip() not in ("", "0", "false", "False")
-
-
-def _candidates() -> list[tuple[str, str]]:
-    """Model load order for this run: emotion mode skips Turbo, fast default leads
-    with it."""
-    return _CANDIDATES_EMOTION if _emotion_mode() else _CANDIDATES_FAST
-
-# emotion -> (exaggeration, cfg_weight). Baseline is 0.5 / 0.5. In Chatterbox a
-# higher `exaggeration` is more expressive; a higher `cfg_weight` tightens and
-# slightly speeds up pacing, lower is slower/more deliberate. Kept subtle.
-_EMOTION = {
-    "neutral":   (0.50, 0.50),
-    "tense":     (0.60, 0.55),
-    "angry":     (0.70, 0.55),
-    "excited":   (0.70, 0.60),
-    "surprised": (0.65, 0.55),
-    "sad":       (0.35, 0.40),
-    "calm":      (0.50, 0.50),
-    "action":    (0.70, 0.60),
-    "reveal":    (0.65, 0.55),
-    "comic":     (0.60, 0.55),
-}
-_EMOTION_DEFAULT = _EMOTION["neutral"]
-
-
-def _emotion_params(emotion: str | None, tone: str | None = None) -> tuple[float, float]:
-    """(exaggeration, cfg_weight) for a beat's emotion, shifted by the chapter's tone."""
-    exaggeration, cfg_weight = _EMOTION.get((emotion or "").strip().lower(), _EMOTION_DEFAULT)
-    shift = tones.delivery(tone)
-    return (min(1.0, max(0.25, exaggeration + shift.exaggeration)),
-            min(0.8, max(0.2, cfg_weight + shift.cfg_weight)))
+# Devices to load the model on, tried in order. The first that loads AND passes a tiny validation
+# synth wins. The model is always loaded in its native fp32; on cuda, generation runs under
+# torch.autocast fp16 instead of half-casting the modules (which left some internal tensors fp32
+# and broke the matmuls with "mat1 and mat2 must have the same dtype").
+_DEVICES = ("cuda", "cpu")
 
 
 # --------------------------------------------------------------------------- #
 # Chatterbox loading + synthesis
 # --------------------------------------------------------------------------- #
-def _load_model(kind: str, device: str):
-    """Construct one Chatterbox model on `device` in its native fp32. On cuda we
-    do NOT half-cast the submodules (that left internal tensors fp32 and broke
-    matmuls); fp16 is applied at generation time via torch.autocast instead."""
-    _ensure_model_cached(kind)
-    if kind == "turbo":
-        from chatterbox.tts_turbo import ChatterboxTurboTTS
-        model = ChatterboxTurboTTS.from_pretrained(device=device)
-        if device == "cuda":
-            _halve_t3(model.t3)
-    else:
-        from chatterbox.tts import ChatterboxTTS
-        model = ChatterboxTTS.from_pretrained(device=device)
+def _load_model(device: str):
+    """Construct Chatterbox-Turbo on `device` in its native fp32. On cuda we do NOT half-cast the
+    submodules (that left internal tensors fp32 and broke matmuls); fp16 is applied at generation
+    time via torch.autocast instead."""
+    _ensure_model_cached()
+    from chatterbox.tts_turbo import ChatterboxTurboTTS
+    model = ChatterboxTurboTTS.from_pretrained(device=device)
+    if device == "cuda":
+        _halve_t3(model.t3)
     return model
 
 
@@ -309,13 +238,13 @@ def _build_engine():
         print(f"  [s6] WARNING: torch {torch.__version__} cannot use the NVIDIA GPU - narration "
               f"will run on the CPU. See Settings -> GPU acceleration.")
     last_err: Exception | None = None
-    for kind, device in _candidates():
+    for device in _DEVICES:
         if device == "cuda" and not torch.cuda.is_available():
             continue
-        label = f"{kind}/{device}"
+        label = f"turbo/{device}"
         try:
-            print(f"  loading Chatterbox: trying {label} ...")
-            model = _load_model(kind, device)
+            print(f"  loading Chatterbox-Turbo: trying {label} ...")
+            model = _load_model(device)
             with torch.inference_mode():       # validate it can really generate
                 if device == "cuda":
                     with torch.autocast("cuda", dtype=torch.float16):
@@ -333,13 +262,11 @@ def _build_engine():
                 torch.cuda.empty_cache()
             except Exception:  # noqa: BLE001
                 pass
-    raise RuntimeError(f"No Chatterbox model could be loaded: {last_err}")
+    raise RuntimeError(f"Chatterbox-Turbo could not be loaded: {last_err}")
 
 
-def _generate(model, device: str, text: str, exaggeration: float,
-              cfg_weight: float, autocast: bool):
-    """One synth under inference_mode, freeing CUDA cache afterwards. Turbo may not
-    accept the prosody kwargs; fall back to a plain call if so.
+def _generate(model, device: str, text: str, autocast: bool):
+    """One synth under inference_mode, freeing CUDA cache afterwards.
 
     The reference conditioning was computed once up front (`_Engine.prepare_ref`), in
     fp32 and outside autocast: running it inside the fp16 region crashes s3tokenizer's
@@ -351,10 +278,7 @@ def _generate(model, device: str, text: str, exaggeration: float,
     region = (torch.autocast("cuda", dtype=torch.float16)
               if autocast else contextlib.nullcontext())
     with torch.inference_mode(), region:
-        try:
-            wav = model.generate(text, exaggeration=exaggeration, cfg_weight=cfg_weight)
-        except TypeError:
-            wav = model.generate(text)
+        wav = model.generate(text)
     if device == "cuda":
         torch.cuda.empty_cache()
     return wav
@@ -365,7 +289,7 @@ class _Engine:
 
     def __init__(self):
         self.model, self.device, self.sr, self.label = _build_engine()
-        self._cpu = None  # lazy full-Chatterbox-on-CPU for OOM recovery
+        self._cpu = None  # lazy Turbo-on-CPU for OOM recovery
         self._ref = None  # float32/mono/24k voice-reference wav the models are conditioned on
 
     def prepare_ref(self, ref_path: str | None, chapter_id: str) -> None:
@@ -389,25 +313,24 @@ class _Engine:
             if self.device == "cpu":
                 self._cpu = self.model
             else:
-                print("    loading CPU fallback model (full Chatterbox) ...")
-                self._cpu = _load_model("full", "cpu")
+                print("    loading CPU fallback model (Chatterbox-Turbo) ...")
+                self._cpu = _load_model("cpu")
                 if self._ref:
                     self._condition(self._cpu)
         return self._cpu
 
-    def synth(self, text, exaggeration, cfg_weight):
+    def synth(self, text):
         """Returns (wav_tensor, sample_rate, device_used)."""
         import torch
 
         try:
-            wav = _generate(self.model, self.device, text, exaggeration, cfg_weight,
-                            autocast=self.device == "cuda" and not self._ref)
+            wav = _generate(self.model, self.device, text, autocast=self.device == "cuda" and not self._ref)
             return wav, self.sr, self.device
         except torch.cuda.OutOfMemoryError:
             print("    CUDA OOM on this line; retrying it on CPU")
             torch.cuda.empty_cache()
             cpu = self._cpu_model()
-            wav = _generate(cpu, "cpu", text, exaggeration, cfg_weight, autocast=False)
+            wav = _generate(cpu, "cpu", text, autocast=False)
             return wav, cpu.sr, "cpu(oom-fallback)"
 
 
@@ -457,78 +380,16 @@ def _save_wav(wav: np.ndarray, sr: int, out: Path) -> float:
 
 
 # --------------------------------------------------------------------------- #
-# Draft path (edge-tts) - fast, no GPU. Enabled with MANHWA_TTS_DRAFT=1.
-# --------------------------------------------------------------------------- #
-_DRAFT_PROSODY = {
-    "neutral": ("+0%", "+0Hz"), "tense": ("+8%", "+0Hz"),
-    "angry": ("+6%", "-2Hz"),   "excited": ("+12%", "+6Hz"),
-    "surprised": ("+8%", "+8Hz"), "sad": ("-10%", "-6Hz"),
-}
-
-
-async def _edge_synth(text: str, out: Path, rate: str, pitch: str) -> None:
-    import edge_tts
-
-    for attempt in range(4):
-        try:
-            await edge_tts.Communicate(text, TTS_VOICE, rate=rate,
-                                       pitch=pitch).save(str(out))
-            if out.exists() and out.stat().st_size > 0:
-                return
-        except Exception:  # noqa: BLE001 - retry transient network errors
-            pass
-        await asyncio.sleep(2 ** attempt)
-    raise RuntimeError(f"edge-tts draft failed for {out.name}")
-
-
-def _run_draft(m: Manifest, audio_dir: Path) -> Manifest:
-    from mutagen.mp3 import MP3
-
-    panels = m.kept_panels()  # the matched narration beats (STAGE B)
-    spoken = 0
-    for panel in panels:
-        line = (panel.script_line or "").strip()
-        if not line:
-            panel.audio, panel.duration_s = None, 0
-            continue
-        out = audio_dir / f"{panel.id}.mp3"
-        ex, cfg = _emotion_params(panel.emotion)  # noqa: F841 - draft uses rate/pitch
-        rate, pitch = _DRAFT_PROSODY.get(
-            (panel.emotion or "").strip().lower(), ("+0%", "+0Hz"))
-        asyncio.run(_edge_synth(line, out, rate, pitch))
-        panel.audio = str(out)
-        panel.duration_s = round(float(MP3(str(out)).info.length), 2)
-        spoken += 1
-
-    total = sum(p.duration_s or 0 for p in panels)
-    print(f"  [draft] voiced {spoken}/{len(panels)} panels with edge-tts "
-          f"({TTS_VOICE}), ~{total:.1f}s total -> {audio_dir}")
-    record_usage("audio", "edge-tts draft", False)
-    m.stage = "audio"
-    return m
-
-
-# --------------------------------------------------------------------------- #
 def run(m: Manifest) -> Manifest:
     audio_dir = chapter_work_dir(m.chapter_id) / "audio"
     clear_directory(audio_dir)   # the voice of the previous run, including lines that no longer exist
     (chapter_work_dir(m.chapter_id) / "_voice_ref_f32.wav").unlink(missing_ok=True)
-
-    if os.environ.get("MANHWA_TTS_DRAFT", "").strip() not in ("", "0", "false", "False"):
-        return _run_draft(m, audio_dir)
 
     settings = _load_media_settings(m.chapter_id)
     tts = settings.get("tts") or {}
     if tts.get("engine") == "kokoro":
         return tts_kokoro.run(m, audio_dir, tts.get("kokoro_voice") or tts_kokoro.DEFAULT_VOICE,
                               tones.delivery(settings.get("tone")).speed)
-
-    if _emotion_mode():
-        print("  [s6] MANHWA_TTS_EMOTION=1: FULL Chatterbox (Turbo disabled) - "
-              "per-emotion exaggeration/cfg_weight ARE applied")
-    else:
-        print("  [s6] fast default: Chatterbox-Turbo (flat affect; emotion knobs "
-              "ignored). Set MANHWA_TTS_EMOTION=1 for the emotional full model")
 
     project_voice = settings.get("voice")
     if project_voice and Path(project_voice).exists():
@@ -544,7 +405,7 @@ def run(m: Manifest) -> Manifest:
     # Pre-bake the reference to float32/mono/24k once; passing the raw clip lets
     # Chatterbox's loader widen it to float64 and crash log_mel_spectrogram.
     engine.prepare_ref(ref, m.chapter_id)
-    panels = m.kept_panels()  # the matched narration beats (STAGE B)
+    panels = m.kept_panels()
     spoken = 0
     for panel in panels:
         line = (panel.script_line or "").strip()
@@ -553,12 +414,11 @@ def run(m: Manifest) -> Manifest:
             continue
 
         mood = pacing.pace_of(panel.emotion, line)
-        ex, cfg = _emotion_params(mood, settings.get("tone"))
         used = engine.device
 
         def speak(sentence: str, speed: float) -> np.ndarray:
             nonlocal used
-            wav, _, used = engine.synth(sentence, ex, cfg)
+            wav, _, used = engine.synth(sentence)
             return pacing.stretch(wav.detach().to("cpu").numpy().reshape(-1), engine.sr, speed)
 
         wav = pacing.voice_line(line, mood, speak, engine.sr, tones.delivery(settings.get("tone")).speed)
@@ -568,7 +428,7 @@ def run(m: Manifest) -> Manifest:
         panel.audio = str(out)
         panel.duration_s = round(dur, 2)
         spoken += 1
-        print(f"    [{panel.order:03d}] ({mood}: ex={ex:.2f} cfg={cfg:.2f}) {dur:5.2f}s on {used}")
+        print(f"    [{panel.order:03d}] ({mood}) {dur:5.2f}s on {used}")
 
     total = sum(p.duration_s or 0 for p in panels)
     print(f"  voiced {spoken}/{len(panels)} panels with Chatterbox "

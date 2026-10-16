@@ -34,8 +34,6 @@ FEATURE_PACKAGES = {
     "kokoro": "AI narration (Kokoro voice)",
     "soundfile": "voice reference processing",
     "numpy": "audio processing",
-    "edge-tts": "the draft (fast, no-GPU) narration mode",
-    "mutagen": "the draft narration mode's clip-length reading",
     "moviepy": "video rendering (fallback path)",
 }
 

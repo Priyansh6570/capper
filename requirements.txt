@@ -55,11 +55,6 @@ pykakasi==2.3.0
 pyloudnorm
 omegaconf
 
-# Stage 6 --draft fast path (MANHWA_TTS_DRAFT=1): edge-tts neural voices, no
-# GPU, seconds per chapter. Remove these two if you never use the draft path.
-edge-tts>=6.1
-mutagen>=1.47         # draft: read the real MP3 duration
-
 # --- Stage 7: render the 1920x1080 MP4 -------------------------------------
 # Primary path is a direct ffmpeg call (EXTERNAL tool, not pip-installable -
 # setup.bat downloads it into vendor/ffmpeg, else it must be on PATH). Encodes with h264_nvenc when available, else libx264.
