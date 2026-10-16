@@ -6,12 +6,13 @@ breakdown forward) and returns a factual breakdown plus a per-panel catalogue wh
 list the subjects worth showing and roughly where they sit. Pass 2 is a fresh, text-only call
 that writes the narration from that breakdown and picks, per block, subjects to show, the
 play mode and any flop. The exact crops, bubble handling, frame limits and flop safety are
-then applied locally (see frame_crop.py). Progress and token totals are saved after each batch and pass; the
+then applied locally (see frame_crop.py); frames are never blurred. Progress and token totals are saved after each batch and pass; the
 breakdown also feeds the project's story-so-far summary and character sheet.
 """
 from __future__ import annotations
 
 import base64
+import collections
 import io
 import json
 import math
@@ -25,6 +26,7 @@ from PIL import Image
 import bubbles
 import claude_cli
 import frame_crop
+import pacing
 import panel_split
 from atomic_io import atomic_write_json, read_json_with_backup_fallback
 from manifest import Panel
@@ -35,12 +37,9 @@ BATCH_PANELS = 40           # images per pass-1 call (the API allows 100 and cap
 FRAME_KINDS = ("character", "action", "scene", "sound_effect")
 KINDS = FRAME_KINDS + ("dialogue_bubble", "junk")
 MAX_FRAMES = 3
-HEAVY_BLUR = "g"            # the editor's heavy gaussian blur style
+PANELS_PER_BLOCK = 2        # a scene gets at least one block for every this many story panels in it
 MAX_FRAME_OVERLAP = 0.6     # a frame covering more than this share of an earlier one in its block is dropped
 DEFAULT_CHARS_PER_SEC = 15  # speaking rate assumed until a project has generated audio to measure
-CHARS_PER_WORD = 6
-WORDS_PER_BLOCK = 35
-LENGTH_TOLERANCE = 0.9      # narration at least this share of the target length counts as reaching it
 
 _STRINGS = {"type": "array", "items": {"type": "string"}}
 
@@ -98,9 +97,10 @@ NARRATION_SCHEMA = {
     "type": "object",
     "required": ["blocks"],
     "properties": {"blocks": {"type": "array", "items": {
-        "type": "object", "required": ["narration", "mode", "frames"],
+        "type": "object", "required": ["narration", "pace", "mode", "frames"],
         "properties": {
             "narration": {"type": "string"},
+            "pace": {"type": "string", "enum": list(pacing.PACES)},
             "mode": {"type": "string", "enum": ["sequence", "together"]},
             "frames": {"type": "array", "items": {
                 "type": "object", "required": ["panel_id", "subject", "flop"],
@@ -197,8 +197,16 @@ def _wants_text(scene: dict) -> str:
     return "; ".join(f"{w['name']}: {w['wants']}" for w in scene["wants"])
 
 
+def _art_count(scene: dict, kinds: dict[str, str]) -> int:
+    return sum(kinds.get(i) in FRAME_KINDS for i in scene["panel_ids"])
+
+
 def _has_art(scene: dict, kinds: dict[str, str]) -> bool:
-    return any(kinds.get(i) in FRAME_KINDS for i in scene["panel_ids"])
+    return _art_count(scene, kinds) > 0
+
+
+def _min_blocks(scene: dict, kinds: dict[str, str]) -> int:
+    return math.ceil(_art_count(scene, kinds) / PANELS_PER_BLOCK)
 
 
 def _kinds(breakdown: dict) -> dict[str, str]:
@@ -224,36 +232,59 @@ def _catalogue_text(breakdown: dict, panels: dict[str, Panel]) -> str:
 
 
 def _narration_prompt(memory: dict, ch_no: int, brief: str, breakdown: dict, style: str,
-                      target_minutes: float, chars_per_sec: float, panels: dict[str, Panel]) -> str:
+                      panels: dict[str, Panel]) -> str:
     kinds = _kinds(breakdown)
     scenes = "\n".join(
-        f"[{s['panel_ids'][0]}-{s['panel_ids'][-1]}] {s['importance']} | {s['location']} | "
+        f"[{s['panel_ids'][0]}-{s['panel_ids'][-1]}] {_art_count(s, kinds)} story panels, at least "
+        f"{_min_blocks(s, kinds)} blocks | {s['importance']} | {s['location']} | "
         f"{', '.join(s['characters_present'])} | {s['what_happens']} | wants: {_wants_text(s)} | "
         f"feelings: {s['feelings']} | stakes: {s['stakes']} | world: {s['world_info']}"
         for s in breakdown["scenes"] if _has_art(s, kinds))
     catalogue = _catalogue_text(breakdown, panels)
+    art = sum(kind in FRAME_KINDS for kind in kinds.values())
     uncertain = "\n".join(f"{', '.join(u['panel_ids'])}: {u['note']}" for u in breakdown["uncertain"]) or "(none)"
-    words = round(target_minutes * 60 * chars_per_sec / CHARS_PER_WORD)
     return (
         f"You are writing the recap narration for chapter {ch_no} of a manhwa, working only from the notes "
         f"below (you have no images).\n\n{_context(memory, ch_no, brief)}\n\n"
         f"Chapter summary:\n{breakdown['chapter_summary']}\n\nScenes, in order:\n{scenes}\n\n"
         f"Uncertain (do not resolve these):\n{uncertain}\n\n"
         f"Frame candidates (the only panels you may use), each followed by its numbered subjects:\n{catalogue}\n\n{style}\n\n"
-        "Return ordered blocks.\n"
+        "Return ordered blocks, written the way a skilled recap-channel narrator tells the story to a viewer "
+        "who cannot see the panels: you add understanding and energy, you do not read the panels out.\n"
         "- Start with the chapter's first scene and narrate every scene in order; none may be skipped. "
         "Never narrate title cards, logos, credits, ads or chapter-end cards, and never mention that the "
         "chapter or an episode ended.\n"
-        "- Pace: one story beat per block, one to three sentences, slow and clear, in story order. The "
-        f"narration must total {words} words or a little more (about {target_minutes:g} minutes read aloud), "
-        f"which is roughly {words // WORDS_PER_BLOCK} blocks of about {WORDS_PER_BLOCK} words.\n"
-        "- Reach that length through depth, never padding: give every beat in a scene its own block; at "
-        "turning points, reveals and emotional peaks explain what the character feels and is thinking right "
-        "then; say what is at stake; explain the world or power system when a scene shows it; and link to "
-        "earlier events from the story so far when they bear on what happens. Ground all of it in the "
-        "notes. Never invent plot, names, motives or facts they do not support, never repeat what a "
-        "previous block already said, and add no filler. If the notes cannot support the full length, stop "
-        "where they run out.\n"
+        f"- Cover the whole chapter. The notes list {art} panels with story art and every one of them belongs "
+        "to a block: a block narrates one moment spanning one to three panels, and a panel that only continues "
+        "the moment before it is folded into that block, never dropped. Each scene line gives its panel count "
+        "and the fewest blocks it may get, so on average a block covers no more than two panels; a scene may "
+        "get more. There is no target length beyond that; the story sets it. A fight or action sequence may be "
+        "compressed into flowing narration, but each hit, turn, reveal and reaction that matters is still "
+        "narrated.\n"
+        "- A block is two to three sentences, about 25 to 50 words, in story order; turning points, reveals "
+        "and emotional peaks may run a little longer. Two distinct beats are two blocks; one beat is never "
+        "spread over several blocks.\n"
+        "- Every block does more than say what happened. Say why it matters and what is at stake; what a "
+        "character wants, feels or is thinking when the notes show it; how a rule or power of this world "
+        "works when a scene shows one; a brief reminder of an earlier event from the story so far when it "
+        "bears on the moment; and let tension build toward a turn and react when a reveal lands.\n"
+        "- Filler is the only thing to leave out: repeating an event in other words, inventing events, "
+        "motives, inner thoughts or descriptions (of a person, a dish, a place) the notes do not "
+        "give, generic hype (\"you won't believe what happens next\"), and stretching one panel over lines "
+        "that add nothing. Ground everything else in the notes; never invent plot, names, numbers or facts. "
+        "Speak as the narrator inside the story: never mention the notes or the panels, and when something "
+        "is unclear or unnamed, leave it out instead of saying it is unknown. If the narration is in the first "
+        "person, \"I\" is only the protagonist; every other character is named or called he, she or a man, "
+        "never \"I\".\n"
+        "- Write for the ear. End each thought with a full stop and use a comma only where a speaker would "
+        "pause. No dashes, ellipses, colons, semicolons or parentheses, and no quotation marks in the middle "
+        "of a sentence: report speech, or end the sentence on a short quote.\n"
+        "- `pace`: how the block is delivered. Most blocks are \"calm\". \"tense\" is for suspense and "
+        "confrontation, \"action\" only for physical fights and fast, violent events, \"sad\" for grief, loss "
+        "and quiet emotion. \"reveal\" is only for a real surprise or discovery, a few times in a chapter at "
+        "most: the voice pauses before it, so put the revelation in the block's last sentence. \"comic\" is "
+        "only for a real joke or comic reaction: the voice pauses before the punchline, so put it in the last "
+        "sentence.\n"
         "- Narrate events and their meaning, never what is visible in a panel. If an object's identity is "
         "unclear, call it what the dialogue calls it, or leave it unnamed.\n"
         "- `frames`: one to three frames that best show the moment, strongest first, each a candidate panel "
@@ -268,25 +299,14 @@ def _narration_prompt(memory: dict, ch_no: int, brief: str, breakdown: dict, sty
         "previous frame. Never flop a subject that contains text; the app ignores the flag there.")
 
 
-def _extension_prompt(prompt: str, blocks: list[dict], target_minutes: float) -> str:
-    draft = "\n".join(f"{n}. {b['narration']}" for n, b in enumerate(blocks, start=1))
-    return (f"{prompt}\n\nYour first draft runs {_seconds(blocks) / 60:.1f} minutes against a target of "
-            f"{target_minutes:g}:\n{draft}\n\nWrite the complete narration again, longer. Keep every beat "
-            "that works and add depth where the notes support it: more beats within scenes, what the "
-            "character feels and thinks, what is at stake, how the world or power system works, links to "
-            "earlier events. Do not repeat anything already said and add no filler; if the notes run out, "
-            "stop there.")
-
-
-def _skipped_scenes(breakdown: dict, blocks: list[dict]) -> list[dict]:
-    """Scenes with usable art that no block's frames fall in."""
+def _thin_scenes(breakdown: dict, blocks: list[dict]) -> list[tuple[dict, int]]:
+    """The scenes with story art that got fewer blocks than their panels call for (none at all, for a
+    skipped scene), each with the number it got. A block belongs to the scene of its first frame."""
     kinds = _kinds(breakdown)
-    used = {frame["panel_id"] for block in blocks for frame in block["frames"]}
-    return [scene for scene in breakdown["scenes"] if _has_art(scene, kinds) and not used & set(scene["panel_ids"])]
-
-
-def _seconds(blocks: list[dict]) -> float:
-    return sum(block["duration_s"] for block in blocks)
+    scene_of = {i: number for number, scene in enumerate(breakdown["scenes"]) for i in scene["panel_ids"]}
+    got = collections.Counter(scene_of.get(block["frames"][0]["panel_id"]) for block in blocks if block["frames"])
+    return [(scene, got[number]) for number, scene in enumerate(breakdown["scenes"])
+            if got[number] < _min_blocks(scene, kinds)]
 
 
 def _now() -> str:
@@ -312,21 +332,19 @@ def _rect(frame: dict) -> frame_crop.Rect:
 
 
 def _frame(pick: dict, panel: Panel, entry: dict, bubble_boxes: list[list[int]]) -> dict:
-    """The exact frame for one pick: crop, blur and flip decided locally."""
+    """The exact frame for one pick: crop and flip decided locally."""
     x, y, w, h = panel.bbox
     subjects = entry.get("subjects", [])
     subject = subjects[pick["subject"]] if 0 <= pick["subject"] < len(subjects) else None
     box = subject["box"] if subject else None
-    crop, blurred = frame_crop.frame_for(
+    crop = frame_crop.frame_for(
         (x, y, x + w, y + h),
         (x + box[0] * w, y + box[1] * h, x + box[2] * w, y + box[3] * h) if box else None,
         [(x + bx, y + by, x + bx + bw, y + by + bh) for bx, by, bw, bh in bubble_boxes])
     may_flop = not (subject and subject["has_text"]) and entry["kind"] != "sound_effect"
     return {"panel_id": panel.id,
             "bbox": [round(crop[0]), round(crop[1]), round(crop[2] - crop[0]), round(crop[3] - crop[1])],
-            "flip": pick["flop"] and may_flop,
-            "blur": [[round(b[0]), round(b[1]), round(b[2] - b[0]), round(b[3] - b[1]), HEAVY_BLUR]
-                     for b in blurred]}
+            "flip": pick["flop"] and may_flop}
 
 
 def _finish_blocks(raw: list[dict], panels: dict[str, Panel], breakdown: dict, min_frame_s: float,
@@ -357,49 +375,40 @@ def _finish_blocks(raw: list[dict], panels: dict[str, Panel], breakdown: dict, m
             if not any(frame_crop.overlap_share(_rect(frame), _rect(earlier)) > MAX_FRAME_OVERLAP for earlier in frames):
                 frames.append(frame)
         blocks.append({"narration": narration, "duration_s": round(seconds, 1),
+                       "pace": block["pace"] if block["pace"] in pacing.PACES else pacing.DEFAULT_PACE,
                        "mode": "together" if together and len(frames) > 1 else "sequence", "frames": frames})
     return blocks
 
 
 def _write_narration(ask: Callable[[str], dict], on_event: Callable[[dict], None], *, memory: dict, ch_no: int,
-                     brief: str, breakdown: dict, style: str, panels: dict[str, Panel], target_minutes: float,
-                     min_frame_s: float, chars_per_sec: float) -> dict:
-    """Pass 2: write the narration, re-ask once for scenes it skipped, and extend it once when
-    it falls short of the target. Returns {blocks, shortfall}; a chapter that still lacks the
-    material records its shortfall instead of being padded."""
+                     brief: str, breakdown: dict, style: str, panels: dict[str, Panel], min_frame_s: float,
+                     chars_per_sec: float) -> list[dict]:
+    """Pass 2: write the narration, re-asking once when a scene got fewer blocks than its panels call
+    for (coverage, not length: it is never padded, extended or trimmed afterwards)."""
     def log(line):
         on_event({"type": "log", "line": line})
 
-    def write(prompt):
-        answer = ask(prompt)
-        skipped = _skipped_scenes(breakdown, answer["blocks"])
-        if skipped:
-            ranges = ", ".join(f"{s['panel_ids'][0]}-{s['panel_ids'][-1]}" for s in skipped)
-            log(f"Narration skipped scene(s) {ranges}; asking again")
-            answer = ask(f"{prompt}\n\nYour previous attempt left out the scenes at {ranges}. "
-                         "Every scene must be narrated.")
-            for scene in _skipped_scenes(breakdown, answer["blocks"]):
-                log(f"Narration still skips {scene['panel_ids'][0]}-{scene['panel_ids'][-1]}")
-        blocks = _finish_blocks(answer["blocks"], panels, breakdown, min_frame_s, chars_per_sec)
-        if len(blocks) < len(answer["blocks"]):
-            log(f"Dropped {len(answer['blocks']) - len(blocks)} block(s) with no usable frame")
-        return blocks
+    def describe(thin: list[tuple[dict, int]]) -> str:
+        kinds = _kinds(breakdown)
+        return "; ".join(f"{s['panel_ids'][0]}-{s['panel_ids'][-1]} has {got} block(s) and needs at least "
+                         f"{_min_blocks(s, kinds)}" for s, got in thin)
 
-    target_s = target_minutes * 60
-    prompt = _narration_prompt(memory, ch_no, brief, breakdown, style, target_minutes, chars_per_sec, panels)
-    blocks = write(prompt)
-    if _seconds(blocks) < target_s * LENGTH_TOLERANCE:
-        log(f"Narration runs {_seconds(blocks) / 60:.1f} min against a {target_minutes:g} min target; "
-            "extending it with deeper beats")
-        extended = write(_extension_prompt(prompt, blocks, target_minutes))
-        if _seconds(extended) > _seconds(blocks):
-            blocks = extended
-    shortfall = None
-    if _seconds(blocks) < target_s * LENGTH_TOLERANCE:
-        shortfall = {"target_minutes": target_minutes, "actual_minutes": round(_seconds(blocks) / 60, 1)}
-        log(f"Narration is {shortfall['actual_minutes']} min, short of the {target_minutes:g} min target: "
-            "the chapter does not have more material, so it was not padded")
-    return {"blocks": blocks, "shortfall": shortfall}
+    prompt = _narration_prompt(memory, ch_no, brief, breakdown, style, panels)
+    answer = ask(prompt)
+    thin = _thin_scenes(breakdown, answer["blocks"])
+    if thin:
+        log(f"Narration is thin in {len(thin)} scene(s): {describe(thin)}; asking again")
+        answer = ask(f"{prompt}\n\nYour previous attempt covered the story too thinly: {describe(thin)}. "
+                     "Write the complete narration again, giving every scene at least the blocks its line "
+                     "asks for. Do not shorten blocks to make room: each stays 25 to 50 words with its context, "
+                     "stakes and feeling, so split the beats finer and give every panel its due.")
+        thin = _thin_scenes(breakdown, answer["blocks"])
+        if thin:
+            log(f"Narration is still thin: {describe(thin)}")
+    blocks = _finish_blocks(answer["blocks"], panels, breakdown, min_frame_s, chars_per_sec)
+    if len(blocks) < len(answer["blocks"]):
+        log(f"Dropped {len(answer['blocks']) - len(blocks)} block(s) with no usable frame")
+    return blocks
 
 
 def read_usage(state_path: Path) -> dict | None:
@@ -419,13 +428,13 @@ def read_narration(state_path: Path) -> dict | None:
 
 
 def run_chapter(*, panels: list[Panel], work_dir: Path, state_path: Path, memory_path: Path, ch_no: int,
-                brief: str, style: str, models: dict, target_minutes: float, min_frame_s: float,
+                brief: str, style: str, models: dict, min_frame_s: float,
                 chars_per_sec: float, on_event: Callable[[dict], None],
                 on_limit: Callable[[datetime], None],
                 on_proc: Callable[[subprocess.Popen], None],
                 before_call: Callable[[], None] | None = None) -> dict:
     """Run (or resume) both passes for one chapter and return its narration
-    ({blocks, saved_at, shortfall}).
+    ({blocks, saved_at}).
     `on_event` receives a plan event, a step event as each stage starts, and the stream
     events of each call, all tagged with their pass (None for the story update).
     `before_call` runs before every Claude call (see claude_cli.call)."""
@@ -479,13 +488,12 @@ def run_chapter(*, panels: list[Panel], work_dir: Path, state_path: Path, memory
     if "narration" not in state:
         on_event({"type": "step", "pass": 2, "label": "Writing the narration"})
         usage = claude_cli.empty_usage()
-        narration = _write_narration(
+        blocks = _write_narration(
             lambda prompt: call(2, [{"type": "text", "text": prompt}], NARRATION_SCHEMA, models["narration"],
                                 usage, "cover", list(by_id)),
             on_event, memory=memory, ch_no=ch_no, brief=brief, breakdown=state["breakdown"], style=style,
-            panels={p.id: p for p in sent}, target_minutes=target_minutes, min_frame_s=min_frame_s,
-            chars_per_sec=chars_per_sec)
-        state["narration"] = {**narration, "saved_at": _now()}
+            panels={p.id: p for p in sent}, min_frame_s=min_frame_s, chars_per_sec=chars_per_sec)
+        state["narration"] = {"blocks": blocks, "saved_at": _now()}
         passes = {**state["usage"], "pass2": usage}
         state["usage"] = {**passes, "total": claude_cli.sum_usage(list(passes.values()))}
         atomic_write_json(state_path, state)

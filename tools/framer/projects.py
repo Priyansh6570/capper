@@ -32,6 +32,7 @@ from pathlib import Path, PurePosixPath
 from typing import Optional
 
 import claude_cli
+import tones
 from config import PROJECTS_DIR
 from stages import tts_kokoro
 from stages.s7_assemble import DEFAULT_QUALITY, QUALITY
@@ -139,16 +140,14 @@ def default_settings() -> dict:
         # background); "dim" applies to either custom mode (brightness for
         # image, an approximate eq=brightness offset for video).
         "background": {"mode": "blur", "file": None, "dim": 0.85},
-        # Frame entry/exit animation for stage 7's render. "fade"/0.35s matches
-        # the crossfade s7_assemble.py has always hardcoded - this is the
-        # default specifically so existing projects (loaded via load()'s
-        # deep-merge, which backfills any settings key missing from an older
-        # project.json) keep rendering EXACTLY as before until someone
-        # actually changes it in Project Settings. "ken_burns" (off by
-        # default, same reasoning) alternates a slow zoom in/out per still -
-        # independent of the transition style above; see s7_assemble.
+        # Frame entry/exit animation for stage 7's render. "fade"/0.35s matches the crossfade
+        # s7_assemble.py has always hardcoded. `zoom` alternates a slow zoom in / out per still
+        # (peak scale `zoom_amount`), independent of the transition style; see s7_assemble.
         "animation": {"style": "fade", "direction": "left", "duration": 0.35,
-                     "ken_burns": False},
+                      "zoom": True, "zoom_amount": 1.06},
+        # Text in frames is never blurred unless this is switched on; it then lets the editor's
+        # manual blur regions reach the exported frames.
+        "framing": {"blur_text": False},
         # Output size preset for the render, one of s7_assemble.QUALITY.
         "video": {"quality": DEFAULT_QUALITY},
         # Intro/outro joined onto MERGED videos only (see branding.py). `file`
@@ -161,17 +160,16 @@ def default_settings() -> dict:
         # (like every other key in this app, it's .env-only, see
         # _gemini_env_key_* in app.py); this is just the per-project prompt
         # knobs so different projects can want a different voice.
-        "gemini": {"tone": "serious", "narration_type": "first_person",
+        "gemini": {"tone": tones.DEFAULT_TONE, "narration_type": "first_person",
                    "style_reference": "", "model": "gemini-3.1-pro-preview"},
         # Which engine writes the script: "gemini" (API) or "claude" (the local
         # Claude Code CLI, see claude_engine.py). Tone / narration type / style
-        # reference above apply to both; the series brief and per-pass models
-        # below are Claude-only.
+        # reference above apply to both (`tone` is the project's default; a chapter can
+        # override it); the series brief and per-pass models below are Claude-only.
         "script_engine": "gemini",
-        # target_minutes: how long the narration should run; min_frame_s: the least
-        # time any one frame stays on screen (caps frames per block).
+        # min_frame_s: the least time any one frame stays on screen (caps frames per block).
         "claude": {"series_brief": "", "comprehension_model": "opus", "narration_model": "sonnet",
-                   "target_minutes": 10, "min_frame_s": 3},
+                   "min_frame_s": 3},
         # Batch automation (batch.py): wait for the user's review of each chapter's frames
         # before audio; Claude work is held once subscription usage reaches these percentages.
         # auto_wait_five_hour: wait out a reached five-hour limit and resume by itself (the weekly one
@@ -183,7 +181,7 @@ def default_settings() -> dict:
 
 def _default_chapter(n: int, title: str = "") -> dict:
     return {"n": n, "title": title or f"Episode {n}", "status": "not_started",
-             "pdf": None, "video": None, "updated_at": None}
+             "pdf": None, "video": None, "updated_at": None, "tone": None}
 
 
 def new_project(name: str, url: str, slug: Optional[str] = None) -> dict:
@@ -220,11 +218,16 @@ def load(slug: str) -> dict:
         ch.setdefault("pdf", None)
         ch.setdefault("video", None)
         ch.setdefault("updated_at", None)
+        ch["tone"] = tones.normalize(ch.get("tone"))
+    data["settings"]["gemini"]["tone"] = tones.normalize(data["settings"]["gemini"].get("tone")) or tones.DEFAULT_TONE
     return data
 
 
 def _deep_merge(base: dict, override: dict) -> None:
+    """Fold `override` into `base`, keeping only keys `base` defines so retired settings drop out."""
     for k, v in (override or {}).items():
+        if k not in base:
+            continue
         if isinstance(v, dict) and isinstance(base.get(k), dict):
             _deep_merge(base[k], v)
         else:
@@ -324,6 +327,26 @@ def set_status(slug: str, n, status: str, *, force: bool = False) -> dict:
         return ch
 
 
+def chapter_tone(project: dict, n) -> str:
+    """The tone chapter `n` is written and voiced in: its own, else the project's default."""
+    return get_chapter(project, n)["tone"] or project["settings"]["gemini"]["tone"]
+
+
+def set_chapter_tone(slug: str, n, tone: Optional[str]) -> dict:
+    """Store chapter `n`'s tone (None goes back to the project's default) and refresh its media snapshot."""
+    if tone is not None and tones.normalize(tone) is None:
+        raise ValueError(f"unknown tone: {tone}")
+    with _LOCK:
+        project = load(slug)
+        ch = get_chapter(project, n)
+        if ch is None:
+            raise KeyError(f"no chapter {n} in project {slug}")
+        ch["tone"] = tones.normalize(tone)
+        save(project)
+    write_media_snapshot(slug, n)
+    return ch
+
+
 def derive_status(slug: str, n) -> dict:
     """Re-derive a chapter's status from what's actually on disk (pdf ->
     downloaded, mapping.json -> boxed, recap.mp4 -> rendered) and merge it with
@@ -397,14 +420,15 @@ def update_settings(slug: str, settings: dict) -> dict:
         if anim.get("direction") not in ("left", "right", "up", "down"):
             anim["direction"] = "left"
         anim["duration"] = max(0.05, min(1.0, float(anim.get("duration", 0.35))))
-        anim["ken_burns"] = bool(anim.get("ken_burns"))
+        anim["zoom"] = bool(anim.get("zoom"))
+        anim["zoom_amount"] = max(1.0, min(1.08, float(anim.get("zoom_amount") or 1.06)))
+        project["settings"]["framing"]["blur_text"] = bool(project["settings"]["framing"].get("blur_text"))
         if project["settings"]["video"].get("quality") not in QUALITY:
             project["settings"]["video"]["quality"] = DEFAULT_QUALITY
         for clip in project["settings"]["branding"].values():
             clip["enabled"] = bool(clip.get("enabled"))
         gm = project["settings"]["gemini"]
-        if gm.get("tone") not in ("serious", "comedy", "dramatic", "epic"):
-            gm["tone"] = "serious"
+        gm["tone"] = tones.normalize(gm.get("tone")) or tones.DEFAULT_TONE
         if gm.get("narration_type") not in ("first_person", "third_person"):
             gm["narration_type"] = "first_person"
         if gm.get("model") not in ("gemini-3.1-pro-preview", "gemini-3.8-flash"):
@@ -418,7 +442,6 @@ def update_settings(slug: str, settings: dict) -> dict:
         for key in ("comprehension_model", "narration_model"):
             if cl.get(key) not in claude_cli.MODELS:
                 cl[key] = default_settings()["claude"][key]
-        cl["target_minutes"] = max(1.0, min(30.0, float(cl.get("target_minutes") or 10)))
         cl["min_frame_s"] = max(1.0, min(10.0, float(cl.get("min_frame_s") or 3)))
         bt = settings["batch"]
         for key in ("review_before_audio", "auto_wait_five_hour", "notifications"):
@@ -480,11 +503,12 @@ def _resolved_str(slug: str, rel_path: Optional[str]) -> Optional[str]:
     return str(p) if p is not None else None
 
 
-def media_settings_snapshot(slug: str) -> dict:
+def media_settings_snapshot(slug: str, n) -> dict:
     """Resolve a project's settings into ABSOLUTE paths for stages 6+7 to
     consume, with defaults folded in (None fields mean "use the built-in
     default"). `voice` and `tts` are read by stage 6 (s6_tts) for Chatterbox cloning or Kokoro;
-    `music`/`watermark`/`background` are read by stage 7 (s7_assemble)."""
+    `music`/`watermark`/`background` are read by stage 7 (s7_assemble). `tone` is chapter `n`'s
+    tone, which stage 6 turns into voice delivery."""
     project = load(slug)
     s = project["settings"]
     music = s["music"]
@@ -496,6 +520,7 @@ def media_settings_snapshot(slug: str) -> dict:
         "music_off": music.get("mode") == "none",
         "voice": _resolved_str(slug, voice.get("file")) if voice.get("mode") == "file" else None,
         "tts": {"engine": voice["engine"], "kokoro_voice": voice["kokoro_voice"]},
+        "tone": chapter_tone(project, n),
         "watermark": {
             **watermark,
             "file": _resolved_str(slug, watermark.get("file")) if watermark.get("type") == "image" else None,
@@ -526,7 +551,7 @@ def write_media_snapshot(slug: str, n) -> Optional[Path]:
     if not work.is_dir():
         return None
     path = work / "media_settings.json"
-    _atomic_write(path, json.dumps(media_settings_snapshot(slug), indent=2, ensure_ascii=False))
+    _atomic_write(path, json.dumps(media_settings_snapshot(slug, n), indent=2, ensure_ascii=False))
     return path
 
 

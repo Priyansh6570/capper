@@ -266,6 +266,7 @@
   .rmeta { display:flex; gap:7px; align-items:center; margin-top:7px; flex-wrap:wrap; }
   .rmeta label { font-size:11px; color:var(--muted); display:flex; gap:5px; align-items:center; }
   .dur { width:66px; }
+  .pace { width:76px; padding:3px 4px; font-size:11.5px; }
   .idx { font-weight:800; color:var(--accent-fg); margin-right:3px;
          font-family:ui-monospace,Consolas,monospace; }
   .small { padding:6px 9px; font-size:12px; }
@@ -638,6 +639,8 @@
   .chlist .chmeta { font-family:ui-monospace,Consolas,monospace; font-size:10.5px; color:var(--muted); }
   .chstatus { grid-area:status; display:flex; flex-direction:column; gap:2px; }
   .chlen { font-size:11.5px; color:var(--muted); }
+  .chtone { display:flex; align-items:center; gap:6px; font-size:11.5px; color:var(--muted); }
+  .chtone select { font-size:11.5px; padding:2px 4px; min-width:0; }
   .chprogress { grid-area:prog; display:flex; flex-direction:column; gap:5px; }
   .nextstep { font-size:11.5px; color:var(--muted); }
   .tracker { display:flex; gap:3px; }
@@ -1317,12 +1320,12 @@
               </div>
 
               <div class="setgridpair" style="margin-top:10px">
-                <label class="field" style="margin:0"><span class="lbl" style="text-transform:none;letter-spacing:0;font-weight:400;color:var(--muted)">Tone</span>
+                <label class="field" style="margin:0"><span class="lbl" style="text-transform:none;letter-spacing:0;font-weight:400;color:var(--muted)">Default tone (each chapter can set its own)</span>
                   <select id="geminiTone">
-                    <option value="serious">Serious</option>
-                    <option value="comedy">Comedy</option>
-                    <option value="dramatic">Dramatic</option>
                     <option value="epic">Epic</option>
+                    <option value="serious">Serious</option>
+                    <option value="dramatic">Dramatic</option>
+                    <option value="comedic">Comedic</option>
                   </select>
                 </label>
                 <label class="field" style="margin:0"><span class="lbl" style="text-transform:none;letter-spacing:0;font-weight:400;color:var(--muted)">Narration type</span>
@@ -1363,9 +1366,6 @@
                   </label>
                 </div>
                 <div class="setgridpair" style="margin-top:10px">
-                  <label class="field" style="margin:0"><span class="lbl" style="text-transform:none;letter-spacing:0;font-weight:400;color:var(--muted)">Target narration length (minutes)</span>
-                    <input id="claudeTargetMinutes" type="number" min="1" max="30" step="0.5" />
-                  </label>
                   <label class="field" style="margin:0"><span class="lbl" style="text-transform:none;letter-spacing:0;font-weight:400;color:var(--muted)">Shortest time a frame stays on screen (seconds)</span>
                     <input id="claudeMinFrame" type="number" min="1" max="10" step="0.5" />
                   </label>
@@ -1400,7 +1400,7 @@
           </div>
 
           <div class="setcard" id="s-video">
-            <div class="setlabel"><b>Video size</b><span>How much each rendered chapter weighs. Smaller files use a lower resolution and a blurred background; the moving background video and Ken Burns zoom are what cost the most.</span></div>
+            <div class="setlabel"><b>Video size</b><span>How much each rendered chapter weighs. Smaller files use a lower resolution and a blurred background; the moving background video is what costs the most.</span></div>
             <div class="setbody">
               <select id="videoQuality">
                 <option value="tiny">Tiny - 720p, about 30 MB per 22 minutes</option>
@@ -1580,8 +1580,14 @@
                   <input id="animDuration" type="range" min="5" max="100" value="35" /></label>
               </div>
               <div style="border-top:1px solid var(--line);padding-top:12px;display:flex;flex-direction:column;gap:8px">
-                <label class="togglesw" id="animKenBurnsWrap"><input type="checkbox" id="animKenBurns" style="position:absolute;opacity:0;width:1px;height:1px" /><span class="tk"></span>Alternating Ken Burns</label>
-                <span class="hint">Odd frames slowly zoom IN, even frames zoom OUT, alternating - independent of the transition above. <b>Slows rendering noticeably</b>: ffmpeg computes a moving crop for every output frame.</span>
+                <label class="togglesw" id="animZoomWrap"><input type="checkbox" id="animZoom" style="position:absolute;opacity:0;width:1px;height:1px" /><span class="tk"></span>Alternating zoom</label>
+                <span class="hint">One frame slowly zooms IN, the next zooms OUT, alternating through the video - independent of the transition above. Frames are shown a little smaller so nothing is cropped at the peak.</span>
+                <label class="slider"><div class="slbl"><span>Zoom amount</span><span id="animZoomAmountLbl"></span></div>
+                  <input id="animZoomAmount" type="range" min="100" max="108" value="106" /></label>
+              </div>
+              <div style="border-top:1px solid var(--line);padding-top:12px;display:flex;flex-direction:column;gap:8px">
+                <label class="togglesw" id="framingBlurWrap"><input type="checkbox" id="framingBlur" style="position:absolute;opacity:0;width:1px;height:1px" /><span class="tk"></span>Blur text regions in frames</label>
+                <span class="hint">Off by default: frames keep their text sharp. Turn on to enable the editor's manual Blur tool and apply its regions when frames are exported.</span>
               </div>
             </div>
           </div>
@@ -1930,7 +1936,7 @@ function toggleSrc() {
 // ---------------------------------------------------------------------------
 // state (kept in JS memory only; exported to the backend on demand)
 //
-//   line  = { text, duration_s, mode:'sequence'|'together', frames:[frame] }
+//   line  = { text, duration_s, pace:null|PACES, mode:'sequence'|'together', frames:[frame] }
 //   frame = { bbox:[tx,ty,tw,th], flip:bool, blur:[[tx,ty,tw,th],...] }
 // ---------------------------------------------------------------------------
 const S = {
@@ -2805,7 +2811,9 @@ function thumbUrl(f) { return cropUrl(f.bbox, f.blur); }
 // ---------------------------------------------------------------------------
 // script lines
 // ---------------------------------------------------------------------------
-function newLine(text) { return { text: text||'', duration_s:4, mode:'sequence', frames:[] }; }
+// how a line is delivered by the voice (see pacing.py); null = chosen from the text
+const PACES = ['calm', 'tense', 'action', 'reveal', 'sad', 'comic'];
+function newLine(text, pace) { return { text: text||'', duration_s:4, pace: pace||null, mode:'sequence', frames:[] }; }
 
 async function loadScript() {
   const text = $('scriptText').value;
@@ -2818,7 +2826,7 @@ async function loadScript() {
     const d = await res.json();
     if (!res.ok) throw new Error(d.error || 'load failed');
     if (S.lines.length) pushUndo('load script');   // don't silently nuke existing work
-    S.lines = d.lines.map(t => newLine(t));
+    S.lines = d.lines.map((t, i) => newLine(t, (d.paces || [])[i]));
     S.active = S.lines.length ? 0 : -1;
     S.activeFrame = -1;
     renderLines(); redrawBoxes();
@@ -2881,7 +2889,7 @@ function splitLine(i, pos) {
   const after = text.slice(pos);
   ln.text = text.slice(0, pos);
   const nl = newLine(after);
-  nl.duration_s = ln.duration_s; nl.mode = ln.mode;
+  nl.duration_s = ln.duration_s; nl.mode = ln.mode; nl.pace = ln.pace;
   S.lines.splice(i + 1, 0, nl);          // frames stay with line i
   setActiveLine(i);
   scrollActiveRowIntoView();
@@ -2916,6 +2924,7 @@ function buildRow(ln, i) {
       <div class="rmeta">
         <span class="idx">#${i+1}</span>
         <label class="durwrap"><span class="durlbl">dur s</span><input class="dur" type="number" min="0.5" step="0.5" value="${ln.duration_s}"></label>
+        <label title="How the voice delivers this line: pauses and speed. Auto picks from the text."><span>pace</span><select class="pace"><option value="">auto</option>${PACES.map(p => `<option value="${p}"${ln.pace===p?' selected':''}>${p}</option>`).join('')}</select></label>
         <span class="pill" style="padding:1px 4px">play:</span>
         <button class="seg seqbtn ${ln.mode==='sequence'?'on':''}">sequence</button>
         <button class="seg togbtn ${ln.mode==='together'?'on':''}">together</button>
@@ -2929,6 +2938,7 @@ function buildRow(ln, i) {
   const ta = row.querySelector('.ltext'); ta.value = ln.text;
   ta.addEventListener('input', e => { ln.text = e.target.value; updateDurUI(row, ln); markDirty(); });
   row.querySelector('.dur').addEventListener('input', e => { ln.duration_s = parseFloat(e.target.value)||0; markDirty(); });
+  row.querySelector('.pace').addEventListener('change', e => { pushUndo('pace'); ln.pace = e.target.value || null; markDirty(); });
   row.querySelector('.splitbtn').addEventListener('click', e => { e.stopPropagation();
     splitLine(i, ta.selectionStart); });
   const mb = row.querySelector('.mergebtn');
@@ -3039,6 +3049,17 @@ function moveFrame(ln, i, j, dir) {
   renderRow(i); redrawBoxes();
 }
 
+const blurEnabled = () => !!(CURRENT_PROJECT && CURRENT_PROJECT.settings.framing && CURRENT_PROJECT.settings.framing.blur_text);
+
+function paintBlurTool() {
+  const on = blurEnabled();
+  ['blurModeBtn', 'blurStyle', 'blurShape'].forEach(id => {
+    const el = $(id);
+    (el.closest('.sidefield') || el).style.display = on ? '' : 'none';
+  });
+  if (!on && S.mode === 'blur') setMode('frame');
+}
+
 function setMode(m) {
   S.mode = m;
   $('blurModeBtn').classList.toggle('on', m==='blur');
@@ -3051,7 +3072,7 @@ function setMode(m) {
 async function doExport() {
   if (!S.chapter_id) { setStatus('Load a PDF first.', true); return; }
   const entries = S.lines.map(ln => ({
-    line_text: ln.text, duration_s: ln.duration_s || 4, mode: ln.mode,
+    line_text: ln.text, duration_s: ln.duration_s || 4, pace: ln.pace || null, mode: ln.mode,
     frames: ln.frames.map(f => ({ bbox: f.bbox, flip: !!f.flip, blur: f.blur || [] })),
   }));
   const lines = entries.filter(e => e.frames.length).length;
@@ -3382,8 +3403,9 @@ function normLine(l) {
   return {
     text: l.text || '',
     duration_s: (l.duration_s ?? 4),
+    pace: PACES.includes(l.pace) ? l.pace : null,
     mode: l.mode === 'together' ? 'together' : 'sequence',
-    frames: (l.frames || []).map(f => ({ bbox: f.bbox, flip: !!f.flip, blur: f.blur || [] })),
+    frames: (l.frames || []).map(f => ({ bbox: f.bbox, flip: !!f.flip, blur: blurEnabled() ? f.blur || [] : [] })),
   };
 }
 function projectObject() {
@@ -3946,6 +3968,7 @@ async function loadCurrentProject(slug) {
 
 function paintProjectChrome() {
   const p = CURRENT_PROJECT;
+  paintBlurTool();
   const chapters = p.chapters || [];
   const done = chapters.filter(c => c.status === 'complete').length;
   ['pjSideTitle', 'stSideTitle', 'hubSideTitle'].forEach(id => { const el = $(id); if (el) el.textContent = p.name; });
@@ -4888,6 +4911,20 @@ function chapterActionsHtml(ch) {
   return buttons.join('');
 }
 
+const TONE_LABELS = { epic: 'Epic', serious: 'Serious', dramatic: 'Dramatic', comedic: 'Comedic' };
+
+function toneSelectHtml(ch) {
+  const inherited = TONE_LABELS[CURRENT_PROJECT.settings.gemini.tone];
+  const options = [`<option value="" ${ch.tone ? '' : 'selected'}>Project default (${inherited})</option>`,
+    ...Object.entries(TONE_LABELS).map(([id, label]) => `<option value="${id}" ${ch.tone === id ? 'selected' : ''}>${label}</option>`)];
+  return `<label class="chtone" title="Tone of this chapter's script and narration voice">Tone<select data-tone>${options.join('')}</select></label>`;
+}
+
+function narrationHtml(ch) {
+  if (!ch.narration) return '';
+  return `<span class="chlen" title="Estimated from the script's length at this project's speaking pace">Narration ~${fmtVideoLength(ch.narration.seconds)} (${ch.narration.words.toLocaleString()} words)</span>`;
+}
+
 function chapterMeta(ch) {
   return ch.updated_at ? `Updated ${timeAgo(ch.updated_at)}` : 'Not downloaded';
 }
@@ -4901,7 +4938,7 @@ function chapterRowHtml(ch) {
   return `<div class="chrow ${SELECTION.has(ch.n) ? 'sel' : ''}" data-n="${ch.n}">${selectBox(ch)}<span class="chno">#${ch.n}</span>` +
     `<span class="chtexts"><span class="chtitle">${escHtml(ch.title)}</span><span class="chmeta">${chapterMeta(ch)}</span></span>` +
     `<div class="chstatus"><span class="stpill st-${ch.status}">${status}</span>` +
-    `${hasVideo(ch) ? `<span class="chlen">Video ${fmtVideoLength(ch.duration)}</span>` : ''}</div>` +
+    `${narrationHtml(ch)}${hasVideo(ch) ? `<span class="chlen">Video ${fmtVideoLength(ch.duration)}</span>` : ''}${toneSelectHtml(ch)}</div>` +
     `<div class="chprogress" data-progress>${progressHtml(ch)}</div>` +
     `<div class="chacts">${chapterActionsHtml(ch)}</div></div>`;
 }
@@ -4916,7 +4953,7 @@ function chapterCardHtml(ch) {
     `<div class="chthumb">${thumb}</div>` +
     `<div class="chprogress" data-progress>${progressHtml(ch)}</div>` +
     `<div class="chcardmeta"><span class="stpill st-${ch.status}">${status}</span>` +
-    `${hasVideo(ch) ? `<span class="chlen">Video ${fmtVideoLength(ch.duration)}</span>` : ''}<span class="chmeta">${chapterMeta(ch)}</span></div>` +
+    `${narrationHtml(ch)}${hasVideo(ch) ? `<span class="chlen">Video ${fmtVideoLength(ch.duration)}</span>` : ''}${toneSelectHtml(ch)}<span class="chmeta">${chapterMeta(ch)}</span></div>` +
     `<div class="chacts">${chapterActionsHtml(ch)}</div></article>`;
 }
 
@@ -4978,6 +5015,16 @@ function paintTrackers() {
     if (cell.dataset.html !== html) { cell.innerHTML = html; cell.dataset.html = html; }
   });
 }
+
+$('chList').addEventListener('change', async e => {
+  const select = e.target.closest('[data-tone]');
+  if (!select) return;
+  const ch = chapterByNumber(+select.closest('[data-n]').dataset.n);
+  const res = await fetch(projectApi(`/chapters/${ch.n}/tone`), { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ tone: select.value || null }) });
+  if (res.ok) ch.tone = select.value || null;
+  else select.value = ch.tone || '';
+});
 
 $('chList').addEventListener('click', e => {
   const holder = e.target.closest('[data-n]');
@@ -5343,10 +5390,13 @@ function fillSettingsForm() {
   document.querySelector(`input[name=animStyle][value="${s.animation.style}"]`).checked = true;
   $('animDirection').value = s.animation.direction || 'left';
   $('animDuration').value = Math.round(s.animation.duration * 100);
-  $('animKenBurns').checked = !!s.animation.ken_burns;
+  $('animZoom').checked = !!s.animation.zoom;
+  $('animZoomAmount').value = Math.round(s.animation.zoom_amount * 100);
+  $('animZoomAmountLbl').textContent = `${(+$('animZoomAmount').value / 100).toFixed(2)}x`;
+  $('framingBlur').checked = !!(s.framing || {}).blur_text;
 
   const gm = s.gemini || {};
-  $('geminiTone').value = gm.tone || 'serious';
+  $('geminiTone').value = gm.tone || 'dramatic';
   $('geminiNarrationType').value = gm.narration_type || 'first_person';
   $('geminiModel').value = gm.model || 'gemini-3.1-pro-preview';
   $('geminiStyleRef').value = gm.style_reference || '';
@@ -5355,7 +5405,6 @@ function fillSettingsForm() {
   $('claudeBrief').value = cl.series_brief || '';
   $('claudeComprehensionModel').value = cl.comprehension_model || 'opus';
   $('claudeNarrationModel').value = cl.narration_model || 'sonnet';
-  $('claudeTargetMinutes').value = cl.target_minutes || 10;
   $('claudeMinFrame').value = cl.min_frame_s || 3;
   const bt = s.batch || {};
   $('videoQuality').value = (s.video || {}).quality || 'tiny';
@@ -5463,8 +5512,10 @@ function currentSettingsFromForm() {
       style: document.querySelector('input[name=animStyle]:checked').value,
       direction: $('animDirection').value,
       duration: (+$('animDuration').value) / 100,
-      ken_burns: $('animKenBurns').checked,
+      zoom: $('animZoom').checked,
+      zoom_amount: (+$('animZoomAmount').value) / 100,
     },
+    framing: { blur_text: $('framingBlur').checked },
     gemini: {
       tone: $('geminiTone').value,
       narration_type: $('geminiNarrationType').value,
@@ -5476,7 +5527,6 @@ function currentSettingsFromForm() {
       series_brief: $('claudeBrief').value,
       comprehension_model: $('claudeComprehensionModel').value,
       narration_model: $('claudeNarrationModel').value,
-      target_minutes: parseFloat($('claudeTargetMinutes').value) || 10,
       min_frame_s: parseFloat($('claudeMinFrame').value) || 3,
     },
     video: { quality: $('videoQuality').value },
@@ -5505,6 +5555,7 @@ function saveSettingsDebounced() {
       const d = await res.json();
       if (!res.ok) throw new Error(d.error || 'save failed');
       CURRENT_PROJECT.settings = d.settings;
+      paintBlurTool();
       setSettingsSaveState('ok', 'Autosaved ' + new Date().toLocaleTimeString());
     } catch (e) { setSettingsSaveState('err', 'Save failed'); }
   }, 400);
@@ -5903,7 +5954,12 @@ loadKokoroVoices();
 $('wmEnabled').onchange = saveSettingsDebounced;
 $('wmText').oninput = saveSettingsDebounced;
 $('animDirection').onchange = saveSettingsDebounced;
-$('animKenBurns').onchange = saveSettingsDebounced;
+$('animZoom').onchange = saveSettingsDebounced;
+$('animZoomAmount').oninput = () => {
+  $('animZoomAmountLbl').textContent = `${(+$('animZoomAmount').value / 100).toFixed(2)}x`;
+  saveSettingsDebounced();
+};
+$('framingBlur').onchange = saveSettingsDebounced;
 ['wmOpacity', 'wmSize', 'wmSpacing', 'wmAngle', 'bgDim', 'animDuration'].forEach(id => { $(id).oninput = saveSettingsDebounced; });
 $('geminiTone').onchange = saveSettingsDebounced;
 $('geminiNarrationType').onchange = saveSettingsDebounced;
@@ -5913,7 +5969,6 @@ $('scriptEngine').onchange = () => { paintScriptEngine(); saveSettingsDebounced(
 $('claudeBrief').oninput = saveSettingsDebounced;
 $('claudeComprehensionModel').onchange = saveSettingsDebounced;
 $('claudeNarrationModel').onchange = saveSettingsDebounced;
-$('claudeTargetMinutes').oninput = saveSettingsDebounced;
 $('claudeMinFrame').oninput = saveSettingsDebounced;
 $('videoQuality').onchange = saveSettingsDebounced;
 $('batchReview').onchange = saveSettingsDebounced;

@@ -119,9 +119,9 @@ Stage 7 reads `framer/mapping.json` and, per line:
   sub-stills under the one narration clip);
 - **together**: lays the frames out in a grid for the whole line;
 - single-frame lines render as before.
-It logs each line's frame count + mode. Consecutive lines are separated by
-`LINE_GAP` (~0.4s) of silence so narration never jump-cuts; a music bed is mixed
-in and ducked under the voice.
+It logs each line's frame count + mode. Each narration clip carries its own
+pauses (laid by stage 6, see `pacing.py`), so lines follow one another without a
+gap added here; a music bed is mixed in and ducked under the voice.
 
 **Output:** `output/<chapter>/recap.mp4` (+ `video_plan.json`).
 

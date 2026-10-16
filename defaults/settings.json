@@ -6,7 +6,7 @@
   "voice": {
     "mode": "default",
     "file": null,
-    "engine": "kokoro",
+    "engine": "chatterbox",
     "kokoro_voice": "am_adam"
   },
   "watermark": {
@@ -28,7 +28,11 @@
     "style": "cut",
     "direction": "left",
     "duration": 0.35,
-    "ken_burns": false
+    "zoom": true,
+    "zoom_amount": 1.06
+  },
+  "framing": {
+    "blur_text": false
   },
   "video": {
     "quality": "standard"
@@ -44,7 +48,7 @@
     }
   },
   "gemini": {
-    "tone": "dramatic",
+    "tone": "comedic",
     "narration_type": "first_person",
     "style_reference": "",
     "model": "gemini-3.1-pro-preview"
@@ -53,7 +57,6 @@
   "claude": {
     "comprehension_model": "sonnet",
     "narration_model": "sonnet",
-    "target_minutes": 10.0,
     "min_frame_s": 3.0
   },
   "batch": {

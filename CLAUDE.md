@@ -238,6 +238,13 @@ project's whole folder and restores it as a new project, rewriting the absolute
 paths stored in chapter JSON files. Like merge, it needs no change to the
 manifest, orchestrator, or any pipeline stage.
 
+**Narration pacing** (`pacing.py`) is shared by both TTS engines in stage 6 (Chatterbox and Kokoro).
+Each line has a `pace` (calm, tense, action, reveal, sad, comic; an editor field per line, written by the
+Claude engine per block and by the Gemini engine as a `[tag]` at the start of a paragraph, else inferred
+from the text), stored as the beat's `Panel.emotion`. A line is voiced sentence by sentence, the engine's
+own silence is trimmed and capped, and `pacing.voice_line` lays the pauses and applies the pace's speed, so
+the clip written to disk already contains every pause and stage 7 adds no gap between lines.
+
 The framer's **Claude script engine** (`claude_engine.py`, `panel_split.py`; setting
 `script_engine`) is an alternative to the Gemini engine: it splits the strip into
 panels, sends them as images to the local `claude` CLI in batches (pass 1) and writes

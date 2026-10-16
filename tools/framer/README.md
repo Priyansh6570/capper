@@ -117,13 +117,18 @@ and fall back to today's defaults when it's absent.
   instead of baking one in with PIL, then `overlay`-ing that onto the looped
   background video in the ffmpeg filtergraph - fundamentally different from
   the image path, which stays exactly as it always was.
-- **Frame Animation** → **Alternating Ken Burns** — a checkbox, independent of
-  the transition style above: when on, each still slowly zooms while it's on
-  screen (odd position zooms IN, even position zooms OUT, alternating), via a
-  per-still `zoompan` in the ffmpeg filtergraph. Off by default because it
-  measurably slows rendering (roughly 1.5x on this project's own dev machine,
-  GPU-encoded via NVENC - zoompan's per-output-frame crop math runs on the
-  CPU regardless of which encoder does the final encode).
+- **Frame Animation** → **Alternating zoom** — a checkbox (on by default) plus a
+  **Zoom amount** slider (1.00x-1.08x), independent of the transition style
+  above: each still slowly zooms while it's on screen (odd position zooms IN,
+  even position zooms OUT, alternating). Only the panel frames zoom: they are
+  a transparent layer of their own, and the background (video, image or blurred
+  cover) and the watermark are overlaid unzoomed, so they stay completely
+  static. Frames are laid out smaller by the zoom factor, so nothing is cropped
+  at the peak.
+- **Frame Animation** → **Blur text regions in frames** — off by default.
+  Frames keep their text sharp; turning it on enables the editor's manual Blur
+  tool and applies its regions when frames are exported. Nothing blurs text
+  automatically.
 
 Uploading a file saves it immediately; sliders/text/radio choices save on a
 short debounce. A settings change rewrites the snapshot for every chapter the
@@ -196,6 +201,13 @@ right before rendering, so a last-minute tweak still lands.
    - **play mode** (per line): **sequence** = the frames play one after another,
      splitting the line's audio duration evenly between them; **together** = the
      frames are shown at once (side-by-side / grid) for the whole line duration.
+   - **pace** (per line): how the voice delivers it - **calm**, **tense**,
+     **action**, **reveal** (a beat of silence before it), **sad**, **comic**
+     (a pause before the punchline) - or **auto**, which picks from the text. The
+     Claude engine sets it per block; a pasted or Gemini script can start a
+     paragraph with a tag such as `[tense]` to set it for the lines it becomes.
+     Pace sets the pauses between sentences and after the line and the speaking
+     speed (see `pacing.py`); it is exported as the line's `pace`.
 ### Workflow helpers
 - **Insert / split / merge lines**: hover between any two lines (or above the
   first) for a **+ insert** bar that drops a blank line there; **split** a line in
@@ -322,10 +334,13 @@ see "Project settings" above) each run:
   the whole transition-chained foreground track onto the looped, scaled,
   dimmed background video as its last step. Mutually exclusive with the
   image background - see `run()`.
-- **Ken Burns** — `_zoompan_filter` builds one `zoompan` filter per still,
+- **Zoom** — `_zoom_filter` builds one `perspective` filter per still,
   inserted into its per-input chain in `_build_filtergraph` BEFORE the
   transition chain; alternates zoom direction by each item's position in the
-  render (not by anything about the source image itself).
+  render (not by anything about the source image itself). It is applied to the
+  frames layer only: with a video background the watermark is a separate image
+  overlaid on the video under the frames, otherwise each item's `back` image
+  (background + watermark) is overlaid under its zoomed frames.
 
 All fields are optional; a project with no settings runs exactly as before
 this feature existed.

@@ -16,6 +16,13 @@ VRAM problem is caught immediately and we drop to the next option instead of
 crashing mid-run. If an individual line OOMs during the run, that one line is
 retried on CPU (a CPU model is lazily loaded once) and the run continues.
 
+Pacing: each line is voiced one sentence at a time and joined by `pacing.voice_line`, which trims the
+silence the engine leaves around a sentence and lays the pauses itself, from the line's mood
+(`panel.emotion`: a pace such as tense, reveal or sad, or a stage 3 emotion). Pauses therefore fall
+only between sentences and after the line, and speaking speed follows the mood and the chapter's tone
+(Turbo has no speed control, so its sentences are time-stretched). The clip written to disk includes
+those pauses; stage 7 adds none of its own.
+
 Emotion -> prosody: `panel.emotion` maps to small, deliberately subtle
 exaggeration + cfg_weight tweaks (tense/angry more expressive, excited up and a
 touch faster, sad softer and slower; neutral is baseline). These knobs only take
@@ -55,7 +62,11 @@ import os
 import sys
 from pathlib import Path
 
+import numpy as np
+
 from atomic_io import clear_directory
+import pacing
+import tones
 from config import ROOT, chapter_work_dir, TTS_VOICE
 from gpu import nvidia_gpu, record_usage
 from manifest import Manifest
@@ -242,12 +253,20 @@ _EMOTION = {
     "excited":   (0.70, 0.60),
     "surprised": (0.65, 0.55),
     "sad":       (0.35, 0.40),
+    "calm":      (0.50, 0.50),
+    "action":    (0.70, 0.60),
+    "reveal":    (0.65, 0.55),
+    "comic":     (0.60, 0.55),
 }
 _EMOTION_DEFAULT = _EMOTION["neutral"]
 
 
-def _emotion_params(emotion: str | None) -> tuple[float, float]:
-    return _EMOTION.get((emotion or "").strip().lower(), _EMOTION_DEFAULT)
+def _emotion_params(emotion: str | None, tone: str | None = None) -> tuple[float, float]:
+    """(exaggeration, cfg_weight) for a beat's emotion, shifted by the chapter's tone."""
+    exaggeration, cfg_weight = _EMOTION.get((emotion or "").strip().lower(), _EMOTION_DEFAULT)
+    shift = tones.delivery(tone)
+    return (min(1.0, max(0.25, exaggeration + shift.exaggeration)),
+            min(0.8, max(0.2, cfg_weight + shift.cfg_weight)))
 
 
 # --------------------------------------------------------------------------- #
@@ -425,8 +444,8 @@ def _preprocess_ref(ref_path: str, out_path: Path) -> str:
     return str(out_path)
 
 
-def _save_wav(wav, sr: int, out: Path) -> float:
-    """Write `wav` to `out` and return its real duration in seconds.
+def _save_wav(wav: np.ndarray, sr: int, out: Path) -> float:
+    """Write the mono float32 `wav` to `out` and return its real duration in seconds.
 
     Uses `soundfile` (already a dep for `_preprocess_ref` above) instead of
     `torchaudio.save`: recent torchaudio releases dropped their built-in
@@ -435,12 +454,8 @@ def _save_wav(wav, sr: int, out: Path) -> float:
     """
     import soundfile as sf
 
-    w = wav.detach().to("cpu")
-    if w.dim() == 1:
-        w = w.unsqueeze(0)           # (frames,) -> (1, frames)
-    data = w.T.contiguous().numpy().astype("float32", copy=False)  # (frames, ch)
-    sf.write(str(out), data, sr, subtype="FLOAT")
-    return w.shape[-1] / float(sr)   # frames / sample_rate = true length
+    sf.write(str(out), wav, sr, subtype="FLOAT")
+    return len(wav) / float(sr)
 
 
 # --------------------------------------------------------------------------- #
@@ -507,7 +522,8 @@ def run(m: Manifest) -> Manifest:
     settings = _load_media_settings(m.chapter_id)
     tts = settings.get("tts") or {}
     if tts.get("engine") == "kokoro":
-        return tts_kokoro.run(m, audio_dir, tts.get("kokoro_voice") or tts_kokoro.DEFAULT_VOICE)
+        return tts_kokoro.run(m, audio_dir, tts.get("kokoro_voice") or tts_kokoro.DEFAULT_VOICE,
+                              tones.delivery(settings.get("tone")).speed)
 
     if _emotion_mode():
         print("  [s6] MANHWA_TTS_EMOTION=1: FULL Chatterbox (Turbo disabled) - "
@@ -538,16 +554,23 @@ def run(m: Manifest) -> Manifest:
             panel.audio, panel.duration_s = None, 0
             continue
 
-        ex, cfg = _emotion_params(panel.emotion)
-        wav, sr, used = engine.synth(line, ex, cfg)
+        mood = pacing.pace_of(panel.emotion, line)
+        ex, cfg = _emotion_params(mood, settings.get("tone"))
+        used = engine.device
+
+        def speak(sentence: str, speed: float) -> np.ndarray:
+            nonlocal used
+            wav, _, used = engine.synth(sentence, ex, cfg)
+            return pacing.stretch(wav.detach().to("cpu").numpy().reshape(-1), engine.sr, speed)
+
+        wav = pacing.voice_line(line, mood, speak, engine.sr, tones.delivery(settings.get("tone")).speed)
         out = audio_dir / f"{panel.id}.wav"
-        dur = _save_wav(wav, sr, out)
+        dur = _save_wav(wav, engine.sr, out)
 
         panel.audio = str(out)
         panel.duration_s = round(dur, 2)
         spoken += 1
-        print(f"    [{panel.order:03d}] ({panel.emotion or 'neutral'}: "
-              f"ex={ex:.2f} cfg={cfg:.2f}) {dur:5.2f}s on {used}")
+        print(f"    [{panel.order:03d}] ({mood}: ex={ex:.2f} cfg={cfg:.2f}) {dur:5.2f}s on {used}")
 
     total = sum(p.duration_s or 0 for p in panels)
     print(f"  voiced {spoken}/{len(panels)} panels with Chatterbox "

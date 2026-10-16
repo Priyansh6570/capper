@@ -1,5 +1,5 @@
 """Local speech-bubble detector: finds light or dark rounded regions that enclose
-text-sized glyphs, so blur boxes land exactly on the bubble instead of on a
+text-sized glyphs, so crops can leave a bubble out exactly instead of on a
 model's guess."""
 from __future__ import annotations
 

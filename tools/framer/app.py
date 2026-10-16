@@ -78,6 +78,8 @@ import claude_engine  # noqa: E402 - Claude script engine: panels -> narration b
 import panel_split  # noqa: E402 - strip -> reading-order panels
 import library  # noqa: E402 - per-project media library (sizes, deletion)
 import project_defaults  # noqa: E402 - the settings new projects start with
+import pacing  # noqa: E402 - per-line mood: where the narration pauses and how fast it runs
+import tones  # noqa: E402 - chapter tones: script voice and speech delivery
 import sites  # noqa: E402 - per-site adapters (tools/framer/sites/): metadata + chapter download
 from stages import s7_assemble as s7  # noqa: E402 - reused by the settings live-preview routes
 from stages import tts_kokoro  # noqa: E402 - the Kokoro voices and their preview
@@ -613,12 +615,6 @@ def gemini_parts_stream():
 # API in order, and stitches the results into one script - replacing the old
 # manual "upload each part to Gemini yourself, paste the answer back" step.
 # --------------------------------------------------------------------------- #
-GEMINI_TONES = {
-    "serious": "a serious, grounded tone",
-    "comedy": "a comedic, lighthearted tone with playful humor",
-    "dramatic": "a dramatic, emotionally intense tone",
-    "epic": "an epic, larger-than-life tone with sweeping stakes",
-}
 GEMINI_NARRATION_TYPES = {
     "first_person": 'first-person, as the hero living through these events ("I", "me")',
     "third_person": 'third-person recap narration ("he", "she", "they")',
@@ -656,9 +652,8 @@ def _gemini_client():
 
 
 def _narration_voice(tone: str, narration_type: str) -> str:
-    tone_desc = GEMINI_TONES.get(tone, GEMINI_TONES["serious"])
     narr_desc = GEMINI_NARRATION_TYPES.get(narration_type, GEMINI_NARRATION_TYPES["first_person"])
-    return f"Narrate {narr_desc}, in {tone_desc}."
+    return f"Narrate {narr_desc}.\n\n{tones.style_instruction(tone)}"
 
 
 def _style_reference_directive(style_reference: str) -> str:
@@ -678,9 +673,29 @@ def _gemini_system_prompt(tone: str, narration_type: str, style_reference: str,
         "nothing important - but tell it as flowing narration prose, not a "
         "transcript: weave dialogue and description together naturally, the way "
         "a narrator retelling the chapter out loud would.",
-        "Output ONLY the narration prose itself, in reading order - no scene/part "
-        "headings, no markdown, no bullet points, no meta-commentary about the "
-        "images or the task.",
+        "Narrate like a skilled recap-channel storyteller, adding understanding and energy "
+        "rather than reading panels out. Give every meaningful panel its due: a fight may be "
+        "compressed into flowing narration, but each hit, turn, reveal and reaction that "
+        "matters is still told. Besides what happens, say why it matters and what is at stake, "
+        "what a character wants, feels or is thinking when the pages show it, how a rule or "
+        "power of this world works when a scene shows one, and a brief reminder of an earlier "
+        "event when it bears on the moment; build tension toward a turn and react when a "
+        "reveal lands. There is no target length; the story sets it. The only filler to leave "
+        "out is repeating an event in other words, inventing events or inner thoughts the "
+        "pages do not show, generic hype (\"you won't believe what happens next\"), and "
+        "stretching one panel over sentences that add nothing.",
+        "Write for the ear: end each thought with a full stop and use a comma only where a "
+        "speaker would pause; no dashes, ellipses, colons, semicolons or parentheses, and no "
+        "quotation marks in the middle of a sentence.",
+        "Begin every paragraph with a delivery tag in square brackets, one of "
+        + ", ".join(f"[{name}]" for name in pacing.PACES) + ": calm for ordinary narration "
+        "(most paragraphs), tense for suspense and confrontation, action for fights and fast "
+        "events, reveal for a surprise or discovery (put the revelation in the paragraph's "
+        "last sentence), sad for grief and quiet emotion, comic for a joke (put the punchline "
+        "last). Start a new paragraph whenever the delivery changes.",
+        "Output ONLY the narration prose itself, in reading order, each paragraph starting with "
+        "its tag - no scene/part headings, no markdown, no bullet points, no meta-commentary "
+        "about the images or the task.",
     ]
     if style_reference.strip():
         parts.append(_style_reference_directive(style_reference))
@@ -787,7 +802,7 @@ def _build_gemini_script_stream(chapter_id: str, gemini_settings: dict):
     model = gemini_settings.get("model") or GEMINI_DEFAULT_MODEL
     if model not in GEMINI_MODELS:
         model = GEMINI_DEFAULT_MODEL
-    tone = gemini_settings.get("tone") or "serious"
+    tone = gemini_settings["tone"]
     narration_type = gemini_settings.get("narration_type") or "first_person"
     style_reference = gemini_settings.get("style_reference") or ""
 
@@ -842,9 +857,10 @@ def gemini_script_stream():
     work_dir = projects.chapter_work_dir(slug, ch_no) if slug and ch_no else chapter_work_dir(chapter_id)
     output_dir = projects.chapter_output_dir(slug, ch_no) if slug and ch_no else chapter_output_dir(chapter_id)
 
-    gemini_settings: dict = {}
+    gemini_settings: dict = {"tone": tones.DEFAULT_TONE}
     if slug and projects.exists(slug):
-        gemini_settings = projects.load(slug).get("settings", {}).get("gemini", {})
+        project = projects.load(slug)
+        gemini_settings = {**project["settings"]["gemini"], "tone": projects.chapter_tone(project, ch_no)}
 
     def stream():
         try:
@@ -1159,6 +1175,7 @@ _SCRIPT_MAX_CHARS = round(_SCRIPT_TARGET_CHARS * 1.5)                      # ~90
 _SENTENCE_SPLIT_RE = re.compile(r'(?<=[.!?])\s+')
 _CLAUSE_SPLIT_RE = re.compile(r'(?<=[,;:])\s+')
 _WS_RE = re.compile(r'\s+')
+_PACE_TAG_RE = re.compile(r'^\s*\[(' + "|".join(pacing.PACES) + r')\]\s*', re.IGNORECASE)
 
 
 def _normalize_ws(s: str) -> str:
@@ -1186,12 +1203,15 @@ def _split_long_sentence(sentence: str) -> list[str]:
     return out or [sentence]
 
 
-def split_script_into_lines(text: str) -> list[str]:
+def split_script_into_lines(text: str) -> list[tuple[str, str | None]]:
     """Turn pasted narration prose into short, boxable segments (see module
-    note above). Paragraph order and sentence order are both preserved."""
-    lines: list[str] = []
+    note above), each with the delivery tag (pacing.PACES) its paragraph started
+    with, or None. Paragraph order and sentence order are both preserved."""
+    lines: list[tuple[str, str | None]] = []
     for para in re.split(r'\n\s*\n', text):
-        blob = _normalize_ws(para)
+        tag = _PACE_TAG_RE.match(para)
+        pace = tag.group(1).lower() if tag else None
+        blob = _normalize_ws(para[tag.end():] if tag else para)
         if not blob:
             continue
         sentences = [s for s in (x.strip() for x in _SENTENCE_SPLIT_RE.split(blob)) if s]
@@ -1202,7 +1222,7 @@ def split_script_into_lines(text: str) -> list[str]:
                 if not cur:
                     cur = piece
                 elif len(cur) >= _SCRIPT_TARGET_CHARS or len(cur) + 1 + len(piece) > _SCRIPT_MAX_CHARS:
-                    lines.append(cur)
+                    lines.append((cur, pace))
                     cur = piece
                 else:
                     cur = cur + " " + piece
@@ -1212,10 +1232,10 @@ def split_script_into_lines(text: str) -> list[str]:
                 # segment (e.g. a short "Finally," clause gluing onto the
                 # sentence before it) - flush now, keep fragments confined
                 # to the sentence they came from.
-                lines.append(cur)
+                lines.append((cur, pace))
                 cur = ""
         if cur:
-            lines.append(cur)
+            lines.append((cur, pace))
     return lines
 
 
@@ -1241,7 +1261,7 @@ def load_script():
         return jsonify(error="Provide text or a txt_path."), 400
 
     lines = split_script_into_lines(text)
-    return jsonify(lines=lines)
+    return jsonify(lines=[text for text, _ in lines], paces=[pace for _, pace in lines])
 
 
 def _frame_suffix(j: int) -> str:
@@ -1296,13 +1316,12 @@ def _blur_region(img: Image.Image, lx: int, ly: int, rx: int, ry: int, style: st
     img.paste(blurred, (lx, ly))
 
 
-def _crop_frame(strip: Image.Image, entry: dict, out_path: Path) -> None:
-    """Crop one frame from the full-res strip, then flip + blur as requested.
+def _crop_frame(strip: Image.Image, entry: dict, out_path: Path, blur: bool) -> None:
+    """Crop one frame from the full-res strip, then flip it and, when `blur` is on, blur its regions.
 
     `entry` carries this frame's bbox + blur regions in TRUE strip pixels and a
-    flip flag. Blur regions are translated into crop-local coords and gaussian-
-    blurred in place; the flip is applied last so on-screen left/right matches
-    what the user toggled.
+    flip flag. Blur regions are translated into crop-local coords and blurred in
+    place; the flip is applied last so on-screen left/right matches what the user toggled.
     """
     x, y, w, h = (int(round(v)) for v in entry["bbox"])
     x = max(0, min(x, strip.width - 1))
@@ -1311,7 +1330,7 @@ def _crop_frame(strip: Image.Image, entry: dict, out_path: Path) -> None:
     h = max(1, min(h, strip.height - y))
     crop = strip.crop((x, y, x + w, y + h))
 
-    for region in entry.get("blur") or []:
+    for region in (entry.get("blur") or []) if blur else []:
         bx, by, bw, bh, style = _region_box_style(region)
         # strip coords -> crop-local coords
         lx, ly = bx - x, by - y
@@ -1332,14 +1351,14 @@ def _crop_frame(strip: Image.Image, entry: dict, out_path: Path) -> None:
 def export():
     """Render every frame + write mapping.json AND a pipeline manifest.
 
-    Body: JSON {"chapter_id": "...", "entries": [ {line_text, duration_s,
+    Body: JSON {"chapter_id": "...", "entries": [ {line_text, duration_s, pace,
     mode:"sequence"|"together", frames:[ {bbox:[x,y,w,h], flip:bool,
     blur:[[x,y,w,h],...]}, ... ]}, ... ]} with all coords in TRUE strip pixels and
     entries already in final (narration) order. A line may hold MULTIPLE frames.
 
     Per line we crop/flip/blur every frame from the full-res strip into
     frame_<NNN><letter>.png (letter preserves intra-line order), and emit one
-    mapping.json line: {order, text, duration_s, mode, frames:[{file, image,
+    mapping.json line: {order, text, duration_s, pace, mode, frames:[{file, image,
     flip, blur_regions, bbox}]}.
 
     The pipeline manifest (consumed by s6 audio + s7 video) gets ONE beat per
@@ -1367,6 +1386,7 @@ def _export_chapter(chapter_id: str, entries: list[dict], slug: str | None, ch_n
     if not strip_path.exists():
         raise Refused(f"No strip for {chapter_id}; load a PDF first.")
     strip = Image.open(strip_path).convert("RGB")
+    blur = bool(slug) and projects.load(slug)["settings"]["framing"]["blur_text"]
 
     # The old frames and the narration voiced for the old lines go before the new frames are written.
     frames_dir = chapter_work_dir(chapter_id) / "frames"
@@ -1384,18 +1404,19 @@ def _export_chapter(chapter_id: str, entries: list[dict], slug: str | None, ch_n
         line_text = (entry.get("line_text") or "").strip()
         duration_s = float(entry.get("duration_s") or 4.0)
         mode = "together" if entry.get("mode") == "together" else "sequence"
+        pace = entry.get("pace") if entry.get("pace") in pacing.PACES else None
 
         out_frames = []
         for j, fr in enumerate(frames):
             frame_name = f"frame_{i:03d}{_frame_suffix(j)}.png"
             frame_path = frames_dir / frame_name
-            _crop_frame(strip, fr, frame_path)
+            _crop_frame(strip, fr, frame_path, blur)
             total_frames += 1
             out_frames.append({
                 "file": frame_name,
                 "image": str(frame_path),
                 "flip": bool(fr.get("flip")),
-                "blur_regions": [list(_region_box_style(r)) for r in (fr.get("blur") or [])],
+                "blur_regions": [list(_region_box_style(r)) for r in (fr.get("blur") or [])] if blur else [],
                 "bbox": [int(round(v)) for v in fr["bbox"]],
             })
 
@@ -1403,6 +1424,7 @@ def _export_chapter(chapter_id: str, entries: list[dict], slug: str | None, ch_n
             "order": i,
             "text": line_text,
             "duration_s": duration_s,
+            "pace": pace,
             "mode": mode,
             "frames": out_frames,
         })
@@ -1414,6 +1436,7 @@ def _export_chapter(chapter_id: str, entries: list[dict], slug: str | None, ch_n
             order=i,
             crop=out_frames[0]["image"],
             script_line=line_text,
+            emotion=pace,
             duration_s=duration_s,
             selected=True,
             has_person=True,
@@ -1966,6 +1989,17 @@ def _speech_rate(slug: str) -> float | None:
     return chars / seconds if seconds else None
 
 
+def _narration_estimate(slug: str, n: int, chars_per_sec: float) -> dict | None:
+    """Words and estimated spoken length (seconds, at the project's speaking pace) of chapter
+    `n`'s current script, or None when it has none yet."""
+    with config.chapter_scope(projects.chapter_work_dir(slug, n), projects.chapter_output_dir(slug, n)):
+        state = _resolve_editor_state(f"{slug}_ch{n}")
+    texts = [text for line in (state or {}).get("lines", []) if (text := line.get("text", "").strip())]
+    if not texts:
+        return None
+    return {"words": sum(len(t.split()) for t in texts), "seconds": round(sum(map(len, texts)) / chars_per_sec)}
+
+
 def _run_script_job(job: "Job") -> None:
     slug, ch_no, chapter_id = job.slug, job.ch_no, job.chapter_id
     read: set[str] = set()
@@ -2024,7 +2058,9 @@ def _run_script_job(job: "Job") -> None:
             job.claude = {"pass": None, "panels_read": 0, "panels_total": len(panels), "current": None,
                           "pass1": None, "pass2": None, "total": None}
             voice = settings["gemini"]
-            style = [_narration_voice(voice["tone"], voice["narration_type"])]
+            tone = projects.chapter_tone(projects.load(slug), ch_no)
+            job.note(f"Tone: {tones.TONES[tone]['label']}")
+            style = [_narration_voice(tone, voice["narration_type"])]
             if voice["style_reference"].strip():
                 style.append(_style_reference_directive(voice["style_reference"]))
             state_path = _claude_state_path(chapter_id)
@@ -2041,7 +2077,6 @@ def _run_script_job(job: "Job") -> None:
                 style="\n\n".join(style),
                 models={"comprehension": settings["claude"]["comprehension_model"],
                         "narration": settings["claude"]["narration_model"]},
-                target_minutes=settings["claude"]["target_minutes"],
                 min_frame_s=settings["claude"]["min_frame_s"],
                 chars_per_sec=rate or claude_engine.DEFAULT_CHARS_PER_SEC,
                 on_event=on_event, on_limit=on_limit, on_proc=on_proc,
@@ -2055,9 +2090,6 @@ def _run_script_job(job: "Job") -> None:
         blocks = narration["blocks"]
         job.status, job.ok, job.fraction = "done", True, 1.0
         job.message = f"Narration ready - {len(blocks)} block(s), about {sum(b['duration_s'] for b in blocks) / 60:.1f} min."
-        if narration["shortfall"]:
-            job.message += (f" Short of the {narration['shortfall']['target_minutes']:g} min target: "
-                            "the chapter has no more material, so nothing was padded.")
     except Exception as e:  # noqa: BLE001 - report, don't crash the worker
         if job.cancel_requested:
             job.status, job.ok, job.message = "cancelled", False, "Stopped by user."
@@ -2071,7 +2103,7 @@ def _run_script_job(job: "Job") -> None:
 
 def _state_from_narration(chapter_id: str) -> dict | None:
     """Editor lines for a chapter's Claude narration: one line per block, with the
-    block's frames cropped, blurred and flopped as the engine decided."""
+    block's frames cropped and flopped as the engine decided."""
     narration = claude_engine.read_narration(_claude_state_path(chapter_id))
     if not narration:
         return None
@@ -2079,16 +2111,14 @@ def _state_from_narration(chapter_id: str) -> dict | None:
 
     def frames_of(block: dict) -> list[dict]:
         if "frames" in block:
-            return [{"bbox": f["bbox"], "flip": f["flip"], "blur": f["blur"]} for f in block["frames"]]
-        return [{"bbox": boxes[i], "flip": False,
-                 "blur": [[*box, DEFAULT_BLUR_STYLE] for box in block["blur"].get(i, [])]}
-                for i in block["panel_ids"] if i in boxes]
+            return [{"bbox": f["bbox"], "flip": f["flip"]} for f in block["frames"]]
+        return [{"bbox": boxes[i], "flip": False} for i in block["panel_ids"] if i in boxes]
 
     return {
         "chapter_id": chapter_id,
         "saved_at": narration["saved_at"],
         "lines": [{"text": block["narration"], "duration_s": block["duration_s"],
-                   "mode": block.get("mode", "sequence"), "frames": frames_of(block)}
+                   "mode": block.get("mode", "sequence"), "pace": block.get("pace"), "frames": frames_of(block)}
                   for block in narration["blocks"]],
     }
 
@@ -2313,6 +2343,7 @@ def _state_from_mapping(chapter_id: str) -> dict | None:
             "text": ln.get("text", ""),
             "duration_s": ln.get("duration_s", 4),
             "mode": ln.get("mode", "sequence"),
+            "pace": ln.get("pace"),
             "frames": [{"bbox": f["bbox"], "flip": f.get("flip", False),
                         "blur": f.get("blur_regions", [])} for f in ln.get("frames", [])],
         } for ln in mapping["lines"]],
@@ -2711,7 +2742,10 @@ def api_get_project(slug):
         except Exception:  # noqa: BLE001 - a derive glitch must not break the page
             pass
     project = projects.load(slug)
+    chars_per_sec = _speech_rate(slug) or claude_engine.DEFAULT_CHARS_PER_SEC
     for ch in project["chapters"]:
+        ch["effective_tone"] = projects.chapter_tone(project, ch["n"])
+        ch["narration"] = _narration_estimate(slug, ch["n"], chars_per_sec)
         video = projects.chapter_video_path(slug, ch["n"])
         ch["duration"] = branding.duration_of(video) if video.is_file() else None
         ch["steps"] = _chapter_steps(slug, ch["n"])
@@ -2816,6 +2850,16 @@ def api_set_chapter_status(slug, n):
     status = data.get("status")
     try:
         ch = projects.set_status(slug, n, status, force=bool(data.get("force")))
+    except (ValueError, KeyError) as e:
+        return jsonify(error=str(e)), 400
+    return jsonify(ok=True, chapter=ch)
+
+
+@app.post("/api/projects/<slug>/chapters/<int:n>/tone")
+def api_set_chapter_tone(slug, n):
+    """Body: JSON {tone}: one of tones.TONES, or null to follow the project's default tone."""
+    try:
+        ch = projects.set_chapter_tone(slug, n, (request.get_json(silent=True) or {}).get("tone"))
     except (ValueError, KeyError) as e:
         return jsonify(error=str(e)), 400
     return jsonify(ok=True, chapter=ch)
@@ -3386,6 +3430,7 @@ THUMB_WIDTH = 480
 def _entries_from_state(state: dict) -> list[dict]:
     """Export entries for editor-state lines, as the editor's Export button builds them."""
     return [{"line_text": line["text"], "duration_s": line.get("duration_s") or 4, "mode": line.get("mode"),
+             "pace": line.get("pace"),
              "frames": [{"bbox": f["bbox"], "flip": bool(f.get("flip")), "blur": f.get("blur") or []}
                         for f in line.get("frames", [])]} for line in state["lines"]]
 

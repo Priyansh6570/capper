@@ -19,9 +19,14 @@ overhead. This stage skips it:
      is no slower fallback renderer; if it fails the stage fails with ffmpeg's message.
 
 Everything is audio-driven and static (24fps): a beat holds for its narration
-length (floored at MIN_BEAT, never padded for short lines; long audio just holds),
-plus a short silent tail so lines don't jump-cut; the transition overlaps that tail
+length (floored at MIN_BEAT, never padded for short lines; long audio just holds).
+The narration clip carries its own pauses, laid by stage 6 (see pacing.py), so lines
+don't jump-cut and no gap is added here; the transition overlaps the end of the beat
 (no overlap at all for a "cut").
+
+With the zoom on, only the panel frames move: they are rendered as a transparent layer
+that is zoomed on its own and overlaid on the static background (a video, an image or the
+blurred cover) and watermark, which are never resampled.
 
 A line (beat) may carry MULTIPLE frames, read from the framer's
 `work/<ch>/framer/mapping.json` (keyed by `order`); the per-frame flip/blur is
@@ -43,11 +48,13 @@ from __future__ import annotations
 
 import itertools
 import json
+import math
 import os
 import re
 import shutil
 import subprocess
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from config import ROOT, chapter_output_dir, chapter_work_dir, NO_CONSOLE
@@ -60,26 +67,20 @@ W, H = 1920, 1080
 FPS = 24
 MIN_BEAT = 2.5         # floor on a beat's on-screen audio time (seconds)
 NO_AUDIO_HOLD = 3.0    # a beat with no audio holds this long
-LINE_GAP = 0.4         # silence between consecutive LINES' narration (tunable) so
-                       # clips don't jump-cut into each other. Each line ends with
-                       # this much trailing silence before the next line speaks;
-                       # within a "sequence" line the sub-stills share one clip, so
-                       # this gap only ever falls BETWEEN lines, never inside one.
 CROSSFADE = 0.35       # DEFAULT crossfade length - overridden per-project by the
                        # "animation" setting (see _resolve_animation()); this is
                        # also the value an old project.json with no such setting
                        # falls back to, matching what was always hardcoded here.
 FILL = 0.96            # frames (or a together-group) fill up to this share of the canvas
-KEN_BURNS_MAX_ZOOM = 1.10  # peak scale for the alternating Ken Burns effect -
-                           # always >= 1.0 so the zoompan crop never samples
-                           # outside the still's own 1920x1080 canvas
-KEN_BURNS_FILL = 0.88  # with Ken Burns on, frames fill less: at peak zoom the visible window is
-                       # 1/KEN_BURNS_MAX_ZOOM (0.909) of the canvas, and 0.88 stays inside it
+DEFAULT_ZOOM_AMOUNT = 1.06  # peak scale of the alternating zoom when the project does not say
+ZOOM_FPS = FPS // 2         # the zoom is recomputed this often and each result shown for FPS / ZOOM_FPS
+                            # frames: it moves at most ~0.2 px per frame, so a sub-pixel update every
+                            # other frame is as smooth to the eye and costs half
 GROUP_GAP = 0.02       # gap between frames shown together, as a share of the canvas width
 BG_BLUR = 40           # background gaussian blur radius (px)
 BG_BRIGHTNESS = 0.40   # darken background to ~40% brightness
-MUSIC_VOL = 0.06       # static music bed volume (low; ducked further under speech)
-NARRATION_VOL = 1.15   # slight narration boost so speech sits above the bed
+MUSIC_VOL = 0.03       # static music bed volume (low; ducked further under speech)
+NARRATION_VOL = 2.5    # narration gain; the limiter below catches peaks
 AUDIO_SR = 48000       # common sample rate for the audio graph
 # Output size presets (project setting `video.quality`). x264 at a constant quality (crf): the
 # stills barely change, so it spends bits only where the picture moves. A lower height and a
@@ -163,46 +164,49 @@ def _load_media_settings(chapter_id: str) -> dict:
 _SLIDE_XFADE = {"left": "slideleft", "right": "slideright", "up": "slideup", "down": "slidedown"}
 
 
-def _zoom_filter(dur: float, zoom_in: bool, width: int, height: int) -> str:
-    """One still's Ken Burns filter: `zoom_in` eases the scale from 1.0 to KEN_BURNS_MAX_ZOOM
-    over the still's on-screen time, otherwise from there back to 1.0, and render alternates
-    them per still. The picture is resampled with `perspective`, which takes fractional
-    coordinates; ffmpeg's `zoompan` crops at whole pixels, so its zoom visibly shivers. The
-    window stays centred and inside the canvas (zoom >= 1). `on` is the output-frame counter
-    of this still's own filter instance, so the curve is a closed form of it and "zoom out"
-    can start already zoomed. Smoothstep easing keeps the start and end of each move gentle."""
-    last = max(1, round(dur * FPS) - 1)
-    progress = f"(on/{last})"
+def _frame_count(dur: float, fps: int = FPS) -> int:
+    """Frames a still of `dur` seconds spans at `fps`: every frame that starts before its end."""
+    return math.ceil(round(dur * fps, 6))
+
+
+def _zoom_filter(updates: int, zoom_in: bool, width: int, height: int, amount: float) -> str:
+    """One still's zoom over its `updates` ZOOM_FPS steps: the scale eases between 1.0 and
+    `amount` (`zoom_in` upward, otherwise back down) about the centre of the frame, never below
+    1.0 so the window stays inside the canvas. `perspective` resamples with bilinear
+    interpolation at fractional coordinates, so the motion is smooth to a fraction of a pixel;
+    scaling to whole-pixel sizes or cropping at whole pixels (`scale` + `crop`, `zoompan`)
+    moves in visible one-pixel steps. `on` is the output-frame counter of this still's own
+    chain, which makes the curve a closed form of it. Smoothstep easing keeps the start and
+    end of each move gentle."""
+    progress = f"(on/{max(1, updates - 1)})"
     eased = f"({progress}*{progress}*(3-2*{progress}))"
-    zoom = f"(1+{KEN_BURNS_MAX_ZOOM - 1.0:.4f}*{eased if zoom_in else f'(1-{eased})'})"
+    zoom = f"(1+{amount - 1.0:.4f}*{eased if zoom_in else f'(1-{eased})'})"
     x0, y0 = f"{width / 2}*(1-1/{zoom})", f"{height / 2}*(1-1/{zoom})"
     return (f"perspective=x0='{x0}':y0='{y0}':x1='{width}-{x0}':y1='{y0}':x2='{x0}':y2='{height}-{y0}':"
             f"x3='{width}-{x0}':y3='{height}-{y0}':sense=source:interpolation=linear:eval=frame")
 
 
-def _resolve_animation(settings: dict) -> tuple[str, float, bool]:
-    """(xfade transition name, or "cut" for a hard cut; crossfade seconds;
-    alternating-Ken-Burns on/off) for this render, from the project's
-    `animation` setting. Missing/garbled settings (or an old project.json/
-    media_settings.json saved before a setting existed) fall back to EXACTLY
-    today's fixed behavior - a plain fade crossfade at CROSSFADE seconds, Ken
-    Burns off - so nothing changes unless someone explicitly picks something
-    else in Project Settings. Ken Burns is independent of the transition
-    style: it animates each still WHILE it's on screen (see
-    _zoompan_filter()), the transition still plays between them as chosen."""
+def _resolve_animation(settings: dict) -> tuple[str, float, float | None]:
+    """(xfade transition name, or "cut" for a hard cut; crossfade seconds; peak scale of the
+    alternating zoom, or None when it is off) for this render, from the project's `animation`
+    setting. Missing/garbled settings fall back to a plain fade crossfade at CROSSFADE seconds and
+    the zoom on at DEFAULT_ZOOM_AMOUNT. The zoom is independent of the transition style: it
+    animates each still WHILE it's on screen (see _zoom_filter()), the transition still plays
+    between them as chosen."""
     cfg = settings.get("animation") or {}
     style = cfg.get("style")
     if style not in ("cut", "fade", "slide", "zoom"):
         style = "fade"
     duration = max(0.0, min(1.0, float(cfg.get("duration") or CROSSFADE)))
-    ken_burns = bool(cfg.get("ken_burns"))
+    amount = max(1.0, min(1.08, float(cfg.get("zoom_amount") or DEFAULT_ZOOM_AMOUNT)))
+    zoom = amount if cfg.get("zoom", True) and amount > 1.0 else None
     if style == "cut":
-        return "cut", 0.0, ken_burns
+        return "cut", 0.0, zoom
     if style == "slide":
-        return _SLIDE_XFADE.get(cfg.get("direction"), "slideleft"), duration, ken_burns
+        return _SLIDE_XFADE.get(cfg.get("direction"), "slideleft"), duration, zoom
     if style == "zoom":
-        return "zoomin", duration, ken_burns
-    return "fade", duration, ken_burns
+        return "zoomin", duration, zoom
+    return "fade", duration, zoom
 
 
 def _line_frames(b: Panel, mapping: dict[int, dict]) -> tuple[list[str | None], str]:
@@ -236,7 +240,7 @@ def _plan(beats: list[Panel], mapping: dict[int, dict], crossfade: float = CROSS
     its START on the final timeline. Returns (items, total_duration,
     line_summaries) - the summaries drive the per-line log.
     """
-    tail = LINE_GAP + crossfade
+    tail = crossfade
     items: list[dict] = []
     lines: list[dict] = []
     for b in beats:
@@ -248,13 +252,13 @@ def _plan(beats: list[Panel], mapping: dict[int, dict], crossfade: float = CROSS
         n = len(frames)
 
         if mode == "sequence" and n > 1:
-            # Split the line's time evenly across its frames; the silent tail
+            # Split the line's time evenly across its frames; the crossfade tail
             # rides on the last sub-still and the audio plays only over the
             # first. The N sub-stills crossfade with each other, which
             # shortens the line's wall-clock span by (N-1)*crossfade - that
             # would eat into the next line's narration and overlap it. Add
-            # that time back to the line's budget so the inter-line silence
-            # stays exactly LINE_GAP regardless of how many frames the line has.
+            # that time back to the line's budget so the next line starts
+            # exactly when this clip ends, however many frames the line has.
             on_screen = round(max(al, MIN_BEAT), 3)
             line_total = round(on_screen + tail + (n - 1) * crossfade, 3)
             share = round(line_total / n, 3)
@@ -570,28 +574,71 @@ def _build_watermark_layer(settings: dict):
     return canvas.crop((left, top, left + W, top + H))
 
 
-def _precompose(items: list[dict], stills_dir: Path, wm=None, bg=None,
-                transparent: bool = False, fill: float = FILL, out_height: int = H) -> None:
+def _compose_backdrop(frame_path: str | None, bg=None, wm=None):
+    """The still background of a beat: the project's `bg`, else a blurred cover of the beat's first
+    frame, with the watermark `wm` (if any) on it."""
+    from PIL import Image
+
+    base = Image.new("RGB", (W, H), (12, 12, 12))
+    if bg is None:
+        first = _open_rgb(frame_path)
+        if first is None:
+            return base
+        bg = _blurred_self_cover(first)
+    return _paste_background(base, bg, wm)
+
+
+def _to_output_size(img, out_height: int):
+    if out_height == H:
+        return img
+    from PIL import Image
+    return img.resize((round(out_height * W / H / 2) * 2, out_height), Image.LANCZOS)
+
+
+def _save_watermark_layer(wm, stills_dir: Path, out_height: int) -> Path:
+    """The watermark as the one static image ffmpeg overlays on a video background."""
+    stills_dir.mkdir(parents=True, exist_ok=True)
+    path = stills_dir / "watermark.png"
+    _to_output_size(wm, out_height).save(path)
+    return path
+
+
+def _precompose(items: list[dict], stills_dir: Path, wm=None, bg=None, transparent: bool = False,
+                fill: float = FILL, out_height: int = H, layered: bool = False) -> None:
     """Render every item's still PNG into stills_dir and record its path on the
     item (key "still"). All the per-frame compositing work happens here, once.
     A "grid" item shows its frames together; everything else is one frame. `fill` is the
-    share of the canvas the frames may cover (less with Ken Burns, which crops the edges).
+    share of the canvas the frames may cover (less with the zoom, which enlarges them).
     `bg` (a PIL image) replaces the default blurred self-cover when given; `wm`
     (a PIL RGBA layer), when given, is composited onto the BACKGROUND layer
     only (see _compose_still) - frame crops are pasted on
     top of that afterward, so they always cover/hide the watermark under them.
     `transparent=True` (a video background - see run()) saves RGBA PNGs with
     the background area left transparent instead, for ffmpeg to `overlay`
-    onto the looped background video."""
+    onto the looped background video. `layered` (the zoom is on) keeps everything but the
+    frames out of the still, which is then the frames alone on a transparent layer for ffmpeg
+    to zoom by itself; unless a video background plays behind (`transparent`), the item also gets
+    `back` (key), the background and `wm` as an image that stays still under the zoomed frames. The
+    stills are independent and PIL releases the GIL while it resizes and encodes, so they are
+    composed on a thread pool."""
     stills_dir.mkdir(parents=True, exist_ok=True)
-    for i, it in enumerate(items):
+
+    def compose(entry: tuple[int, dict]) -> None:
+        i, it = entry
         out = stills_dir / f"beat_{i:04d}.png"
-        still = _compose_still(it["frames"], bg, wm, transparent, fill)
-        if out_height != H:
-            from PIL import Image
-            still = still.resize((round(out_height * W / H / 2) * 2, out_height), Image.LANCZOS)
-        still.save(out)
+        if layered:
+            still = _compose_still(it["frames"], transparent=True, fill=fill)
+            if not transparent:
+                back = stills_dir / f"back_{i:04d}.png"
+                _to_output_size(_compose_backdrop(it["frames"][0], bg, wm), out_height).save(back)
+                it["back"] = str(back)
+        else:
+            still = _compose_still(it["frames"], bg, wm, transparent, fill)
+        _to_output_size(still, out_height).save(out)
         it["still"] = str(out)
+
+    with ThreadPoolExecutor(max_workers=min(8, os.cpu_count() or 1)) as pool:
+        list(pool.map(compose, enumerate(items)))
 
 
 # --------------------------------------------------------------------------- #
@@ -599,21 +646,30 @@ def _precompose(items: list[dict], stills_dir: Path, wm=None, bg=None,
 # --------------------------------------------------------------------------- #
 def _build_filtergraph(items: list[dict], music_in: int | None, total: float,
                        transition: str = "fade", crossfade: float = CROSSFADE,
-                       ken_burns: bool = False, bg_in: int | None = None,
-                       bg_dim: float = 0.85, out_height: int = H, blur_bg: bool = False
-                       ) -> tuple[str, str, str | None]:
-    """Build the ffmpeg filter_complex for the video transition chain + audio
+                       zoom: float | None = None, bg_in: int | None = None,
+                       bg_dim: float = 0.85, out_height: int = H, blur_bg: bool = False,
+                       back_in: int | None = None, wm_in: int | None = None
+                       ) -> tuple[list[str], str, str | None]:
+    """Build the ffmpeg filter_complex graphs for the video transition chain + audio
     mix. Image inputs are 0..n-1; narration audio inputs follow; the video
     background (if any) is at index `bg_in`; music (if any) is at index
     `music_in`. `transition` is an ffmpeg `xfade` transition name (e.g.
     "fade", "slideleft", "zoomin") - or "cut" for a hard cut, which uses
     `concat` instead of `xfade` (a 0-duration xfade isn't a reliable no-op).
     `crossfade` must be the SAME value _plan() timed these items' overlaps
-    with - see _resolve_animation()/run(). Returns (filter_complex,
-    video_label, audio_label|None).
+    with - see _resolve_animation()/run(). Returns (filter_complex graphs,
+    video_label, audio_label|None). With the zoom on, the stills chain is a graph of its own,
+    linked by label to the background compositing and audio: ffmpeg runs each graph on its own
+    thread, so the zoom's per-frame work overlaps with the compositing instead of queueing
+    behind it. Without the zoom one graph is faster, as the hand-off between threads would
+    cost more than it saves.
 
-    `ken_burns` applies a per-still zoom (see _zoom_filter) BEFORE the
-    transition chain, alternating zoom direction by each item's position.
+    `zoom` (the peak scale, None for off) applies a per-still zoom (see _zoom_filter) BEFORE the
+    transition chain, alternating zoom direction by each item's position. The zoom moves only the
+    frames layer: with `back_in` (the first of the items' `back` images, which are inputs after the
+    frames layers) each frames layer is overlaid on its still background after zooming; with a
+    video background, `wm_in` (the watermark image) is overlaid on the video, under the frames,
+    so neither is ever zoomed.
 
     `bg_in` (set only when a video background is configured - see
     _resolve_video_background/run()) changes what the still chain normalizes
@@ -626,32 +682,48 @@ def _build_filtergraph(items: list[dict], music_in: int | None, total: float,
     (stills are scaled down first, so a 720p render does well under half the work of 1080p)."""
     n = len(items)
     out_w = round(out_height * W / H / 2) * 2
-    parts: list[str] = []
-    fg_pix_fmt = "yuva420p" if bg_in is not None else "yuv420p"
+    video: list[str] = []
+    rest: list[str] = []
+    fg_pix_fmt = "yuva420p" if bg_in is not None or back_in is not None else "yuv420p"
+    # a still that a crossfade follows gets one frame past its end: when it ends less than a frame
+    # after the crossfade does, ffmpeg's xfade stalls waiting for a frame that never comes
+    blend = 0 if transition == "cut" or crossfade <= 0 else 1
     fg_out = "[vout_fg]" if bg_in is not None else "[vout]"
 
-    # --- video: normalize each still (+ optional Ken Burns), then chain transitions ---
+    # --- video: normalize each still (+ optional zoom), then chain transitions ---
     for i in range(n):
-        chain = f"[{i}:v]fps={FPS}"
         # the stills are already composed at the output size (see _precompose), so there is no
-        # per-frame scale here; converting to planar YUV first halves what Ken Burns has to warp
-        chain += f",format={fg_pix_fmt}"
-        if ken_burns:
-            chain += "," + _zoom_filter(items[i]["dur"], (i % 2 == 0), out_w, out_height)
+        # per-frame scale here; the zoom, when on, is the only resampling a still goes through.
+        # Each still is decoded once and repeated for its on-screen time: looping the image
+        # file instead would decode the PNG again for every output frame.
+        rate = ZOOM_FPS if zoom else FPS
+        frames = _frame_count(items[i]["dur"]) + blend
+        steps = math.ceil(frames * rate / FPS)
+        looped = f"loop=loop={steps - 1}:size=1:start=0,setpts=N/{rate}/TB"
+        chain = f"[{i}:v]format={fg_pix_fmt},{looped}"
+        if zoom:
+            chain += "," + _zoom_filter(steps, (i % 2 == 0), out_w, out_height, zoom)
+            if back_in is not None:
+                video.append(f"{chain}[z{i}]")
+                video.append(f"[{back_in + i}:v]format=yuv420p,{looped}[b{i}]")
+                chain = f"[b{i}][z{i}]overlay=x=0:y=0:format=yuv420"
+            chain += f",fps={FPS},trim=end_frame={frames}"
+        else:
+            chain += f",fps={FPS}"
         chain += f",setsar=1[v{i}]"
-        parts.append(chain)
+        video.append(chain)
     if n == 1:
         vlabel = "[v0]"
     elif transition == "cut" or crossfade <= 0:
         vparts = "".join(f"[v{i}]" for i in range(n))
-        parts.append(f"{vparts}concat=n={n}:v=1:a=0{fg_out}")
+        video.append(f"{vparts}concat=n={n}:v=1:a=0{fg_out}")
         vlabel = fg_out
     else:
         prev, acc = "[v0]", items[0]["dur"]
         for j in range(1, n):
             off = acc - crossfade
             out = fg_out if j == n - 1 else f"[x{j}]"
-            parts.append(f"{prev}[v{j}]xfade=transition={transition}:"
+            video.append(f"{prev}[v{j}]xfade=transition={transition}:"
                          f"duration={crossfade:.3f}:offset={off:.3f}{out}")
             acc += items[j]["dur"] - crossfade
             prev = out
@@ -662,49 +734,54 @@ def _build_filtergraph(items: list[dict], music_in: int | None, total: float,
         brightness = max(-1.0, min(1.0, float(bg_dim) - 1.0))
         soften = (f"scale={out_w // BG_BLUR_DIVISOR}:{out_height // BG_BLUR_DIVISOR},"
                   f"scale={out_w}:{out_height}:flags=bilinear," if blur_bg else "")
-        parts.append(
+        rest.append(
             f"[{bg_in}:v]scale={out_w}:{out_height}:force_original_aspect_ratio=increase,"
             f"crop={out_w}:{out_height},{soften}fps={FPS},eq=brightness={brightness:.3f},"
             f"format=yuv420p,setsar=1[bgv]"
         )
-        parts.append(f"[bgv]{vlabel}overlay=x=0:y=0:format=auto,format=yuv420p[vout]")
+        backdrop = "[bgv]"
+        if wm_in is not None:
+            rest.append(f"[{wm_in}:v]format=yuva420p[wm]")
+            rest.append("[bgv][wm]overlay=x=0:y=0:format=yuv420[bgw]")
+            backdrop = "[bgw]"
+        rest.append(f"{backdrop}{vlabel}overlay=x=0:y=0:format=yuv420[vout]")
         vlabel = "[vout]"
 
     # --- audio: delay each narration onto the timeline, mix, duck music ---
     # Narration inputs were appended in order for the beats that have audio.
     narr_labels: list[str] = []
-    a_in = n  # first audio input index
+    a_in = n if back_in is None else 2 * n  # first audio input index
     for it in items:
         if not it["audio"]:
             continue
         delay = max(0, int(round(it["start"] * 1000)))
         lab = f"[na{a_in}]"
-        parts.append(f"[{a_in}:a]aresample={AUDIO_SR},aformat=channel_layouts=stereo,"
-                     f"volume={NARRATION_VOL},adelay={delay}:all=1{lab}")
+        rest.append(f"[{a_in}:a]aresample={AUDIO_SR},aformat=channel_layouts=stereo,"
+                     f"volume={NARRATION_VOL},alimiter=limit=0.95,adelay={delay}:all=1{lab}")
         narr_labels.append(lab)
         a_in += 1
 
     narr = None
     if len(narr_labels) == 1:
-        parts.append(f"{narr_labels[0]}anull[narr]")
+        rest.append(f"{narr_labels[0]}anull[narr]")
         narr = "[narr]"
     elif len(narr_labels) > 1:
-        parts.append("".join(narr_labels)
+        rest.append("".join(narr_labels)
                      + f"amix=inputs={len(narr_labels)}:normalize=0[narr]")
         narr = "[narr]"
 
     music = None
     if music_in is not None:
-        parts.append(f"[{music_in}:a]aresample={AUDIO_SR},"
+        rest.append(f"[{music_in}:a]aresample={AUDIO_SR},"
                      f"aformat=channel_layouts=stereo,volume={MUSIC_VOL}[music]")
         music = "[music]"
 
     if narr and music:
         # Sidechain-duck the music with the narration, then sum them.
-        parts.append(f"{narr}asplit=2[narr_main][narr_key]")
-        parts.append("[music][narr_key]sidechaincompress="
+        rest.append(f"{narr}asplit=2[narr_main][narr_key]")
+        rest.append("[music][narr_key]sidechaincompress="
                      "threshold=0.02:ratio=8:attack=5:release=250[mduck]")
-        parts.append("[narr_main][mduck]amix=inputs=2:normalize=0[aout]")
+        rest.append("[narr_main][mduck]amix=inputs=2:normalize=0[aout]")
         alabel = "[aout]"
     elif narr:
         alabel = narr
@@ -713,24 +790,29 @@ def _build_filtergraph(items: list[dict], music_in: int | None, total: float,
     else:
         alabel = None
 
-    return ";".join(parts), vlabel, alabel
+    graphs = [video, rest] if zoom else [video + rest]
+    return [";".join(graph) for graph in graphs if graph], vlabel, alabel
 
 
 def _build_cmd(ffmpeg: str, items: list[dict], music_path: Path | None,
                total: float, out: Path, quality: dict,
                transition: str = "fade", crossfade: float = CROSSFADE,
-               ken_burns: bool = False, video_bg: Path | None = None,
-               bg_dim: float = 0.85) -> list[str]:
+               zoom: float | None = None, video_bg: Path | None = None,
+               bg_dim: float = 0.85, wm_layer: Path | None = None) -> list[str]:
     cmd = [ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-stats"]
-    # Image inputs (timed, looped to their duration).
+    # Image inputs: one frame each, repeated to its duration by the filtergraph.
     for it in items:
-        cmd += ["-loop", "1", "-framerate", str(FPS), "-t", f"{it['dur']:.3f}",
-                "-i", it["still"]]
+        cmd += ["-framerate", str(FPS), "-i", it["still"]]
+    back_in = None
+    if all("back" in it for it in items):
+        back_in = len(items)
+        for it in items:
+            cmd += ["-framerate", str(FPS), "-i", it["back"]]
     # Narration audio inputs, in beat order (only beats with audio).
     for it in items:
         if it["audio"]:
             cmd += ["-i", it["audio"]]
-    next_in = len(items) + sum(1 for it in items if it["audio"])
+    next_in = len(items) * (1 if back_in is None else 2) + sum(1 for it in items if it["audio"])
     # Video background (looped indefinitely - the final -t total below trims
     # everything, including this, to the render's actual length).
     bg_in = None
@@ -738,18 +820,26 @@ def _build_cmd(ffmpeg: str, items: list[dict], music_path: Path | None,
         bg_in = next_in
         cmd += ["-stream_loop", "-1", "-i", str(video_bg)]
         next_in += 1
+    wm_in = None
+    if wm_layer is not None:
+        wm_in = next_in
+        cmd += ["-i", str(wm_layer)]
+        next_in += 1
     # Music input (looped) last.
     music_in = None
     if music_path is not None:
         music_in = next_in
         cmd += ["-stream_loop", "-1", "-i", str(music_path)]
 
-    fc, vlabel, alabel = _build_filtergraph(items, music_in, total, transition, crossfade,
-                                            ken_burns, bg_in, bg_dim, quality["height"], quality["blur_bg"])
-    # the graph goes through a file: inline, a long chapter overflows Windows' command-line limit
-    script = Path(items[0]["still"]).with_name("filtergraph.txt")
-    script.write_text(fc, encoding="utf-8")
-    cmd += ["-/filter_complex", str(script), "-map", vlabel]
+    graphs, vlabel, alabel = _build_filtergraph(items, music_in, total, transition, crossfade,
+                                                zoom, bg_in, bg_dim, quality["height"], quality["blur_bg"],
+                                                back_in, wm_in)
+    # the graphs go through files: inline, a long chapter overflows Windows' command-line limit
+    for k, graph in enumerate(graphs):
+        script = Path(items[0]["still"]).with_name(f"filtergraph_{k}.txt")
+        script.write_text(graph, encoding="utf-8")
+        cmd += ["-/filter_complex", str(script)]
+    cmd += ["-map", vlabel]
     if alabel is not None:
         cmd += ["-map", alabel, "-c:a", "aac", "-b:a", f"{quality['audio_kbps']}k", "-ac", str(quality["audio_channels"])]
 
@@ -822,14 +912,14 @@ def _ffmpeg_version(ffmpeg: str) -> str:
 
 def _assemble_ffmpeg(items: list[dict], music_path: Path | None, total: float, out: Path,
                      quality: dict, transition: str = "fade", crossfade: float = CROSSFADE,
-                     ken_burns: bool = False, video_bg: Path | None = None,
-                     bg_dim: float = 0.85) -> str:
+                     zoom: float | None = None, video_bg: Path | None = None,
+                     bg_dim: float = 0.85, wm_layer: Path | None = None) -> str:
     """Render with ffmpeg directly, logging exactly what is being run. Returns the codec used;
     raises if ffmpeg fails (there is no fallback renderer)."""
     ffmpeg = _require_ffmpeg()
     total_frames = int(round(total * FPS))
     cmd = _build_cmd(ffmpeg, items, music_path, total, out, quality, transition, crossfade,
-                     ken_burns, video_bg, bg_dim)
+                     zoom, video_bg, bg_dim, wm_layer)
     print(f"  ffmpeg: {ffmpeg}", flush=True)
     print(f"          {_ffmpeg_version(ffmpeg)}", flush=True)
     print(f"  encoder: libx264 (CPU), preset {X264_PRESET}, crf {quality['crf']}, "
@@ -837,7 +927,7 @@ def _assemble_ffmpeg(items: list[dict], music_path: Path | None, total: float, o
     print(f"  output: {round(quality['height'] * W / H / 2) * 2}x{quality['height']} @ {FPS}fps, "
           f"{total_frames} frames, {total:.1f}s -> {out}", flush=True)
     print(f"  filters: {len(items)} stills, transition={transition} @ {crossfade:.2f}s, "
-          f"ken_burns={'on (perspective, linear)' if ken_burns else 'off'}, "
+          f"zoom={f'alternating, peak {zoom:g}x' if zoom else 'off'}, "
           f"video_background={'on' if video_bg else 'off'}, music={'on' if music_path else 'off'}, "
           f"narration clips={sum(1 for it in items if it['audio'])}", flush=True)
     print("  command: " + " ".join(f'"{c}"' if " " in c else c for c in cmd), flush=True)
@@ -867,7 +957,7 @@ def run(m: Manifest) -> Manifest:
     beats = m.kept_panels()  # the matched narration beats (STAGE B)
     mapping = _load_mapping(m.chapter_id)  # framer's multi-frame + mode plan
     settings = _load_media_settings(m.chapter_id)  # framer's per-project media settings
-    transition, crossfade, ken_burns = _resolve_animation(settings)
+    transition, crossfade, zoom = _resolve_animation(settings)
     quality_name, quality = _resolve_quality(settings)
     items, total, lines = _plan(beats, mapping, crossfade)
     music_path = _resolve_music(settings)
@@ -903,7 +993,7 @@ def run(m: Manifest) -> Manifest:
             "chapter_id": m.chapter_id, "size": [W, H], "fps": FPS,
             "music": music_path.name if music_path else None,
             "watermark": bool(watermark), "background": bool(background),
-            "video_background": bool(video_bg), "ken_burns": ken_burns,
+            "video_background": bool(video_bg), "zoom": zoom,
             "animation": {"transition": transition, "crossfade_s": crossfade},
             "total_s": total, "beats": items,
         }, indent=2, ensure_ascii=False),
@@ -919,18 +1009,22 @@ def run(m: Manifest) -> Manifest:
     stills_dir = out_dir / "_stills"
     t0 = time.perf_counter()
     try:
-        _precompose(items, stills_dir, watermark, background, transparent=(video_bg is not None),
-                    fill=KEN_BURNS_FILL if ken_burns else FILL, out_height=quality["height"])
+        wm_layer = None
+        if zoom and video_bg is not None and watermark is not None:
+            wm_layer = _save_watermark_layer(watermark, stills_dir, quality["height"])
+        _precompose(items, stills_dir, None if wm_layer else watermark, background,
+                    transparent=(video_bg is not None), fill=FILL / zoom if zoom else FILL,
+                    out_height=quality["height"], layered=bool(zoom))
         anim_desc = "cut (no transition)" if transition == "cut" else f"{transition} @ {crossfade:.2f}s"
-        if ken_burns:
-            anim_desc += " + alternating Ken Burns"
+        if zoom:
+            anim_desc += " + alternating zoom"
         print(f"  precomposed {len(items)} stills ({total:.1f}s timeline), transition={anim_desc}"
               f"{' + watermark' if watermark else ''}{' + custom background' if background else ''}"
               f"{' + video background' if video_bg else ''}")
         t_pre = time.perf_counter() - t0
         print(f"  precompose took {t_pre:.1f}s ({len(items) / max(t_pre, 0.001):.1f} stills/s)", flush=True)
         codec = _assemble_ffmpeg(items, music_path, total, out, quality, transition, crossfade,
-                                 ken_burns, video_bg, bg_dim)
+                                 zoom, video_bg, bg_dim, wm_layer)
         path = "ffmpeg"
     finally:
         shutil.rmtree(stills_dir, ignore_errors=True)

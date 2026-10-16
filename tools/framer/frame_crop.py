@@ -2,7 +2,7 @@
 
 The model names a subject and roughly where it sits in a panel. This module turns that into
 the crop: it keeps the subject, cuts detected speech bubbles out wherever that costs the
-subject nothing (a bubble that cannot be cut out is returned to be blurred), then grows the
+subject nothing (a bubble that cannot be cut out stays in the frame, unaltered), then grows the
 crop toward the video's aspect ratio and up to a minimum size, inside the panel and never into
 a bubble it cut out. All rectangles are (x0, y0, x1, y1) in strip pixels.
 """
@@ -84,24 +84,16 @@ def _grow(crop: Rect, panel: Rect, obstacles: list[Rect], want_w: float, want_h:
     return (x0, y0, x1, y1)
 
 
-def frame_for(panel: Rect, subject: Rect | None, bubbles: list[Rect]) -> tuple[Rect, list[Rect]]:
-    """(crop, bubbles to blur) for a subject inside `panel`; None shows the whole panel."""
+def frame_for(panel: Rect, subject: Rect | None, bubbles: list[Rect]) -> Rect:
+    """The crop for a subject inside `panel`; None shows the whole panel."""
     subject = _clamp(subject, panel) if subject else panel
     crop = _clamp(_pad(subject, SUBJECT_PAD), panel)
-    uncut = []
     for bubble in sorted(bubbles, key=lambda b: -_width(b) * _height(b)):
-        if not _overlaps(crop, bubble):
-            continue
-        cut = _cut_out(crop, subject, bubble)
-        if cut:
-            crop = cut
-        else:
-            uncut.append(bubble)
-    blurred = [b for b in uncut if _overlaps(crop, b)]
+        if _overlaps(crop, bubble):
+            crop = _cut_out(crop, subject, bubble) or crop
     obstacles = [b for b in bubbles if not _overlaps(crop, b)]
 
     want_w = max(_width(crop), _height(crop) * VIDEO_ASPECT)
     fit = min(OUTPUT_SIZE[0] / want_w, OUTPUT_SIZE[1] / _height(crop))
     enlarge = max(1.0, fit / MAX_UPSCALE)
-    crop = _grow(crop, panel, obstacles, want_w * enlarge, _height(crop) * enlarge)
-    return crop, blurred
+    return _grow(crop, panel, obstacles, want_w * enlarge, _height(crop) * enlarge)
