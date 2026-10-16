@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import app
 import app_settings
 import config
 import projects
@@ -52,3 +53,19 @@ class IsolatedProjects(unittest.TestCase):
     def chapter_folders(self, slug: str) -> list[str]:
         chapters = projects.local_dir(slug) / "chapters"
         return sorted(p.name for p in chapters.iterdir()) if chapters.is_dir() else []
+
+
+class ApiProjects(IsolatedProjects):
+    """IsolatedProjects plus the Flask app pointed at the same throwaway folders, with one project."""
+
+    def setUp(self):
+        super().setUp()
+        for name, value in (("PROJECTS_DIR", self.local), ("WORK_DIR", self.work), ("OUTPUT_DIR", self.output)):
+            patcher = mock.patch.object(app, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.client = app.app.test_client()
+        self.slug = self.new_project("Api Series", chapters=12)["slug"]
+
+    def work_file(self, n: int, *parts: str, **kwargs):
+        return touch(projects.chapter_dir(self.slug, n).joinpath("work", *parts), **kwargs)

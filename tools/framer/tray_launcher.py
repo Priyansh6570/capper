@@ -159,7 +159,7 @@ def _stop_active_processes() -> None:
 
 def _serve(port: int) -> None:
     try:
-        framer_app.app.run(host=HOST, port=port, debug=False, threaded=True)
+        framer_app.make_server(HOST, port).run()
     except Exception as exc:  # noqa: BLE001
         _fail_startup(exc)
 

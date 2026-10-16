@@ -1,30 +1,15 @@
 """The HTTP API the UI is built on: chapter list, pipeline-modal step data, bulk actions, delete."""
 from __future__ import annotations
 
-from unittest import mock
-
-import app
 import projects
-from tests.support import IsolatedProjects, touch
+from tests.support import ApiProjects, touch
 
 
-class ApiTest(IsolatedProjects):
-    def setUp(self):
-        super().setUp()
-        for name, value in (("PROJECTS_DIR", self.local), ("WORK_DIR", self.work), ("OUTPUT_DIR", self.output)):
-            patcher = mock.patch.object(app, name, value)
-            patcher.start()
-            self.addCleanup(patcher.stop)
-        self.client = app.app.test_client()
-        self.slug = self.new_project("Api Series", chapters=12)["slug"]
-
+class ApiTest(ApiProjects):
     def get_project(self, **query) -> dict:
         response = self.client.get(f"/api/projects/{self.slug}", query_string=query)
         self.assertEqual(response.status_code, 200)
         return response.get_json()["project"]
-
-    def work_file(self, n: int, *parts: str, **kwargs):
-        return touch(projects.chapter_dir(self.slug, n).joinpath("work", *parts), **kwargs)
 
 
 class ChapterListTest(ApiTest):

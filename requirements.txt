@@ -11,6 +11,7 @@
 
 # --- Framer app: serving the UI, stitching a PDF, project metadata --------
 flask>=3.0
+waitress>=3.0     # tools/framer/app.py make_server(): the production server the app runs on
 PyMuPDF>=1.24        # stage 1: render PDF pages -> stitched strip
 Pillow>=10.0         # stage 1 stitching + stage 7 compositing + tray icon image
 requests>=2.31       # tools/framer/sites/: best-effort series-metadata scraping + kingofshojo image download

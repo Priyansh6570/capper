@@ -55,6 +55,7 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+import waitress  # noqa: E402 - the server the app runs on, see make_server()
 from flask import Flask, Response, jsonify, request, send_file, send_from_directory  # noqa: E402
 from PIL import Image, ImageDraw, ImageFilter  # noqa: E402
 
@@ -633,8 +634,7 @@ def gemini_parts_stream():
 
     return Response(stream(), mimetype="text/event-stream",
                     headers={"Cache-Control": "no-cache",
-                             "X-Accel-Buffering": "no",
-                             "Connection": "keep-alive"})
+                             "X-Accel-Buffering": "no"})
 
 
 # --------------------------------------------------------------------------- #
@@ -908,8 +908,7 @@ def gemini_script_stream():
 
     return Response(stream(), mimetype="text/event-stream",
                     headers={"Cache-Control": "no-cache",
-                             "X-Accel-Buffering": "no",
-                             "Connection": "keep-alive"})
+                             "X-Accel-Buffering": "no"})
 
 
 # --------------------------------------------------------------------------- #
@@ -2598,8 +2597,7 @@ def api_deps_install_stream():
 
     return Response(stream(), mimetype="text/event-stream",
                     headers={"Cache-Control": "no-cache",
-                             "X-Accel-Buffering": "no",
-                             "Connection": "keep-alive"})
+                             "X-Accel-Buffering": "no"})
 
 
 # --------------------------------------------------------------------------- #
@@ -2788,7 +2786,7 @@ def _stream_task(task: Callable[[Callable[[dict], None], threading.Event], dict]
             stop.set()
 
     return Response(stream(), mimetype="text/event-stream",
-                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"})
+                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 @app.get("/api/projects/<slug>/missing_chapters")
@@ -3392,8 +3390,7 @@ def merge_stream(slug):
                 _MERGE_JOBS.pop(slug, None)
 
     return Response(stream(), mimetype="text/event-stream",
-                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no",
-                             "Connection": "keep-alive"})
+                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 @app.get("/projects/<slug>/merged/<path:name>")
@@ -3918,6 +3915,16 @@ def _resolve_port(host: str, port: int) -> int | None:
     return new_port
 
 
+SERVER_THREADS = 32             # every open event stream (a render, a script, a download) holds one
+SERVER_IDLE_TIMEOUT_S = 3600    # a stream may stay silent for a long time while Claude or the TTS works
+
+
+def make_server(host: str, port: int):
+    """The waitress server for the app; call .run() to serve. Port 0 picks a free port."""
+    return waitress.create_server(app, host=host, port=port, threads=SERVER_THREADS,
+                                  channel_timeout=SERVER_IDLE_TIMEOUT_S)
+
+
 def main() -> None:
     host, port = "127.0.0.1", 5005
     port = _resolve_port(host, port)
@@ -3942,9 +3949,9 @@ def main() -> None:
         threading.Thread(target=lambda: (time.sleep(1.0), webbrowser.open(url)),
                           daemon=True).start()
     _resume_batches()
-    # threaded: a generate job holds an SSE connection open for minutes; other
+    # Threaded: a generate job holds an SSE connection open for minutes; other
     # requests (thumbnails, the result video, a second tab) must still be served.
-    app.run(host=host, port=port, debug=False, threaded=True)
+    make_server(host, port).run()
 
 
 if __name__ == "__main__":
