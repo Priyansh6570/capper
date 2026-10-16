@@ -11,7 +11,7 @@ from unittest import mock
 import config
 import manifest
 import orchestrator
-from manifest import Manifest, Page, Panel
+from manifest import Manifest, Panel
 
 LEGACY_PANEL = {"id": "L000", "bbox": [0, 10, 1000, 300], "order": 0, "crop": "frame_000.png", "speaker": None,
                 "dialogue": None, "has_person": True, "has_face": True, "person_count": 1, "face_count": 1,

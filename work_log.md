@@ -1,28 +1,32 @@
 # Work log
 
-Performance and structure refactor, on branch `perf-refactor` (not pushed). One commit per step:
+Removed Gemini, Kaggle, Groq and the terminal pipeline, plus the unused voice paths and packages, on `perf-refactor`
+(not pushed). One commit per group:
 
 | Commit | What |
 |---|---|
-| `c08eba4` (main) | All earlier uncommitted work, as-is |
-| `fe8b521` | Tests: project loading, chapter state, bulk download/resume, pipeline step data, bulk actions, delete |
-| `8d03220` | Each chapter's state in its own `chapters/<n>/chapter.json`; `project.json` keeps the chapter index; automatic migration |
-| `1f75885` | Cached per-project totals (speaking pace, Claude tokens), keyed by the files they come from |
-| `24b6c75` | Job/batch polling pauses while the tab is hidden and resumes at once |
-| `a4014be` | App runs on waitress (`make_server`), `waitress` in requirements.txt |
-| `2a09376` | Select all / range select cover every chapter; details loaded on demand |
-| `eb22f82` | `app.py` split into `routes/` (blueprints) and `services/` |
-| `bf3023e` | `index.html` split into HTML + `static/css/app.css` + `static/js/icons.js` + `static/js/app.js` |
-| `f218d94` | Fix: migration race that could replace the `project.json.v1` original |
+| `c0081be` | Gemini script engine, its API key storage and UI (G1, G4, G5, G6) |
+| `a00c1db` | Shared `gemini` settings become `script`; `model` and `script_engine` dropped; migration (schema 3, original kept once as `project.json.v2`) |
+| `26707d5` | Split step (G3); a saved batch that names it still loads |
+| `cdd010f` | `kaggle/` (K1, K2) |
+| `d066e99` | Stages 2-5, `llm.py` (Groq/Ollama), `make_fixture.py`, `tools/new_series.py`, `tools/speed_audio.py`, `docs/CHAPTER_WORKFLOW.md` (A1-A4, Q1, Q2); orchestrator now runs audio then video; manifest drops the old fields and still loads old files (`clean` -> `frames`) |
+| `e062362` | Full Chatterbox, emotion mode, draft voice (B2, B3); fallback is Turbo GPU then Turbo CPU |
+| `fb97488` | MoviePy group and 72 unneeded packages (C1-C3) |
+| `95ca93d` | Model cache location is a per-PC setting (`hf_home`, applied as `HF_HOME` by `config.py`) |
+| `ad23c2d` | Two bugs found by the end-to-end run, both in deleting a project |
 
-**Storage:** chapter files exist only for chapters with progress, in the project folder (the Drive folder for shared
-projects), so two people saving different chapters never write the same file. Status changes no longer touch
-`project.json`. Schema 1 projects migrate on first load (original kept as `project.json.v1`). The real projects have
-already migrated; `project.json.v1` of `my-disciples-are-all-big-villains` is not the original (see fix commit); its chapter
-data is intact.
+**Not removed from the survey list:** `en-core-web-sm` (Kokoro's text processing loads it) and `decorator` (librosa needs it).
 
-**Tests:** `.venv\Scripts\python.exe -m unittest discover -s tests -t .` (85 tests, no new dependency).
+**Data deleted (untracked):** `gemini_parts/` folders (105 MB), legacy `work/` and `output/` (2.2 GB), `yolov8n.pt`,
+`~/.EasyOCR`, Gemini entries in Windows Credential Manager, `GROQ_API_KEY`/`MANHWA_LLM`/`MANHWA_OLLAMA_MODEL` in `.env`
+(it is empty now), empty chapter folders in every project.
 
-**Not done in code:** `deps.py check` reports `google-genai` off-pin; it did before these changes.
+**Model cache:** moved from `C:\Users\priya\.cache\huggingface` to `D:\hf_cache` (setting in `app_settings.json`); the Turbo model
+re-downloaded there (4.2 GB with Kokoro). `setup.bat` picks a second fixed drive with 20 GB free per PC, else keeps the default;
+the Projects screen shows and changes it; the installer's uninstall reads it (compiled OK with Inno Setup).
 
-**Empty chapter folders** were removed from every project under `projects/` (local, git-ignored, no commit).
+**Verified:** 153 tests; pyflakes; requirements hook; smoke imports; `cv2` and CUDA torch after the OpenCV reinstall; all four real
+projects migrated (originals kept); a full chapter on a local throwaway copy (stored PDF -> stitch -> Claude script -> export ->
+Turbo audio -> video: 1920x1080, 87.6 s, then deleted); Turbo on the CPU.
+
+**Run next:** the app is running the new code (restart it from the tray if you restart Windows). `deps.py check` is clean.

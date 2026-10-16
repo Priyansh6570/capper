@@ -10,7 +10,6 @@ import shutil
 import subprocess
 import sys
 import time
-from pathlib import Path
 
 from atomic_io import atomic_write_json, read_json_with_backup_fallback
 from config import NO_CONSOLE, ROOT
