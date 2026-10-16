@@ -217,7 +217,7 @@ def api_delete_project(slug):
     if (request.get_json(silent=True) or {}).get("confirm") != projects.load(slug)["name"]:
         return jsonify(error="Type the project's exact name to confirm."), 400
     running = BATCHES.get(slug)
-    if (running and running.active()) or any(j.slug == slug and j.status in ("queued", "running") for j in JOBS.values()):
+    if (running and running.active) or any(j.slug == slug and j.status in ("queued", "running") for j in JOBS.values()):
         return jsonify(error="This project is busy - cancel its pipeline and jobs first."), 409
     try:
         projects.delete(slug)

@@ -417,8 +417,8 @@ def delete(slug: str) -> None:
     folders = [root / slug for root in _roots()]
     folders += [d for tree in (WORK_DIR, OUTPUT_DIR) if tree.is_dir() for d in tree.glob(f"{slug}_ch*")]
     leftovers = []
-    for folder in folders:
-        shutil.rmtree(folder, onexc=lambda _func, path, _exc: leftovers.append(path))
+    for folder in filter(Path.exists, folders):
+        shutil.rmtree(folder, onexc=lambda _func, path, _exc: leftovers.append(str(path)))
     if leftovers:
         raise OSError("Couldn't delete: " + ", ".join(sorted(set(leftovers))[:5]))
 

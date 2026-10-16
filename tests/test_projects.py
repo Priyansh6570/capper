@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from pathlib import Path
+from unittest import mock
+
 import app_settings
 import projects
 from tests.support import IsolatedProjects, touch
@@ -72,6 +75,29 @@ class ProjectLoadingTest(IsolatedProjects):
         self.assertFalse((self.local / slug).exists())
         self.assertFalse((self.work / f"{slug}_ch1").exists())
         self.assertFalse((self.output / f"{slug}_ch1").exists())
+
+    def test_delete_works_when_the_project_exists_in_only_one_location(self):
+        self.use_shared_folder()
+        slug = projects.new_project("Local Only", "")["slug"]
+        folder = self.local / slug
+        folder.mkdir()
+        (folder / "project.json").write_text("{}", encoding="utf-8")
+        projects.delete(slug)
+        self.assertFalse(folder.exists())
+
+    def test_delete_of_a_project_that_is_nowhere_is_not_an_error(self):
+        self.use_shared_folder()
+        projects.delete("never-existed")
+
+    def test_delete_names_what_it_could_not_remove(self):
+        slug = self.new_project()["slug"]
+
+        def stuck(path, onexc):
+            onexc(OSError, Path(path) / "locked.mp4", PermissionError())
+
+        with mock.patch.object(projects.shutil, "rmtree", side_effect=stuck):
+            with self.assertRaisesRegex(OSError, "Couldn't delete: .*locked.mp4"):
+                projects.delete(slug)
 
     def test_delete_leaves_other_projects_alone(self):
         keep = self.new_project("Keep Me")["slug"]

@@ -1,7 +1,12 @@
 """The HTTP API the UI is built on: chapter list, pipeline-modal step data, bulk actions, delete."""
 from __future__ import annotations
 
+from types import SimpleNamespace
+from unittest import mock
+
 import projects
+from services.batching import BATCHES
+from services.jobs import JOBS
 from tests.support import ApiProjects, touch
 
 
@@ -106,6 +111,22 @@ class DeleteProjectTest(ApiTest):
         self.assertEqual(self.delete().status_code, 400)
         self.assertEqual(self.delete(confirm="api series").status_code, 400)
         self.assertTrue(projects.exists(self.slug))
+
+    def test_a_project_with_a_running_batch_is_not_deleted(self):
+        with mock.patch.dict(BATCHES, {self.slug: SimpleNamespace(active=True)}):
+            self.assertEqual(self.delete(confirm="Api Series").status_code, 409)
+        self.assertTrue(projects.exists(self.slug))
+
+    def test_a_project_with_a_running_job_is_not_deleted(self):
+        with mock.patch.dict(JOBS, {"j1": SimpleNamespace(slug=self.slug, status="running")}):
+            self.assertEqual(self.delete(confirm="Api Series").status_code, 409)
+        self.assertTrue(projects.exists(self.slug))
+
+    def test_a_finished_batch_does_not_block_the_delete_and_is_forgotten(self):
+        with mock.patch.dict(BATCHES, {self.slug: SimpleNamespace(active=False)}):
+            self.assertEqual(self.delete(confirm="Api Series").status_code, 200)
+            self.assertNotIn(self.slug, BATCHES)
+        self.assertFalse(projects.exists(self.slug))
 
     def test_exact_name_removes_the_project(self):
         self.work_file(1, "download", "c.pdf")
