@@ -34,7 +34,6 @@ FEATURE_PACKAGES = {
     "kokoro": "AI narration (Kokoro voice)",
     "soundfile": "voice reference processing",
     "numpy": "audio processing",
-    "moviepy": "video rendering (fallback path)",
 }
 
 

@@ -3,10 +3,8 @@
 # These cannot go through a normal resolve:
 #   chatterbox-tts  hard-requires gradio==6.8.0 for a demo UI its code never imports, and
 #                   gradio's aiofiles/rich pins conflict with webtoon-downloader's.
-#   moviepy         pins pillow<12, conflicting with webtoon-downloader's pillow>=12.
 #   kokoro, misaki  kokoro 0.7.16 declares misaki>=0.7.16, which has no distribution for this
 #                   Python; the app runs the known-good misaki 0.7.4 instead.
 chatterbox-tts==0.1.7
-moviepy==2.2.1
 kokoro==0.7.16
 misaki==0.7.4

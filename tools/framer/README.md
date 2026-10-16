@@ -312,7 +312,7 @@ see "Project settings" above) each run:
 - **Music** — the project's file if set, else the existing `assets/music/` scan.
 - **Watermark** — built ONCE per render as a single 1920x1080 RGBA layer
   (`_build_watermark_layer`) and alpha-composited onto every precomposed still
-  in `_precompose` — so both the ffmpeg path AND the MoviePy fallback get it
+  in `_precompose` — so every frame gets it
   for free, at a cost of one composite per beat (not per output frame).
 - **Background (image)** — `_load_background` cover-crops + dims (not blurs)
   the project's image once per render; `_compose_still`/`_compose_grid_still`

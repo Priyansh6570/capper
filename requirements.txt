@@ -58,15 +58,6 @@ omegaconf
 # --- Stage 7: render the 1920x1080 MP4 -------------------------------------
 # Primary path is a direct ffmpeg call (EXTERNAL tool, not pip-installable -
 # setup.bat downloads it into vendor/ffmpeg, else it must be on PATH). Encodes with h264_nvenc when available, else libx264.
-# moviepy itself is installed separately (requirements-nodeps.txt, --no-deps; fallback
-# ONLY, used if the direct ffmpeg path fails): its latest release pins
-# `pillow<12`, directly conflicting with webtoon-downloader's `pillow>=12`
-# above - tested working fine against the newer Pillow already installed.
-# These are moviepy's own actual runtime deps, otherwise unaffected:
-imageio>=2.38
-imageio-ffmpeg>=0.6
-proglog>=0.1
-decorator>=5.3
 
 # --- Kokoro narration engine (stages/tts_kokoro.py) ---
 # kokoro and misaki themselves are in requirements-nodeps.txt; these are the runtime

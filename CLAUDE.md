@@ -86,7 +86,7 @@ GPU/NVENC probe (stage 6, stage 7, setup, the framer's GPU status card).
 - `requirements-gpu.txt`: the CUDA torch/torchaudio. `requirements.txt`: everything else the
   code imports (including opencv-python-headless). `requirements-nodeps.txt`:
   packages installed with `--no-deps` because their metadata conflicts with the rest
-  (chatterbox-tts, moviepy, kokoro, misaki); their real runtime deps live in `requirements.txt`.
+  (chatterbox-tts, kokoro, misaki); their real runtime deps live in `requirements.txt`.
 - `deps.py` is the only installer/checker (`python deps.py install|check`); `setup.bat`, the
   installer (which runs setup.bat) and the framer's in-app updater all call it. It freezes the
   installed torch with a constraints file, so a dependency can never swap the CUDA build, and

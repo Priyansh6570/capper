@@ -108,7 +108,7 @@ class Job:
         self.before_claude_call: Callable[[], None] | None = None   # script: a batch's usage-limit gate
         self.mirror: Callable[[str], None] | None = None   # a batch's per-chapter log
         self.last_activity = time.time()   # when the job last logged or emitted anything
-        self.render = 0.0                  # video: share of the frames encoded, read from ffmpeg / MoviePy output
+        self.render = 0.0                  # video: share of the frames encoded, read from ffmpeg's output
         self.events: list[dict] = []       # script: pushed to the browser by /api/jobs/<id>/events
         self._events_cond = threading.Condition()
 
@@ -322,14 +322,9 @@ def _run_brand_job(job: "Job") -> None:
 _FFMPEG_TIME = re.compile(r"\btime=(\d+):(\d+):(\d+(?:\.\d+)?)")
 
 
-_MOVIEPY_FRAMES = re.compile(r"frame_index:.*?(\d+)/(\d+)")
-
-
 def _render_fraction(line: str, output_dir: Path) -> float | None:
     """How far a render has got, from one line of s7's output: ffmpeg's `time=` progress
-    against the planned length, or MoviePy's frame counter. None for any other line."""
-    if frames := _MOVIEPY_FRAMES.search(line):
-        return int(frames[1]) / max(1, int(frames[2]))
+    against the planned length. None for any other line."""
     if clock := _FFMPEG_TIME.search(line):
         try:
             total = json.loads((output_dir / "video_plan.json").read_text(encoding="utf-8"))["total_s"]
