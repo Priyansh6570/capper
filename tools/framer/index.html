@@ -3140,15 +3140,22 @@ async function doExport() {
 // chapter editor is open, its detailed genbar panel.
 // ---------------------------------------------------------------------------
 let JOBS = [];                 // most recent GET /api/jobs result: active + a recent-finished tail
-let jobsPollTimer = null;
+
+// Calls `fn` every `ms` while the tab is visible. A hidden tab stops polling, and showing it again
+// polls at once, so nothing is stale when the person comes back.
+function pollWhileVisible(fn, ms) {
+  let timer = null;
+  const start = () => { if (!timer) { fn(); timer = setInterval(fn, ms); } };
+  const stop = () => { clearInterval(timer); timer = null; };
+  document.addEventListener('visibilitychange', () => document.hidden ? stop() : start());
+  if (!document.hidden) start();
+}
 
 const GEN_LABELS = { both: 'Generating audio + video', voice: 'Re-rendering voice', video: 'Re-rendering video' };
 const gen = { total: 0, what: 'both' };   // just enough for setGenBusy()'s button targeting
 
 function startJobsPolling() {
-  if (jobsPollTimer) return;
-  pollJobs();
-  jobsPollTimer = setInterval(pollJobs, 1500);
+  pollWhileVisible(pollJobs, 1500);
 }
 async function pollJobs() {
   try {
@@ -4122,7 +4129,7 @@ async function pollBatch() {
     renderBatch();
   } catch (_) { /* the next tick retries */ }
 }
-setInterval(pollBatch, 2000);
+pollWhileVisible(pollBatch, 2000);
 
 async function batchCall(path, body) {
   const { ok, data } = await apiJson(projectApi('/batch' + path), 'POST', body);
@@ -4142,7 +4149,7 @@ function tickBatchClocks() {
     el.textContent = fmtClock(Math.max(0, Number(el.dataset.left) - Date.now() / 1000));
   });
 }
-setInterval(tickBatchClocks, 1000);
+pollWhileVisible(tickBatchClocks, 1000);
 
 const timeOfDay = epoch => new Date(epoch * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 function dayAndTime(epoch) {
