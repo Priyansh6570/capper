@@ -1,4 +1,5 @@
 """Central configuration. Everything is local and file-based by design."""
+import json
 import os
 import subprocess
 import sys
@@ -7,6 +8,24 @@ from contextvars import ContextVar
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
+APP_SETTINGS_FILE = ROOT / "app_settings.json"   # settings of this PC, see tools/framer/app_settings.py
+
+
+def apply_model_cache_setting() -> None:
+    """Point huggingface_hub at the model cache folder saved in app_settings.json (a bigger drive, say)
+    by setting HF_HOME. An HF_HOME already in the environment wins. This runs when config is imported,
+    because every process of the app imports config before it touches huggingface_hub."""
+    if os.environ.get("HF_HOME"):
+        return
+    try:
+        folder = json.loads(APP_SETTINGS_FILE.read_text(encoding="utf-8")).get("hf_home")
+    except (OSError, ValueError):
+        return
+    if folder:
+        os.environ["HF_HOME"] = folder
+
+
+apply_model_cache_setting()
 
 # Extra subprocess.Popen/run kwargs that suppress the console window a
 # console-subsystem child (python/ffmpeg/git/...) would otherwise get on

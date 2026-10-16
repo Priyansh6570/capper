@@ -636,6 +636,33 @@ begin
   end;
 end;
 
+// The Hugging Face cache folder: app_settings.json names another one (hf_home) when the model
+// cache was moved, else it is the Windows default under the user profile.
+function HFHome(AppDir: String): String;
+var
+  Saved: AnsiString;
+  Json, Folder: String;
+  Start, Stop: Integer;
+begin
+  Result := ExpandConstant('{%USERPROFILE}') + '\.cache\huggingface';
+  if LoadStringFromFile(AppDir + '\app_settings.json', Saved) then
+  begin
+    Json := String(Saved);
+    Start := Pos('"hf_home": "', Json);
+    if Start > 0 then
+    begin
+      Folder := Copy(Json, Start + Length('"hf_home": "'), MaxInt);
+      Stop := Pos('"', Folder);
+      if Stop > 1 then
+      begin
+        Folder := Copy(Folder, 1, Stop - 1);
+        StringChangeEx(Folder, '\\', '\', True);
+        Result := Folder;
+      end;
+    end;
+  end;
+end;
+
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
   AppDir, HFHub, HFLocks: String;
@@ -674,7 +701,7 @@ begin
       // Chatterbox download) - deliberately NOT a wildcard/whole-cache wipe,
       // so any unrelated Hugging Face downloads the user has from other
       // tools are left alone.
-      HFHub := ExpandConstant('{%USERPROFILE}') + '\.cache\huggingface\hub';
+      HFHub := HFHome(AppDir) + '\hub';
       HFLocks := HFHub + '\.locks';
       DelTree(HFHub + '\models--ResembleAI--chatterbox', True, True, True);
       DelTree(HFHub + '\models--ResembleAI--chatterbox-turbo', True, True, True);

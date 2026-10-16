@@ -251,6 +251,10 @@ if defined HF_TOKEN (
     )
 )
 
+REM The voice model is several GB: keep it off the system drive when this PC has another
+REM fixed drive with room (the choice is saved in app_settings.json; see tools\choose_model_cache.py).
+powershell -NoProfile -Command "& { & '%VENV_PY%' '%~dp0tools\choose_model_cache.py' 2>&1 | Tee-Object -FilePath '%LOGFILE%' -Append; exit $LASTEXITCODE }"
+
 echo   Pre-downloading the voice model now ^(several GB, one-time^) so the app
 echo   never has to do this mid-render. This retries automatically on a slow
 echo   or stalled connection - it's normal for it to take a while.

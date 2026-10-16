@@ -129,19 +129,19 @@ with a working connection:
    huggingface_hub`) and run:
    ```
    huggingface-cli download ResembleAI/chatterbox-turbo --local-dir chatterbox-turbo
-   huggingface-cli download ResembleAI/chatterbox --local-dir chatterbox
    ```
-2. Copy those two folders' contents into this PC's Hugging Face cache, under:
+2. Copy that folder's contents into this PC's Hugging Face cache, under:
    ```
-   %USERPROFILE%\.cache\huggingface\hub\models--ResembleAI--chatterbox-turbo\
-   %USERPROFILE%\.cache\huggingface\hub\models--ResembleAI--chatterbox\
+   <model cache folder>\hub\models--ResembleAI--chatterbox-turbo\
    ```
+   where the model cache folder is the one shown under "Model cache folder" on
+   the app's Projects screen (setup.bat picks `D:\hf_cache` when this PC has a
+   second drive with room; otherwise it is `%USERPROFILE%\.cache\huggingface`),
    matching the same internal structure the cache already uses (a
    `snapshots\<hash>\` folder of files, plus a `blobs\` folder they point
    to) — the simplest way to get that structure right is to run
-   `huggingface-cli download` directly INTO a `.cache\huggingface\hub`
-   folder with `--cache-dir` instead of `--local-dir`, then copy that whole
-   `hub` folder over.
+   `huggingface-cli download` directly INTO a `hub` folder with `--cache-dir`
+   instead of `--local-dir`, then copy that whole `hub` folder over.
 3. Run `setup.bat` again (or just `start.bat` and generate audio) — the app
    finds the cached model and never touches the network for it.
 

@@ -105,20 +105,30 @@ def api_bulk_download(slug):
     return stream_task(task)
 
 
+def _app_settings_view():
+    folder, cache = app_settings.projects_folder(), app_settings.model_cache()
+    in_use = os.environ.get("HF_HOME") or str(Path.home() / ".cache" / "huggingface")
+    return jsonify(projects_folder=str(folder) if folder else "", model_cache=str(cache) if cache else "",
+                   model_cache_in_use=in_use)
+
+
 @bp.get("/api/app_settings")
 def api_get_app_settings():
-    folder = app_settings.projects_folder()
-    return jsonify(projects_folder=str(folder) if folder else "")
+    return _app_settings_view()
 
 
 @bp.post("/api/app_settings")
 def api_set_app_settings():
-    folder = (request.get_json(silent=True) or {}).get("projects_folder")
+    """Body: JSON with `projects_folder` and/or `model_cache`; an empty string goes back to the default."""
+    data = request.get_json(silent=True) or {}
     try:
-        saved = app_settings.set_projects_folder(folder or "")
+        if "projects_folder" in data:
+            app_settings.set_projects_folder(data["projects_folder"] or "")
+        if "model_cache" in data:
+            app_settings.set_model_cache(data["model_cache"] or "")
     except OSError as e:
         return jsonify(error=f"Couldn't use that folder: {e}"), 400
-    return jsonify(projects_folder=str(saved) if saved else "")
+    return _app_settings_view()
 
 
 @bp.get("/api/projects/<slug>")

@@ -97,6 +97,11 @@ GPU/NVENC probe (stage 6, stage 7, setup, the framer's GPU status card).
   app, every stage and the engine libraries; setup.bat runs it as its final check.
 - Startup failures (`tools/framer/tray_launcher.py`, `start.bat`) are logged to `app_log.txt`
   and shown in a Windows dialog, because the app runs windowless.
+- The Hugging Face model cache can live on another drive: `hf_home` in `app_settings.json` (a
+  machine setting, git-ignored) is handed to huggingface_hub as `HF_HOME` by `config.py` when it
+  is imported, unless `HF_HOME` is already set. `setup.bat` picks it per PC with
+  `tools/choose_model_cache.py` (a second fixed drive with room, else the Windows default), and
+  the Projects screen can change it.
 
 - **Laptop / this repo**: Python + `requirements.txt`. The stitch, narration and video stages and
   the orchestrator run here. Target Windows; use `pathlib`, never hardcode path separators.

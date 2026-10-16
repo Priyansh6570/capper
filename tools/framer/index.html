@@ -75,11 +75,22 @@
           <div class="fieldrow">
             <div class="field">
               <label>Projects folder <span class="hint">(new projects are created here; leave empty for the app's own folder)</span></label>
-              <input id="npFolder" type="text" placeholder="e.g. G:\My Drive\RECAPPERebe" style="width:100%" />
+              <input id="npFolder" type="text" placeholder="e.g. G:\My Drive\RECAPPER\bebe" style="width:100%" />
             </div>
             <div class="field" style="flex:none">
               <label>&nbsp;</label>
               <button id="npFolderBtn" data-icon="check" data-ic-size="14"><span>Save folder</span></button>
+            </div>
+          </div>
+          <div class="fieldrow">
+            <div class="field">
+              <label>Model cache folder <span class="hint">(where the voice model is downloaded; leave empty for the Windows default. Applies after the app restarts; models already downloaded are not moved)</span></label>
+              <input id="npCache" type="text" placeholder="e.g. D:\hf_cache" style="width:100%" />
+              <span class="hint" id="npCacheInUse"></span>
+            </div>
+            <div class="field" style="flex:none">
+              <label>&nbsp;</label>
+              <button id="npCacheBtn" data-icon="check" data-ic-size="14"><span>Save folder</span></button>
             </div>
           </div>
           <div class="newprog" id="npProg"><div class="spinner"></div><span>Fetching series details…</span></div>

@@ -1773,7 +1773,7 @@ async function importProject() {
 }
 
 async function renderProjectsList() {
-  loadProjectsFolder();
+  loadAppSettings();
   const list = $('pList');
   const recent = $('recentList');
   list.innerHTML = '<div class="empty">Loading…</div>';
@@ -1820,9 +1820,11 @@ async function renderProjectsList() {
   }
 }
 
-async function loadProjectsFolder() {
+async function loadAppSettings() {
   const d = await (await fetch('/api/app_settings')).json();
   $('npFolder').value = d.projects_folder;
+  $('npCache').value = d.model_cache;
+  $('npCacheInUse').textContent = `In use now: ${d.model_cache_in_use}`;
 }
 
 async function saveProjectsFolder() {
@@ -1836,6 +1838,18 @@ async function saveProjectsFolder() {
     renderProjectsList();
   } catch (e) { setStatus('Projects folder error: ' + e.message, true); }
   finally { btnBusy($('npFolderBtn'), false); }
+}
+
+async function saveModelCache() {
+  btnBusy($('npCacheBtn'), true);
+  try {
+    const res = await fetch('/api/app_settings', { method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ model_cache: $('npCache').value }) });
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.error || 'failed');
+    showToast(d.model_cache ? `Voice model cache set to ${d.model_cache}. Restart the app to use it.` : 'Voice model cache back to the Windows default. Restart the app to use it.', null, null, 'ok');
+  } catch (e) { setStatus('Model cache error: ' + e.message, true); }
+  finally { btnBusy($('npCacheBtn'), false); }
 }
 
 async function createProject() {
@@ -3940,6 +3954,7 @@ $('pjRefetchBtn').onclick = refetchChapters;
 $('pjMoreBtn').onclick = downloadMoreChapters;
 $('pjDeleteBtn').onclick = deleteProject;
 $('npFolderBtn').onclick = saveProjectsFolder;
+$('npCacheBtn').onclick = saveModelCache;
 $('mergeBtn').onclick = startMerge;
 $('mergeCancelBtn').onclick = cancelMerge;
 $('pjCrumbProjects').onclick = () => navTo({});
