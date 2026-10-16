@@ -12,6 +12,8 @@ import app
 import app_settings
 import config
 import projects
+from routes import files as files_routes
+from services import batching
 
 
 def touch(path: Path, content: bytes = b"x", mtime: float | None = None) -> Path:
@@ -60,10 +62,12 @@ class ApiProjects(IsolatedProjects):
 
     def setUp(self):
         super().setUp()
-        for name, value in (("PROJECTS_DIR", self.local), ("WORK_DIR", self.work), ("OUTPUT_DIR", self.output)):
-            patcher = mock.patch.object(app, name, value)
-            patcher.start()
-            self.addCleanup(patcher.stop)
+        for module in (batching, files_routes):
+            for name, value in (("PROJECTS_DIR", self.local), ("WORK_DIR", self.work), ("OUTPUT_DIR", self.output)):
+                if hasattr(module, name):
+                    patcher = mock.patch.object(module, name, value)
+                    patcher.start()
+                    self.addCleanup(patcher.stop)
         self.client = app.app.test_client()
         self.slug = self.new_project("Api Series", chapters=12)["slug"]
 

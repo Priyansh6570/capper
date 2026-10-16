@@ -1,0 +1,11 @@
+"""HTTP routes, one blueprint per feature. register_blueprints() adds them all to the app."""
+from __future__ import annotations
+
+from flask import Flask
+
+
+def register_blueprints(app: Flask) -> None:
+    from routes import web, settings, chapters, gemini, jobs, files, editor_state, system, projects, merge, library, batch
+
+    for module in (web, settings, chapters, gemini, jobs, files, editor_state, system, projects, merge, library, batch):
+        app.register_blueprint(module.bp)

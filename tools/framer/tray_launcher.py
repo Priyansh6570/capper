@@ -84,6 +84,10 @@ try:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import app as framer_app  # noqa: E402 - see sys.path insert above
     import pystray  # noqa: E402
+    from services.batching import resume_batches  # noqa: E402
+    from services.jobs import JOBS, JOBS_LOCK  # noqa: E402
+    from services.merging import MERGE_JOBS  # noqa: E402
+    from services.ports import resolve_port  # noqa: E402
     from PIL import Image  # noqa: E402
 except Exception as exc:  # noqa: BLE001 - any import failure must reach the user, not vanish under pythonw
     _fail_startup(exc)
@@ -141,8 +145,8 @@ def _stop_active_processes() -> None:
     Quit actually stops the app's work, not just this process's own window
     (which never existed to begin with)."""
     try:
-        with framer_app._JOBS_LOCK:
-            jobs = list(framer_app._JOBS.values())
+        with JOBS_LOCK:
+            jobs = list(JOBS.values())
         for job in jobs:
             proc = job.proc
             if proc is not None and proc.poll() is None:
@@ -150,7 +154,7 @@ def _stop_active_processes() -> None:
     except Exception:  # noqa: BLE001 - quitting must never hang or crash
         pass
     try:
-        for proc in list(framer_app._MERGE_JOBS.values()):
+        for proc in list(MERGE_JOBS.values()):
             if proc is not None and proc.poll() is None:
                 proc.terminate()
     except Exception:  # noqa: BLE001
@@ -165,12 +169,12 @@ def _serve(port: int) -> None:
 
 
 def main() -> None:
-    port = framer_app._resolve_port(HOST, PORT)
+    port = resolve_port(HOST, PORT)
     if port is None:
-        return  # another instance is already running - see _resolve_port()
+        return  # another instance is already running - see resolve_port()
     url = f"http://{HOST}:{port}/"
 
-    framer_app._resume_batches()
+    resume_batches()
     server_thread = threading.Thread(target=_serve, args=(port,), daemon=True)
     server_thread.start()
 

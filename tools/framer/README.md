@@ -14,6 +14,11 @@ python tools/framer/app.py                  # prints http://127.0.0.1:5005/
 
 ## Layout
 
+`app.py` builds the Flask app and serves it with waitress (`make_server`). The HTTP routes are blueprints in
+`routes/`, one module per feature (`projects`, `chapters`, `jobs`, `batch`, ...); the logic behind them is in
+`services/` (chapter files, the job queue, Gemini, batching, ...). Routes import services, never the other way round.
+The page is `index.html` with its styles and script in `static/`.
+
 The chapter editor is a header + **left sidebar** (Chapter Source / Stitch
 Strip / Draw Tool / Export & Render, each its own card) + **strip workspace**
 (zoom/fit/fullscreen toolbar, the strip itself, a collapsible Activity log
@@ -148,7 +153,7 @@ right before rendering, so a last-minute tweak still lands.
    automatically (untouched — this is what **Stitch PDF** / the framer always use),
    and the tool **always** goes on to prepare Gemini-ready parts, live-streaming
    progress in the panel below:
-   - the PDF is split into **≤100-page parts** (`PART_PAGES` in `app.py`), each
+   - the PDF is split into **≤100-page parts** (`PART_PAGES` in `services/chapter_files.py`), each
      overlapping the previous part by **5 pages** (`PART_OVERLAP`) so Gemini keeps
      continuity across the seam — e.g. `part1_p1-100`, `part2_p96-195`, …;
    - every page in every part is **downscaled to ≤1600px** on its longest side
@@ -166,7 +171,7 @@ right before rendering, so a last-minute tweak still lands.
    touch Gemini; you upload the files.)
 
    **Download and Stitch PDF both disable themselves once already done for a
-   chapter** (see `/chapter_source_status` in `app.py`) - re-derived from
+   chapter** (see `/chapter_source_status` in `routes/editor_state.py`) - re-derived from
    what's actually on disk (the PDF, the Gemini parts, the stitched strip)
    every time you open a chapter, never from a saved-state blob that can go
    stale. Each shows a small **Re-download** / **Re-stitch** link to force it
@@ -193,7 +198,7 @@ right before rendering, so a last-minute tweak still lands.
    within the line, and click a frame card to SELECT it (then **Blur mode** + drag
    draws blur regions on that selected frame). Reorder lines via the `⠿` grip.
    - **Blur strength / style**: blur is strong by default and scales with the
-     region size (set by `BLUR_STRENGTH` in `app.py`), so big speech bubbles are
+     region size (set by `BLUR_STRENGTH` in `services/frames.py`), so big speech bubbles are
      destroyed too. The **Blur:** selector picks the style for new regions —
      **Mosaic** (pixelate; the most reliable text-killer, default) or **Heavy
      gaussian**. The style is stored per region and applied identically in the live
