@@ -492,6 +492,10 @@
   .newprog { display:none; align-items:center; gap:9px; margin:4px 0 2px; font-size:12px; color:var(--muted); }
   .newprog.on { display:flex; }
   .newprog .spinner { width:14px; height:14px; border-width:2px; }
+  .pipeloading { display:none; align-items:center; gap:12px; padding:28px 4px; color:var(--muted); }
+  #pipeModal.loading .pipeloading { display:flex; }
+  #pipeModal.loading .pipebody, #pipeModal.loading .pipefoot { display:none; }
+  .chmore { display:flex; justify-content:center; padding:14px 0; }
   .fetchresult { font-size:12px; padding:8px 10px; border-radius:var(--r2); margin:6px 0 2px; display:none; }
   .fetchresult.on { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
   .fetchresult.ok { background:var(--frame-fill); color:var(--frame); border:1px solid var(--frame); }
@@ -1026,16 +1030,28 @@
             <div class="field">
               <label>Manhwa URL</label>
               <div class="row2">
-                <input id="npUrl" type="text" placeholder="webtoons.com or kingofshojo.com series/chapter URL" />
+                <input id="npUrl" type="text" placeholder="webtoons.com, kingofshojo.com or mgeko.cc series/chapter URL" />
                 <button type="button" class="small ghost icon" data-icon="link" data-ic-size="14"
                         title="Open webtoons.com" onclick="openSiteHome('webtoons')"></button>
                 <button type="button" class="small ghost icon" data-icon="link" data-ic-size="14"
                         title="Open kingofshojo.com" onclick="openSiteHome('kingofshojo')"></button>
+                <button type="button" class="small ghost icon" data-icon="link" data-ic-size="14"
+                        title="Open mgeko.cc" onclick="openSiteHome('mgeko')"></button>
               </div>
             </div>
             <div class="field" style="flex:none">
               <label>&nbsp;</label>
               <button id="npCreateBtn" class="primary" data-icon="plus" data-ic-size="15"><span>Create project</span></button>
+            </div>
+          </div>
+          <div class="fieldrow">
+            <div class="field">
+              <label>Projects folder <span class="hint">(new projects are created here; leave empty for the app's own folder)</span></label>
+              <input id="npFolder" type="text" placeholder="e.g. G:\My Drive\RECAPPERebe" style="width:100%" />
+            </div>
+            <div class="field" style="flex:none">
+              <label>&nbsp;</label>
+              <button id="npFolderBtn" data-icon="check" data-ic-size="14"><span>Save folder</span></button>
             </div>
           </div>
           <div class="newprog" id="npProg"><div class="spinner"></div><span>Fetching series details…</span></div>
@@ -1096,6 +1112,7 @@
           <a href="javascript:void(0)" id="pjSourceLink" class="srclink" data-icon="link" data-ic-size="10" title="Open source in browser" hidden><span id="pjSourceLabel"></span></a>
         </div>
         <div class="actions">
+          <button id="pjMoreBtn" class="small primary" data-icon="download" data-ic-size="14" title="Refresh the chapter list, then download the next chapters not yet in the project folder" hidden><span>Download more chapters</span></button>
           <button id="pjRefetchBtn" class="small ghost" data-icon="refresh" data-ic-size="14" title="Re-fetch chapter list from the series URL"><span>Refetch</span></button>
         </div>
       </div>
@@ -1296,6 +1313,7 @@
           <a href="#s-gpu">GPU acceleration</a>
           <a href="#s-defaults">Default settings</a>
           <a href="#s-backup">Export project</a>
+          <a href="#s-delete">Delete project</a>
           <div class="settingsnote">Changes apply to every chapter rendered in this project. Already-rendered chapters need a re-render.</div>
         </nav>
         <div class="settingscontent">
@@ -1557,6 +1575,13 @@
             </div>
           </div>
 
+          <div class="setcard" id="s-delete">
+            <div class="setlabel"><b>Delete project</b><span>Permanently removes this project and every file of it - chapters, scripts, audio, videos and the copy in the projects folder. You will be asked to type the project name first.</span></div>
+            <div class="setbody">
+              <div class="filerow"><button type="button" id="pjDeleteBtn" class="small danger" data-icon="trash" data-ic-size="14"><span>Delete project</span></button></div>
+            </div>
+          </div>
+
           <div class="setcard" id="s-anim">
             <div class="setlabel"><b>Frame animation</b><span>How each panel enters and exits. Applies to every transition in this project.</span></div>
             <div class="setbody">
@@ -1632,11 +1657,13 @@
           <div class="sidefield">
             <label class="lbl">Chapter URL</label>
             <div class="row2">
-              <input id="dlUrl" type="text" placeholder="webtoons.com or kingofshojo.com chapter URL" />
+              <input id="dlUrl" type="text" placeholder="webtoons.com, kingofshojo.com or mgeko.cc chapter URL" />
               <button type="button" class="small ghost icon" data-icon="link" data-ic-size="14"
                       title="Open webtoons.com" onclick="openSiteHome('webtoons')"></button>
               <button type="button" class="small ghost icon" data-icon="link" data-ic-size="14"
                       title="Open kingofshojo.com" onclick="openSiteHome('kingofshojo')"></button>
+              <button type="button" class="small ghost icon" data-icon="link" data-ic-size="14"
+                      title="Open mgeko.cc" onclick="openSiteHome('mgeko')"></button>
             </div>
           </div>
           <div class="sidefield">
@@ -1789,6 +1816,7 @@
 <div class="modalback" id="pipeModal">
   <div class="modal pipemodal" role="dialog" aria-modal="true" aria-labelledby="pipeTitle">
     <h3 id="pipeTitle">Run pipeline</h3>
+    <div class="pipeloading"><div class="spinner"></div><span>Checking each chapter's progress…</span></div>
     <div class="pipebody">
       <p class="pipehint">Tick the last step to run. Every step before it is a prerequisite: it is reused when already done and run when it is missing.</p>
       <div class="pipesteps" id="pipeSteps"></div>
@@ -2107,6 +2135,7 @@ function hideToast() { const s = $('toast'); if (s && s.lastChild) s.lastChild.r
 const SITE_HOME_URLS = {
   webtoons: 'https://www.webtoons.com/',
   kingofshojo: 'https://kingofshojo.com/',
+  mgeko: 'https://www.mgeko.cc/',
 };
 function openSiteHome(site) {
   window.open(SITE_HOME_URLS[site], '_blank', 'noopener');
@@ -2121,7 +2150,7 @@ function openSiteHome(site) {
 async function doDownload() {
   const url = $('dlUrl').value.trim();
   const no = $('dlNo').value.trim();
-  if (!url) { setStatus('Paste a webtoons.com or kingofshojo.com chapter URL.', true); return; }
+  if (!url) { setStatus('Paste a webtoons.com, kingofshojo.com or mgeko.cc chapter URL.', true); return; }
   const chap = $('chapId').value.trim() || no;   // reuse the chapter-id field; default to the number
   showOverlay('Downloading chapter');
   setGlobalProg(null, 'Downloading chapter');
@@ -3864,6 +3893,7 @@ async function importProject() {
 }
 
 async function renderProjectsList() {
+  loadProjectsFolder();
   const list = $('pList');
   const recent = $('recentList');
   list.innerHTML = '<div class="empty">Loading…</div>';
@@ -3908,6 +3938,24 @@ async function renderProjectsList() {
     list.innerHTML = '<div class="empty">Could not load projects.</div>';
     recent.innerHTML = '';
   }
+}
+
+async function loadProjectsFolder() {
+  const d = await (await fetch('/api/app_settings')).json();
+  $('npFolder').value = d.projects_folder;
+}
+
+async function saveProjectsFolder() {
+  btnBusy($('npFolderBtn'), true);
+  try {
+    const res = await fetch('/api/app_settings', { method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ projects_folder: $('npFolder').value }) });
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.error || 'failed');
+    showToast(d.projects_folder ? `New projects go to ${d.projects_folder}` : "New projects go to the app's own folder.", null, null, 'ok');
+    renderProjectsList();
+  } catch (e) { setStatus('Projects folder error: ' + e.message, true); }
+  finally { btnBusy($('npFolderBtn'), false); }
 }
 
 async function createProject() {
@@ -3959,10 +4007,16 @@ async function useManualRange() {
 // the same sidebar project title + "Chapters" nav count, and both need
 // CURRENT_PROJECT loaded (fetching it again is cheap and keeps each screen
 // independently deep-linkable / refreshable via the URL).
+let projectLoadedAt = 0;
+const PROJECT_FRESH_MS = 60_000;   // coming back from settings within this long reuses the loaded project
+const CHAPTER_PAGE = 50;           // chapters shown (and detailed by the server) at a time
+let chaptersShown = CHAPTER_PAGE;
+
 async function loadCurrentProject(slug) {
-  const d = await (await fetch(`/api/projects/${encodeURIComponent(slug)}`)).json();
+  const d = await (await fetch(`/api/projects/${encodeURIComponent(slug)}?limit=${chaptersShown}`)).json();
   if (!d.project) throw new Error(d.error || 'not found');
   CURRENT_PROJECT = d.project;
+  projectLoadedAt = Date.now();
   return CURRENT_PROJECT;
 }
 
@@ -3978,6 +4032,7 @@ function paintProjectChrome() {
   if ($('pjClaudeUsage')) $('pjClaudeUsage').innerHTML = usage && usage.output
     ? `Claude tokens: ${tokenLine(usage)}<br>${costLine(usage)}` : '';
   if ($('pjSideProgressFill')) $('pjSideProgressFill').style.width = (chapters.length ? Math.round(100 * done / chapters.length) : 0) + '%';
+  $('pjMoreBtn').hidden = !p.site;
   const src = $('pjSourceLink');
   if (src) {
     if (p.url) { src.hidden = false; $('pjSourceLabel').textContent = shortHost(p.url); src.onclick = () => window.open(p.url, '_blank'); }
@@ -3990,20 +4045,29 @@ function shortHost(url) {
 }
 
 async function openProjectScreen(slug) {
+  const cached = CURRENT_PROJECT && CURRENT_PROJECT.slug === slug;
+  if (!cached) chaptersShown = CHAPTER_PAGE;
   showScreen('project');
-  $('pjTitle').textContent = 'Loading…';
-  $('chList').innerHTML = '<div class="empty">Loading…</div>';
-  SELECTION.clear(); selectionAnchor = null; BATCH = null; batchStepCount = 0; BATCH_LOG_VIEW.clear();
+  if (!cached) {
+    $('pjTitle').textContent = 'Loading…';
+    $('chList').innerHTML = '<div class="empty">Loading…</div>';
+  }
+  SELECTION.clear(); selectionAnchor = null; BATCH = null; batchStepCount = null; BATCH_LOG_VIEW.clear();
   CHAPTER_VIEW = loadChapterView(slug);
   $('batchCard').hidden = true;
   $('mergeStatus').textContent = ''; $('mergeResult').innerHTML = '';
   try {
-    await loadCurrentProject(slug);
+    if (!cached) await loadCurrentProject(slug);
     $('pjTitle').textContent = CURRENT_PROJECT.name;
     paintProjectChrome();
     paintFolds();
     renderChapterList();
     pollBatch();
+    if (cached && Date.now() - projectLoadedAt > PROJECT_FRESH_MS) {
+      await loadCurrentProject(slug);
+      paintProjectChrome();
+      renderChapterList();
+    }
   } catch (e) {
     setStatus('Open project error: ' + e.message, true);
     $('chList').innerHTML = '<div class="empty">Could not load this project.</div>';
@@ -4259,10 +4323,10 @@ function renderBatch() {
   refreshProjectWhenStepsFinish(data);
 }
 
-let batchStepCount = 0;
+let batchStepCount = null;   // finished steps seen by the last poll; null until the first poll sets the baseline
 async function refreshProjectWhenStepsFinish(data) {
   const finished = data.chapters.reduce((sum, c) => sum + c.completed.length, 0);
-  if (finished !== batchStepCount) {
+  if (batchStepCount !== null && finished !== batchStepCount) {
     await loadCurrentProject(CURRENT_PROJECT.slug);
     renderChapterList();
   }
@@ -4864,7 +4928,7 @@ function listNumbers(numbers) {
 }
 
 function selectChapter(n, on, range) {
-  const numbers = CURRENT_PROJECT.chapters.map(c => c.n);
+  const numbers = CURRENT_PROJECT.chapters.slice(0, chaptersShown).map(c => c.n);
   const [from, to] = range && selectionAnchor !== null ? [n, selectionAnchor].sort((a, b) => a - b) : [n, n];
   numbers.filter(x => x >= from && x <= to).forEach(x => on ? SELECTION.add(x) : SELECTION.delete(x));
   selectionAnchor = n;
@@ -4957,6 +5021,20 @@ function chapterCardHtml(ch) {
     `<div class="chacts">${chapterActionsHtml(ch)}</div></article>`;
 }
 
+async function showMoreChapters() {
+  const btn = $('chMoreBtn');
+  btnBusy(btn, true);
+  chaptersShown += CHAPTER_PAGE;
+  try {
+    await loadCurrentProject(CURRENT_PROJECT.slug);
+    renderChapterList();
+  } catch (e) {
+    chaptersShown -= CHAPTER_PAGE;
+    btnBusy(btn, false);
+    setStatus('Could not load more chapters: ' + e.message, true);
+  }
+}
+
 function renderChapterList() {
   const list = $('chList');
   const chapters = CURRENT_PROJECT.chapters || [];
@@ -4967,7 +5045,13 @@ function renderChapterList() {
   $('viewCardsBtn').setAttribute('aria-pressed', String(cards));
   $('viewListBtn').classList.toggle('on', !cards);
   $('viewCardsBtn').classList.toggle('on', cards);
-  list.innerHTML = chapters.length ? chapters.map(cards ? chapterCardHtml : chapterRowHtml).join('') : '<div class="empty">No chapters yet.</div>';
+  const page = chapters.slice(0, chaptersShown);
+  list.innerHTML = chapters.length ? page.map(cards ? chapterCardHtml : chapterRowHtml).join('') : '<div class="empty">No chapters yet.</div>';
+  if (chapters.length > page.length) {
+    const more = Math.min(CHAPTER_PAGE, chapters.length - page.length);
+    list.insertAdjacentHTML('beforeend', `<div class="chmore"><button id="chMoreBtn" class="small ghost">Show ${more} more <span class="hint">(${page.length} of ${chapters.length} shown)</span></button></div>`);
+    $('chMoreBtn').onclick = showMoreChapters;
+  }
   paintIcons(list);
   const counts = { not_started: 0, in_progress: 0, complete: 0 };
   chapters.forEach(c => {
@@ -5044,8 +5128,8 @@ $('chList').addEventListener('click', e => {
 
 $('viewListBtn').onclick = () => setChapterView('list');
 $('viewCardsBtn').onclick = () => setChapterView('cards');
-$('selAllBtn').onclick = () => toggleSelection(CURRENT_PROJECT.chapters.map(c => c.n));
-$('selCompleteBtn').onclick = () => toggleSelection(CURRENT_PROJECT.chapters.filter(c => c.status === 'complete').map(c => c.n));
+$('selAllBtn').onclick = () => toggleSelection(CURRENT_PROJECT.chapters.slice(0, chaptersShown).map(c => c.n));
+$('selCompleteBtn').onclick = () => toggleSelection(CURRENT_PROJECT.chapters.slice(0, chaptersShown).filter(c => c.status === 'complete').map(c => c.n));
 $('selClearBtn').onclick = () => { SELECTION.clear(); selectionAnchor = null; paintSelection(); };
 
 function mergeBlocker() {
@@ -5184,11 +5268,19 @@ function savePipeChoice() {
   try { localStorage.setItem(pipeChoiceKey(), JSON.stringify({ target: PIPE.target, redo: PIPE.redo })); } catch (_) { /* not remembered */ }
 }
 
-const closePipeModal = () => $('pipeModal').classList.remove('on');
+const closePipeModal = () => $('pipeModal').classList.remove('on', 'loading');
 
 // `step` (an index) pre-ticks that step; without it the last used choice comes back.
 async function openPipelineModal(numbers, step) {
-  await loadCurrentProject(CURRENT_PROJECT.slug);   // the steps shown must be what the disk has now
+  $('pipeTitle').textContent = 'Run pipeline';
+  $('pipeModal').classList.add('on', 'loading');
+  try {
+    await loadCurrentProject(CURRENT_PROJECT.slug);   // the steps shown must be what the disk has now
+  } catch (e) {
+    $('pipeModal').classList.remove('on', 'loading');
+    setStatus('Could not load the chapters: ' + e.message, true);
+    return;
+  }
   renderChapterList();
   const choice = step === undefined ? readPipeChoice() : { target: step };
   PIPE.remember = step === undefined;
@@ -5199,7 +5291,7 @@ async function openPipelineModal(numbers, step) {
   PIPE.ticks = new Map(PIPE.rows.map(ch => [ch.n, tickTarget(stepStates(ch), PIPE.target, PIPE.redo)]));
   $('pipeTitle').textContent = PIPE.rows.length === 1 ? `Run pipeline: chapter ${PIPE.rows[0].n}` : `Run pipeline: ${PIPE.rows.length} chapters`;
   renderPipeModal();
-  $('pipeModal').classList.add('on');
+  $('pipeModal').classList.remove('loading');
   $('pipeModal').querySelector('[data-step]').focus();
 }
 
@@ -5343,6 +5435,62 @@ async function toggleComplete(ch) {
     ch.status = d.chapter.status;
     renderChapterList();
   } catch (e) { setStatus('Status update error: ' + e.message, true); }
+}
+
+// Refreshes the chapter list, then downloads as many of the next missing chapters as asked for.
+function streamEvents(url, onEvent) {
+  return new Promise((resolve, reject) => {
+    const es = new EventSource(url);
+    es.onmessage = ev => {
+      const frame = JSON.parse(ev.data);
+      if (frame.type === 'error') { es.close(); reject(new Error(frame.message)); }
+      else if (frame.type === 'done') { es.close(); resolve(frame); }
+      else onEvent(frame);
+    };
+    es.onerror = () => { es.close(); reject(new Error('Lost the connection to the app.')); };
+  });
+}
+
+async function downloadMoreChapters() {
+  const slug = encodeURIComponent(CURRENT_PROJECT.slug), btn = $('pjMoreBtn');
+  btnBusy(btn, true);
+  try {
+    setStatus('Refreshing the chapter list…');
+    await refetchChapters();
+    const missing = await (await fetch(`/api/projects/${slug}/missing_chapters`)).json();
+    if (!missing.count) { setStatus('All chapters are already downloaded.'); return; }
+    const answer = prompt(`${missing.count} of ${missing.total} chapters are not downloaded yet. How many should be downloaded now?`, String(Math.min(5, missing.count)));
+    const count = parseInt(answer, 10);
+    if (!count || count < 1) { setStatus('Nothing downloaded.'); return; }
+    const result = await streamEvents(`/api/projects/${slug}/download_stream?count=${count}`, f => {
+      if (f.type === 'progress') setStatus(`Downloading chapter ${f.chapter} (${f.position} of ${f.total})…`);
+      else if (f.line) setStatus(f.line);
+    });
+    await loadCurrentProject(CURRENT_PROJECT.slug);
+    renderChapterList();
+    const failed = result.failed.map(x => `${x.chapter} (${x.error})`).join(', ');
+    setStatus(failed ? `Downloaded ${result.requested - result.failed.length} of ${result.requested} chapters. Failed: ${failed}` : `Downloaded ${result.requested} chapter(s).`, !!failed);
+  } catch (e) { setStatus('Download error: ' + e.message, true); }
+  finally { btnBusy(btn, false); }
+}
+
+async function deleteProject() {
+  const { slug, name } = CURRENT_PROJECT;
+  const typed = prompt(`This permanently deletes "${name}" and every file of it - chapters, scripts, audio, videos and the copy in the projects folder.
+
+Type the project name to confirm:`);
+  if (typed === null) return;
+  if (typed !== name) { setStatus('The name did not match - nothing was deleted.', true); return; }
+  btnBusy($('pjDeleteBtn'), true);
+  try {
+    const res = await fetch(`/api/projects/${encodeURIComponent(slug)}`, { method:'DELETE',
+      headers:{'Content-Type':'application/json'}, body: JSON.stringify({ confirm: typed }) });
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.error || 'failed');
+    navTo({});
+    showToast(`Deleted "${name}".`, null, null, 'ok');
+  } catch (e) { setStatus('Delete error: ' + e.message, true); }
+  finally { btnBusy($('pjDeleteBtn'), false); }
 }
 
 async function refetchChapters() {
@@ -5927,6 +6075,9 @@ $('npCloseBtn').onclick = () => $('npComposer').classList.remove('on');
 $('backToProjectsBtn').onclick = () => navTo({});
 $('backToProjectBtn').onclick = backToProject;
 $('pjRefetchBtn').onclick = refetchChapters;
+$('pjMoreBtn').onclick = downloadMoreChapters;
+$('pjDeleteBtn').onclick = deleteProject;
+$('npFolderBtn').onclick = saveProjectsFolder;
 $('mergeBtn').onclick = startMerge;
 $('mergeCancelBtn').onclick = cancelMerge;
 $('pjCrumbProjects').onclick = () => navTo({});

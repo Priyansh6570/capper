@@ -15,6 +15,9 @@ install_log.txt
 # (no console at all - see its module docstring) ---
 app_log.txt
 
+# --- machine-specific app-wide settings (shared projects folder) ---
+app_settings.json
+
 # --- gpu.py: what the last audio/video run actually used ---
 gpu_usage.json
 claude_usage.json

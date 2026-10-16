@@ -9,9 +9,9 @@ HOME_URL, matches, fetch_series, download_chapter) and registering it below.
 from __future__ import annotations
 
 from .errors import DownloadTimeout
-from . import kingofshojo, webtoons
+from . import kingofshojo, mgeko, webtoons
 
-ADAPTERS = [webtoons, kingofshojo]
+ADAPTERS = [webtoons, kingofshojo, mgeko]
 
 
 def detect(url: str):

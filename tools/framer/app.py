@@ -78,6 +78,8 @@ import claude_engine  # noqa: E402 - Claude script engine: panels -> narration b
 import panel_split  # noqa: E402 - strip -> reading-order panels
 import library  # noqa: E402 - per-project media library (sizes, deletion)
 import project_defaults  # noqa: E402 - the settings new projects start with
+import app_settings  # noqa: E402 - app-wide settings (the shared projects folder)
+import bulk_download  # noqa: E402 - bulk chapter download for browser-only sources
 import pacing  # noqa: E402 - per-line mood: where the narration pauses and how fast it runs
 import tones  # noqa: E402 - chapter tones: script voice and speech delivery
 import sites  # noqa: E402 - per-site adapters (tools/framer/sites/): metadata + chapter download
@@ -197,9 +199,13 @@ def _sanitize_chapter(name: str) -> str:
 
 
 def _framer_dir(chapter_id: str) -> Path:
-    d = chapter_work_dir(chapter_id) / "framer"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
+    """The framer's folder for the chapter. Not created here: writers create it (see _ensure_dir)."""
+    return chapter_work_dir(chapter_id) / "framer"
+
+
+def _ensure_dir(path: Path) -> Path:
+    path.mkdir(parents=True, exist_ok=True)
+    return path
 
 
 def _strip_path(chapter_id: str) -> Path:
@@ -501,10 +507,10 @@ def _download_chapter(url: str, chapter_no: str, raw_id: str, slug: str | None, 
     matches `url`; `log` also receives each step as it happens. Returns {chapter_id, pdf,
     page_count, steps}."""
     if not url:
-        raise Refused("Paste a webtoons.com or kingofshojo.com chapter URL.")
+        raise Refused("Paste a webtoons.com, kingofshojo.com or mgeko.cc chapter URL.")
     adapter = sites.detect(url)
     if adapter is None:
-        raise Refused("That doesn't look like a webtoons.com or kingofshojo.com URL.")
+        raise Refused("That doesn't look like a webtoons.com, kingofshojo.com or mgeko.cc URL.")
     if not raw_id and not chapter_no:
         raise Refused("Enter the chapter number (or a chapter id).")
     chapter_id = _sanitize_chapter(raw_id or chapter_no)
@@ -512,8 +518,13 @@ def _download_chapter(url: str, chapter_no: str, raw_id: str, slug: str | None, 
     dest = _download_dir(chapter_id)
     steps = [f"Downloading {adapter.SITE_NAME} chapter {chapter_no or '(from URL)'} "
              f"into {dest} …"]
+    def note(line: str) -> None:
+        steps.append(line)
+        if log:
+            log(line)
+
     try:
-        pdf = adapter.download_chapter(url, chapter_no, dest, log=lambda line: (steps.append(line), log and log(line)))
+        pdf = _fetch_chapter_pdf(adapter, url, chapter_no, dest, slug, ch_no, note)
     except sites.DownloadTimeout as e:
         raise Refused(str(e), 504) from e
     except Exception as e:  # noqa: BLE001 - surface the adapter's own message to the UI
@@ -527,6 +538,22 @@ def _download_chapter(url: str, chapter_no: str, raw_id: str, slug: str | None, 
     if slug and ch_no:
         projects.set_status(slug, ch_no, "downloaded")
     return {"chapter_id": chapter_id, "pdf": str(pdf), "page_count": pages, "steps": steps}
+
+
+def _fetch_chapter_pdf(adapter, url: str, chapter_no: str, dest: Path, slug: str | None, ch_no: str | None,
+                       log: Callable[[str], None]) -> Path:
+    """The chapter's PDF in `dest`. A project that remembers its source keeps its downloads in the
+    project folder: a chapter stored there is copied from it instead of being downloaded again, and a
+    fresh download is stored there once complete."""
+    keeps_copy = bool(slug and ch_no and projects.load(slug)["site"])
+    stored = projects.stored_pdf(slug, ch_no) if keeps_copy else None
+    if stored:
+        log(f"Using the copy in the project folder ({stored.name})")
+        return Path(shutil.copy2(stored, dest / stored.name))
+    pdf = adapter.download_chapter(url, chapter_no, dest, log=log)
+    if keeps_copy:
+        projects.store_pdf(slug, ch_no, pdf)
+    return pdf
 
 
 @app.post("/download")
@@ -1037,7 +1064,7 @@ def load_pdf():
         chapter_id = _sanitize_chapter(
             request.form.get("chapter_id") or Path(upload.filename).stem
         )
-        pdf_path = _framer_dir(chapter_id) / "_upload.pdf"
+        pdf_path = _ensure_dir(_framer_dir(chapter_id)) / "_upload.pdf"
         upload.save(str(pdf_path))
     else:
         data = request.get_json(silent=True) or {}
@@ -1444,7 +1471,7 @@ def _export_chapter(chapter_id: str, entries: list[dict], slug: str | None, ch_n
             is_text_only=False,
         ))
 
-    framer_dir = _framer_dir(chapter_id)
+    framer_dir = _ensure_dir(_framer_dir(chapter_id))
     mapping_path = framer_dir / "mapping.json"
     # Atomic + backed up (see atomic_io.py) - this is the finished boxing/script
     # work (line -> frame bindings), the exact thing that must never be lost
@@ -1776,6 +1803,22 @@ def _render_fraction(line: str, output_dir: Path) -> float | None:
     return None
 
 
+NATIVE_CRASHES = {0xC0000005: "an access violation", 0xC0000409: "a stack buffer overrun",
+                  0xC00000FD: "a stack overflow", 0xC0000142: "a DLL failing to start"}
+NATIVE_CRASH_RETRIES = 1
+
+
+def _crash_message(code: int, log: list[str]) -> str:
+    """Explain a pipeline child that died from a native crash (Python had no chance to raise), naming
+    the Python line it was on when PYTHONFAULTHANDLER printed one."""
+    current = max((i for i, line in enumerate(log) if line.startswith("Current thread")), default=None)
+    frames = [] if current is None else [line.strip() for line in log[current:] if line.strip().startswith("File ")]
+    where = f" at {frames[0]}" if frames else ""
+    return (f"The pipeline crashed with {NATIVE_CRASHES[code]} (Windows exit code 0x{code:X}){where}. This is a "
+            f"crash inside a native library, not a Python error; low free memory is a common trigger, so close "
+            f"other heavy programs and run it again. The job log has the details.")
+
+
 def _run_pipeline_job(job: "Job") -> None:
     slug, ch_no, chapter_id = job.slug, job.ch_no, job.chapter_id
     work_dir = projects.chapter_work_dir(slug, ch_no) if slug and ch_no else chapter_work_dir(chapter_id)
@@ -1797,7 +1840,7 @@ def _run_pipeline_job(job: "Job") -> None:
         # hand the same scope to the orchestrator subprocess (config.py's
         # env-var fallback) - this worker thread has no Flask request context
         # for it to inherit.
-        env = dict(os.environ, PYTHONUNBUFFERED="1", PYTHONIOENCODING="utf-8")
+        env = dict(os.environ, PYTHONUNBUFFERED="1", PYTHONIOENCODING="utf-8", PYTHONFAULTHANDLER="1")
         if slug and ch_no:
             env["MANHWA_WORK_ROOT"] = str(work_dir)
             env["MANHWA_OUTPUT_ROOT"] = str(output_dir)
@@ -1809,32 +1852,37 @@ def _run_pipeline_job(job: "Job") -> None:
 
         proc = None
         try:
-            proc = subprocess.Popen(
-                cmd, cwd=str(ROOT), env=env,
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                stdin=subprocess.DEVNULL, text=True, bufsize=1,
-                encoding="utf-8", errors="replace", **NO_CONSOLE)
-            job.proc = proc
+            for attempt in range(1 + NATIVE_CRASH_RETRIES):
+                proc = subprocess.Popen(
+                    cmd, cwd=str(ROOT), env=env,
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    stdin=subprocess.DEVNULL, text=True, bufsize=1,
+                    encoding="utf-8", errors="replace", **NO_CONSOLE)
+                job.proc = proc
 
-            for line in proc.stdout:                       # streams as it arrives
-                line = line.rstrip("\n")
-                job.append_log(line)
-                if re.match(r"^\s*\[\d{1,4}\]", line):
-                    job.audio += 1
-                    job.downloading_model = False
-                elif re.match(r"^\s*line \d+:", line):
-                    job.video += 1
-                    job.downloading_model = False
-                elif (done := _render_fraction(line, output_dir)) is not None:
-                    job.render = max(job.render, done)
-                elif "[voice-model]" in line:
-                    # see stages/s6_tts.py._ensure_model_cached - surfaces a
-                    # not-yet-cached model download with a live message instead
-                    # of a progress bar stuck at 0% (audio/video haven't moved
-                    # yet since synthesis hasn't started).
-                    job.message = line.strip()
-                    job.downloading_model = "ready" not in line
-            proc.wait()
+                for line in proc.stdout:                       # streams as it arrives
+                    line = line.rstrip("\n")
+                    job.append_log(line)
+                    if re.match(r"^\s*\[\d{1,4}\]", line):
+                        job.audio += 1
+                        job.downloading_model = False
+                    elif re.match(r"^\s*line \d+:", line):
+                        job.video += 1
+                        job.downloading_model = False
+                    elif (done := _render_fraction(line, output_dir)) is not None:
+                        job.render = max(job.render, done)
+                    elif "[voice-model]" in line:
+                        # see stages/s6_tts.py._ensure_model_cached - surfaces a
+                        # not-yet-cached model download with a live message instead
+                        # of a progress bar stuck at 0% (audio/video haven't moved
+                        # yet since synthesis hasn't started).
+                        job.message = line.strip()
+                        job.downloading_model = "ready" not in line
+                proc.wait()
+                if job.cancel_requested or proc.returncode not in NATIVE_CRASHES or attempt == NATIVE_CRASH_RETRIES:
+                    break
+                job.append_log(_crash_message(proc.returncode, job.log) + " Trying once more.")
+                job.audio = job.video = 0
 
             if job.cancel_requested:
                 job.status, job.ok = "cancelled", False
@@ -1856,7 +1904,8 @@ def _run_pipeline_job(job: "Job") -> None:
                 job.status = "done" if job.ok else "failed"
             else:
                 job.status, job.ok = "failed", False
-                job.message = f"Pipeline exited with code {proc.returncode}."
+                job.message = (_crash_message(proc.returncode, job.log) if proc.returncode in NATIVE_CRASHES
+                               else f"Pipeline exited with code {proc.returncode}.")
         except Exception as e:  # noqa: BLE001 - report, don't crash the worker
             job.status, job.ok = "failed", False
             job.message = f"{type(e).__name__}: {e}"
@@ -1939,9 +1988,7 @@ def _beat_count(chapter_id: str) -> int:
 # _state_from_narration). TTS and render consume the framer's export unchanged.
 # --------------------------------------------------------------------------- #
 def _claude_state_path(chapter_id: str) -> Path:
-    d = chapter_work_dir(chapter_id) / "claude"
-    d.mkdir(parents=True, exist_ok=True)
-    return d / "state.json"
+    return chapter_work_dir(chapter_id) / "claude" / "state.json"
 
 
 def _manifest_panels(chapter_id: str) -> list[Panel]:
@@ -1979,7 +2026,7 @@ def _speech_rate(slug: str) -> float | None:
     chars = seconds = 0.0
     for chapter in projects.load(slug)["chapters"]:
         try:
-            beats = Manifest.load(projects.chapter_work_dir(slug, chapter["n"])).beats
+            beats = Manifest.load(projects.chapter_work_path(slug, chapter["n"])).beats
         except (OSError, ValueError, KeyError):
             continue
         for beat in beats:
@@ -1992,7 +2039,7 @@ def _speech_rate(slug: str) -> float | None:
 def _narration_estimate(slug: str, n: int, chars_per_sec: float) -> dict | None:
     """Words and estimated spoken length (seconds, at the project's speaking pace) of chapter
     `n`'s current script, or None when it has none yet."""
-    with config.chapter_scope(projects.chapter_work_dir(slug, n), projects.chapter_output_dir(slug, n)):
+    with config.chapter_scope(projects.chapter_work_path(slug, n), projects.chapter_output_path(slug, n)):
         state = _resolve_editor_state(f"{slug}_ch{n}")
     texts = [text for line in (state or {}).get("lines", []) if (text := line.get("text", "").strip())]
     if not texts:
@@ -2064,6 +2111,7 @@ def _run_script_job(job: "Job") -> None:
             if voice["style_reference"].strip():
                 style.append(_style_reference_directive(voice["style_reference"]))
             state_path = _claude_state_path(chapter_id)
+            _ensure_dir(state_path.parent)
             rate = _speech_rate(slug)
             job.note(f"Speaking rate: {rate:.1f} chars/s, measured from this project's generated audio" if rate else
                      f"No generated audio in this project yet; assuming {claude_engine.DEFAULT_CHARS_PER_SEC} chars/s")
@@ -2391,7 +2439,7 @@ def save_editor_state():
     # Atomic + backed up (see atomic_io.py) - this is the live boxing/script
     # session itself; a half-written editor_state.json/recovery.json from a
     # crash mid-save is exactly the kind of loss this guards against.
-    atomic_write_json(path, state)
+    atomic_write_json(_ensure_dir(path.parent) / path.name, state)
     return jsonify(ok=True, path=str(path), saved_at=state["saved_at"])
 
 
@@ -2718,39 +2766,119 @@ def api_create_project():
 
     adapter = sites.detect(url) if url else None
     fetched = adapter.fetch_series(url) if adapter else None
+    if adapter:
+        project["site"] = adapter.SITE_NAME
     if fetched:
         project["series_title"] = fetched["title"]
         project["source"] = "scraped"
         projects.fill_chapters(project, fetched["chapters"])
-        projects.save(project)
         fetch_result = {"ok": True, "title": fetched["title"], "total": fetched["total"]}
     else:
         fetch_result = {"ok": False, "reason": "Couldn't read the series page - enter "
                                                 "the chapter range manually."}
+    projects.save(project)
 
     return jsonify(slug=project["slug"], project=project, fetch=fetch_result)
 
 
-@app.get("/api/projects/<slug>")
-def api_get_project(slug):
+def _stream_task(task: Callable[[Callable[[dict], None], threading.Event], dict]) -> Response:
+    """Run `task(emit, stop)` on a thread and stream what it emits as SSE frames, ending with a `done` frame
+    carrying its result or an `error` frame. `stop` is set when the client goes away."""
+    events: queue.Queue = queue.Queue()
+    stop = threading.Event()
+
+    def work() -> None:
+        try:
+            events.put({"type": "done", **task(events.put, stop)})
+        except Exception as e:  # noqa: BLE001 - the UI shows the message
+            events.put({"type": "error", "message": str(e)})
+        events.put(None)
+
+    def stream():
+        threading.Thread(target=work, daemon=True).start()
+        try:
+            while (event := events.get()) is not None:
+                yield _sse(event)
+        finally:
+            stop.set()
+
+    return Response(stream(), mimetype="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"})
+
+
+@app.get("/api/projects/<slug>/missing_chapters")
+def api_missing_chapters(slug):
+    """How many of the project's chapters are not yet stored in its project folder."""
+    if not projects.exists(slug):
+        return jsonify(error=f"No such project: {slug}"), 404
+    return jsonify(count=len(bulk_download.missing_chapters(slug)), total=len(projects.load(slug)["chapters"]))
+
+
+@app.get("/api/projects/<slug>/download_stream")
+def api_bulk_download(slug):
+    """Download the next `count` chapters not yet stored in the project folder. Frames: log, progress
+    {chapter, position, total}; done {requested, failed:[{chapter, error}]}."""
     if not projects.exists(slug):
         return jsonify(error=f"No such project: {slug}"), 404
     project = projects.load(slug)
-    for ch in project["chapters"]:
-        try:
-            projects.derive_status(slug, ch["n"])
-        except Exception:  # noqa: BLE001 - a derive glitch must not break the page
-            pass
-    project = projects.load(slug)
+    if not project["site"]:
+        return jsonify(error="This project has no remembered source to download from."), 400
+    try:
+        count = int(request.args.get("count", ""))
+    except ValueError:
+        return jsonify(error="count must be a number of chapters."), 400
+
+    def task(emit, stop):
+        def log(line):
+            emit({"type": "log", "line": line})
+
+        def download_one(n: int) -> None:
+            with config.chapter_scope(projects.chapter_work_dir(slug, n), projects.chapter_output_dir(slug, n)):
+                _download_chapter(project["url"], str(n), f"{slug}_ch{n}", slug, str(n), log)
+
+        def progress(chapter: int, position: int, total: int) -> None:
+            emit({"type": "progress", "chapter": chapter, "position": position, "total": total})
+
+        return bulk_download.run(slug, max(count, 0), download_one, progress, stop.is_set)
+
+    return _stream_task(task)
+
+
+@app.get("/api/app_settings")
+def api_get_app_settings():
+    folder = app_settings.projects_folder()
+    return jsonify(projects_folder=str(folder) if folder else "")
+
+
+@app.post("/api/app_settings")
+def api_set_app_settings():
+    folder = (request.get_json(silent=True) or {}).get("projects_folder")
+    try:
+        saved = app_settings.set_projects_folder(folder or "")
+    except OSError as e:
+        return jsonify(error=f"Couldn't use that folder: {e}"), 400
+    return jsonify(projects_folder=str(saved) if saved else "")
+
+
+@app.get("/api/projects/<slug>")
+def api_get_project(slug):
+    """The project with every chapter's stored fields and status. The per-chapter detail (tone,
+    narration estimate, video length, steps, thumbnail) is costly to gather from disk, so it is added
+    only to the first `limit` chapters - the page of the chapter list being shown."""
+    if not projects.exists(slug):
+        return jsonify(error=f"No such project: {slug}"), 404
+    project = projects.derive_all(slug)
+    limit = request.args.get("limit", type=int)
+    project["detail_limit"] = limit if limit is not None else len(project["chapters"])
     chars_per_sec = _speech_rate(slug) or claude_engine.DEFAULT_CHARS_PER_SEC
-    for ch in project["chapters"]:
+    for ch in project["chapters"][:project["detail_limit"]]:
         ch["effective_tone"] = projects.chapter_tone(project, ch["n"])
         ch["narration"] = _narration_estimate(slug, ch["n"], chars_per_sec)
         video = projects.chapter_video_path(slug, ch["n"])
         ch["duration"] = branding.duration_of(video) if video.is_file() else None
         ch["steps"] = _chapter_steps(slug, ch["n"])
         ch["has_thumb"] = _thumb_source(slug, ch["n"]) is not None
-    chapter_totals = [(claude_engine.read_usage(projects.chapter_work_dir(slug, ch["n"]) / "claude" / "state.json")
+    chapter_totals = [(claude_engine.read_usage(projects.chapter_dir(slug, ch["n"]) / "work" / "claude" / "state.json")
                        or {}).get("total") for ch in project["chapters"]]
     project["claude_usage"] = claude_cli.sum_usage([t for t in chapter_totals if t])
     return jsonify(project=project)
@@ -2804,9 +2932,20 @@ def api_import_project():
 
 @app.delete("/api/projects/<slug>")
 def api_delete_project(slug):
+    """Body: JSON {confirm} - must be the project's exact name. Removes the project's files from every
+    location (see projects.delete)."""
     if not projects.exists(slug):
         return jsonify(error=f"No such project: {slug}"), 404
-    projects.delete(slug)
+    if (request.get_json(silent=True) or {}).get("confirm") != projects.load(slug)["name"]:
+        return jsonify(error="Type the project's exact name to confirm."), 400
+    running = _BATCHES.get(slug)
+    if (running and running.active()) or any(j.slug == slug and j.status in ("queued", "running") for j in _JOBS.values()):
+        return jsonify(error="This project is busy - cancel its pipeline and jobs first."), 409
+    try:
+        projects.delete(slug)
+    except OSError as e:
+        return jsonify(error=str(e)), 500
+    _BATCHES.pop(slug, None)
     return jsonify(ok=True)
 
 
@@ -3031,7 +3170,7 @@ def api_get_asset(slug, kind):
 def _placeholder_frame(slug: str) -> Path:
     """Any already-exported frame for this project to preview settings over,
     else a simple generated character silhouette, cached on first use."""
-    chapters_dir = projects.project_dir(slug) / "chapters"
+    chapters_dir = projects.local_dir(slug) / "chapters"
     if chapters_dir.is_dir():
         for frame in sorted(chapters_dir.glob("*/work/frames/frame_*.png")):
             return frame
@@ -3476,7 +3615,7 @@ def _chapter_steps(slug: str, n: int) -> dict:
     """The chapter's pipeline steps as the disk has them: `done` (a rendered video counts as having
     every step, older chapters never produced some intermediates), `stale` (done, but an earlier
     step was written after it), and `next`, the first step that is missing or stale."""
-    with config.chapter_scope(projects.chapter_work_dir(slug, n), projects.chapter_output_dir(slug, n)):
+    with config.chapter_scope(projects.chapter_work_path(slug, n), projects.chapter_output_path(slug, n)):
         times = _stage_times(f"{slug}_ch{n}")
     rendered = times["video"] is not None
     done = [s for s in batch.LANE_STAGES if rendered or times[s] is not None]
@@ -3502,7 +3641,7 @@ def _stages_on_disk(chapter_id: str) -> list[str]:
 def _thumb_source(slug: str, n: int) -> tuple[Path, bool] | None:
     """The file the chapter's thumbnail comes from (its first exported frame, else its rendered
     video) and whether that file is a frame."""
-    frames = sorted((projects.chapter_work_dir(slug, n) / "frames").glob("frame_*.png"))
+    frames = sorted((projects.chapter_work_path(slug, n) / "frames").glob("frame_*.png"))
     source = frames[0] if frames else projects.chapter_video_path(slug, n)
     return (source, bool(frames)) if source.is_file() else None
 
@@ -3591,12 +3730,12 @@ def _batch_env(slug: str) -> batch.BatchEnv:
         auto_wait=lambda: batch_settings()["auto_wait_five_hour"],
         cancel_job=_cancel_job,
         notify=lambda title, message: notify.toast(title, message) if batch_settings()["notifications"] else None,
-        claude_total=lambda n: (claude_engine.read_usage(projects.chapter_work_dir(slug, n) / "claude" / "state.json")
+        claude_total=lambda n: (claude_engine.read_usage(projects.chapter_work_path(slug, n) / "claude" / "state.json")
                                 or {}).get("total"))
 
 
 def _batch_path(slug: str) -> Path:
-    return projects.project_dir(slug) / "batch.json"
+    return projects.local_dir(slug) / "batch.json"
 
 
 def _resume_batches() -> None:

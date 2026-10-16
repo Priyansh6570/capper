@@ -31,9 +31,10 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Optional
 
+import app_settings
 import claude_cli
 import tones
-from config import PROJECTS_DIR
+from config import OUTPUT_DIR, PROJECTS_DIR, WORK_DIR
 from stages import tts_kokoro
 from stages.s7_assemble import DEFAULT_QUALITY, QUALITY
 from atomic_io import atomic_write_text, read_json_with_backup_fallback
@@ -54,11 +55,17 @@ def slugify(name: str) -> str:
     return s or "project"
 
 
+def _roots() -> list[Path]:
+    """Folders that hold projects: the app's own projects/ and, if set, the shared projects folder."""
+    shared = app_settings.projects_folder()
+    return [PROJECTS_DIR] + ([shared] if shared and shared != PROJECTS_DIR else [])
+
+
 def unique_slug(name: str) -> str:
     base = slugify(name)
     slug = base
     i = 2
-    while (PROJECTS_DIR / slug).exists():
+    while any((root / slug).exists() for root in _roots()):
         slug = f"{base}-{i}"
         i += 1
     return slug
@@ -68,6 +75,16 @@ def unique_slug(name: str) -> str:
 # paths
 # --------------------------------------------------------------------------- #
 def project_dir(slug: str) -> Path:
+    """The project's folder: project.json, settings assets and the downloaded chapters. New projects
+    go to the shared projects folder when one is set."""
+    for root in _roots():
+        if (root / slug / "project.json").is_file():
+            return root / slug
+    return (app_settings.projects_folder() or PROJECTS_DIR) / slug
+
+
+def local_dir(slug: str) -> Path:
+    """The project's folder on this PC's own disk, for working files that must not sync."""
     return PROJECTS_DIR / slug
 
 
@@ -86,33 +103,65 @@ def assets_dir(slug: str) -> Path:
 
 
 def chapter_dir(slug: str, n) -> Path:
+    return local_dir(slug) / "chapters" / str(n)
+
+
+def stored_chapter_dir(slug: str, n) -> Path:
     return project_dir(slug) / "chapters" / str(n)
 
 
+def stored_pdf(slug: str, n) -> Optional[Path]:
+    """The chapter's downloaded PDF in the project folder, if it was stored there."""
+    return next(iter(sorted(stored_chapter_dir(slug, n).glob("*.pdf"))), None)
+
+
+def store_pdf(slug: str, n, pdf: Path) -> Path:
+    """Put a finished download into the project folder. It is renamed into place only once fully
+    copied, so a syncing folder never picks up a half-written chapter."""
+    folder = stored_chapter_dir(slug, n)
+    folder.mkdir(parents=True, exist_ok=True)
+    final = folder / pdf.name
+    partial = final.with_name(final.name + ".part")
+    shutil.copy2(pdf, partial)
+    os.replace(partial, final)
+    return final
+
+
+def chapter_work_path(slug: str, n) -> Path:
+    """Where the chapter's working files live. Creates nothing, so reading a chapter that has not been
+    worked on leaves no folder behind."""
+    return chapter_dir(slug, n) / "work"
+
+
+def chapter_output_path(slug: str, n) -> Path:
+    return chapter_dir(slug, n) / "output"
+
+
 def chapter_work_dir(slug: str, n) -> Path:
-    d = chapter_dir(slug, n) / "work"
+    """chapter_work_path, created: for code that is about to write into it."""
+    d = chapter_work_path(slug, n)
     d.mkdir(parents=True, exist_ok=True)
     return d
 
 
 def chapter_output_dir(slug: str, n) -> Path:
-    d = chapter_dir(slug, n) / "output"
+    d = chapter_output_path(slug, n)
     d.mkdir(parents=True, exist_ok=True)
     return d
 
 
 def chapter_video_path(slug: str, n) -> Path:
-    return chapter_output_dir(slug, n) / "recap.mp4"
+    return chapter_output_path(slug, n) / "recap.mp4"
 
 
 def merged_dir(slug: str) -> Path:
-    d = project_dir(slug) / "merged"
+    d = local_dir(slug) / "merged"
     d.mkdir(parents=True, exist_ok=True)
     return d
 
 
 def branding_cache_dir(slug: str) -> Path:
-    d = project_dir(slug) / "cache" / "branding"
+    d = local_dir(slug) / "cache" / "branding"
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -190,6 +239,7 @@ def new_project(name: str, url: str, slug: Optional[str] = None) -> dict:
     return {
         "schema": SCHEMA_VERSION, "slug": slug, "name": name.strip() or slug,
         "url": (url or "").strip(), "series_title": None, "source": "manual",
+        "site": None,
         "created_at": now, "updated_at": now,
         "chapters": [], "settings": default_settings(),
     }
@@ -208,6 +258,7 @@ def load(slug: str) -> dict:
     data = read_json_with_backup_fallback(project_json_path(slug))
     data.setdefault("schema", SCHEMA_VERSION)
     data.setdefault("chapters", [])
+    data.setdefault("site", None)
     data.setdefault("settings", default_settings())
     settings = default_settings()
     _deep_merge(settings, data["settings"])
@@ -248,18 +299,26 @@ def create(name: str, url: str) -> dict:
 
 
 def delete(slug: str) -> None:
-    d = project_dir(slug)
-    d.resolve().relative_to(PROJECTS_DIR.resolve())  # refuse anything outside PROJECTS_DIR
-    shutil.rmtree(d, ignore_errors=True)
+    """Remove everything of the project: its folder in every projects folder (the shared one included)
+    and any chapter folders a run left in the app's legacy work/ and output/ trees. Raises OSError,
+    listing what is left, if something could not be removed."""
+    folders = [root / slug for root in _roots()]
+    folders += [d for tree in (WORK_DIR, OUTPUT_DIR) if tree.is_dir() for d in tree.glob(f"{slug}_ch*")]
+    leftovers = []
+    for folder in folders:
+        shutil.rmtree(folder, onexc=lambda _func, path, _exc: leftovers.append(path))
+    if leftovers:
+        raise OSError("Couldn't delete: " + ", ".join(sorted(set(leftovers))[:5]))
 
 
 def list_projects() -> list[dict]:
     out = []
-    if not PROJECTS_DIR.is_dir():
-        return out
-    for d in sorted(PROJECTS_DIR.iterdir()):
-        if not (d / "project.json").is_file():
+    seen = set()
+    folders = sorted(d for root in _roots() if root.is_dir() for d in root.iterdir())
+    for d in folders:
+        if d.name in seen or not (d / "project.json").is_file():
             continue
+        seen.add(d.name)
         try:
             p = load(d.name)
         except Exception:  # noqa: BLE001 - a corrupt project.json must not sink the list
@@ -347,32 +406,45 @@ def set_chapter_tone(slug: str, n, tone: Optional[str]) -> dict:
     return ch
 
 
+def _apply_derived_status(slug: str, ch: dict) -> bool:
+    """Set `ch`'s status from what's on disk (pdf -> downloaded, mapping.json -> boxed, recap.mp4 ->
+    rendered), keeping the stored status when it ranks higher. A manually-set "complete" is kept only
+    while its recap.mp4 still exists. Returns whether the chapter changed."""
+    work = chapter_dir(slug, ch["n"]) / "work"
+    derived = "not_started"
+    if (work / "download").is_dir() and any((work / "download").glob("*.pdf")):
+        derived = "downloaded"
+    if (work / "framer" / "mapping.json").is_file():
+        derived = "boxed"
+    if (chapter_dir(slug, ch["n"]) / "output" / "recap.mp4").is_file():
+        derived = "rendered"
+    video_gone = ch["status"] in ("rendered", "complete") and derived != "rendered"
+    if STATUS_RANK[derived] > STATUS_RANK.get(ch["status"], 0) or video_gone:
+        ch["status"] = derived
+        ch["updated_at"] = _now_iso()
+        return True
+    return False
+
+
 def derive_status(slug: str, n) -> dict:
-    """Re-derive a chapter's status from what's actually on disk (pdf ->
-    downloaded, mapping.json -> boxed, recap.mp4 -> rendered) and merge it with
-    the stored status by rank, so an interrupted write never lies. A manually-set
-    "complete" is kept only while its recap.mp4 still exists: once the video is
-    gone the chapter falls back to what the disk supports."""
+    """Re-derive one chapter's status from disk and store it (see _apply_derived_status)."""
     with _LOCK:
         project = load(slug)
         ch = get_chapter(project, n)
         if ch is None:
             raise KeyError(f"no chapter {n} in project {slug}")
-        work = chapter_work_dir(slug, n)
-        out = chapter_output_dir(slug, n)
-        derived = "not_started"
-        if any((work / "download").glob("*.pdf")) if (work / "download").is_dir() else False:
-            derived = "downloaded"
-        if (work / "framer" / "mapping.json").is_file():
-            derived = "boxed"
-        if (out / "recap.mp4").is_file():
-            derived = "rendered"
-        video_gone = ch["status"] in ("rendered", "complete") and derived != "rendered"
-        if STATUS_RANK[derived] > STATUS_RANK.get(ch["status"], 0) or video_gone:
-            ch["status"] = derived
-            ch["updated_at"] = _now_iso()
+        if _apply_derived_status(slug, ch):
             save(project)
         return ch
+
+
+def derive_all(slug: str) -> dict:
+    """derive_status for every chapter with one load and at most one save. Returns the project."""
+    with _LOCK:
+        project = load(slug)
+        if any([_apply_derived_status(slug, ch) for ch in project["chapters"]]):
+            save(project)
+        return project
 
 
 # --------------------------------------------------------------------------- #
