@@ -328,7 +328,7 @@
              text-decoration:none; font-size:12px; font-weight:700; }
   .btnlink:hover { background:var(--btn-hover); color:var(--txt); text-decoration:none; }
 
-  /* gemini parts result (Download panel) */
+  /* file and status rows (media library, dependency list) */
   .gplist { display:flex; flex-direction:column; gap:5px; }
   .gprow { display:flex; align-items:center; gap:8px; font:11px ui-monospace,Consolas,monospace;
            color:var(--txt); background:var(--input2); border:1px solid var(--line);

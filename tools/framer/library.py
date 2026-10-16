@@ -53,8 +53,7 @@ def _frames(chapter: Path) -> list[Path]:
 
 def _pdfs(chapter: Path) -> list[Path]:
     work = chapter / "work"
-    downloads = sorted(p for p in (work / "download").rglob("*.pdf")) if (work / "download").is_dir() else []
-    return downloads + _files(work / "gemini_parts", "*.pdf")
+    return sorted((work / "download").rglob("*.pdf")) if (work / "download").is_dir() else []
 
 
 KINDS: dict[str, Kind] = {k.key: k for k in (
@@ -76,9 +75,8 @@ KINDS: dict[str, Kind] = {k.key: k for k in (
          "Re-stitch from the PDF in the editor (Chapter source). Frames cannot be "
          "re-exported until the strip exists again.",
          _strips),
-    Kind("pdfs", "Downloaded PDF + Gemini parts",
-         "Re-download the chapter in the editor. Re-stitching the strip needs the PDF, "
-         "and the Gemini parts are split from it again.",
+    Kind("pdfs", "Downloaded PDF",
+         "Re-download the chapter in the editor. Re-stitching the strip needs the PDF.",
          _pdfs),
 )}
 
@@ -124,7 +122,6 @@ def overview(slug: str, merged_bytes: int) -> dict:
         for key, info in summary["kinds"].items():
             by_kind[key] += info["bytes"]
         chapters.append({"n": ch["n"], "title": ch["title"], "status": ch["status"], **summary})
-    chapter_bytes = sum(c["bytes"] for c in chapters)
     total = _tree_size(projects.project_dir(slug))
     return {
         "kinds": [{"key": k.key, "label": k.label, "regenerate": k.regenerate} for k in KINDS.values()],

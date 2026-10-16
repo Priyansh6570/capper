@@ -1,11 +1,8 @@
-"""A chapter's files on disk: the stitched strip and its preview tiles, the downloaded PDF and the
-Gemini-ready parts split from it."""
+"""A chapter's files on disk: the stitched strip and its preview tiles, and the downloaded PDF."""
 from __future__ import annotations
 
-import io
 import json
 import math
-import re
 import shutil
 from pathlib import Path
 
@@ -31,25 +28,6 @@ TILE_PREVIEW_H = 4000     # height of each preview tile in px (browser-safe)
 
 
 THUMB_MAX = 220           # max px for a line's crop thumbnail
-
-
-# Gemini-part prep: a downloaded chapter PDF is ALWAYS split into <=PART_PAGES-page
-# parts (Google AI Studio / Gemini caps pages per uploaded PDF well above this, but
-# smaller parts upload faster and keep each request well inside size limits too).
-# Consecutive parts OVERLAP by a few pages so Gemini has continuity across the seam
-# when reading two parts back-to-back. Each part's pages are downscaled to
-# GEMINI_MAX_DIM px (longest side) and re-encoded as JPEG at GEMINI_JPEG_QUALITY
-# inside the PDF, trading a little sharpness for a much smaller upload.
-PART_PAGES = 100            # max pages per Gemini part
-
-
-PART_OVERLAP = 5            # pages repeated at the start of each part after the first
-
-
-GEMINI_MAX_DIM = 1600       # downscale target, px (longest side)
-
-
-GEMINI_JPEG_QUALITY = 75    # JPEG quality for the re-encoded page images
 
 
 def _framer_dir(chapter_id: str) -> Path:
@@ -154,127 +132,6 @@ def pdf_page_count(pdf_path: Path) -> int:
     doc = fitz.open(str(pdf_path))
     try:
         return doc.page_count
-    finally:
-        doc.close()
-
-
-def gemini_parts_dir(chapter_id: str) -> Path:
-    d = chapter_work_dir(chapter_id) / "gemini_parts"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
-
-
-def existing_gemini_parts(chapter_id: str) -> list[dict]:
-    """Parts already on disk for `chapter_id`, in the same shape
-    /gemini_parts_stream's `done` event uses (see build_gemini_parts_stream)."""
-    parts = []
-    for p in sorted(gemini_parts_dir(chapter_id).glob("*.pdf")):
-        m = re.search(r"_p(\d+)-(\d+)\.pdf$", p.name)
-        a, b = (int(m.group(1)), int(m.group(2))) if m else (0, 0)
-        parts.append({"path": str(p), "name": p.name, "pages": max(0, b - a + 1),
-                      "from": a, "to": b, "size_bytes": p.stat().st_size})
-    return parts
-
-
-def _fmt_size(n: int) -> str:
-    """Human-readable file size (e.g. 3.4MB)."""
-    size = float(n)
-    for unit in ("B", "KB", "MB", "GB"):
-        if size < 1024 or unit == "GB":
-            return f"{size:.0f}{unit}" if unit == "B" else f"{size:.1f}{unit}"
-        size /= 1024
-    return f"{size:.1f}GB"  # pragma: no cover - unreachable, satisfies linters
-
-
-def _gemini_part_ranges(total: int, part_pages: int, overlap: int) -> list[tuple[int, int]]:
-    """0-based [start, end) page ranges covering `total` pages, each <=`part_pages`
-    long, where every part after the first repeats `overlap` pages from the tail of
-    the previous one (for cross-seam continuity). A chapter within `part_pages`
-    yields a single, non-overlapping part."""
-    part_pages = max(1, part_pages)
-    overlap = max(0, min(overlap, part_pages - 1))
-    step = part_pages - overlap
-    ranges: list[tuple[int, int]] = []
-    start = 0
-    while True:
-        end = min(start + part_pages, total)
-        ranges.append((start, end))
-        if end >= total:
-            break
-        start += step
-    return ranges
-
-
-def _compress_page_jpeg(fitz_mod, page, max_dim: int, quality: int) -> tuple[int, int, bytes]:
-    """Render one PDF page, downscale so its longest side is <=`max_dim`, and
-    re-encode as JPEG at `quality`. Returns (width, height, jpeg_bytes)."""
-    rect = page.rect
-    longest = max(rect.width, rect.height) or 1.0
-    zoom = max(0.05, max_dim / longest)
-    pix = page.get_pixmap(matrix=fitz_mod.Matrix(zoom, zoom), alpha=False)
-    img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
-    if max(img.width, img.height) > max_dim:
-        scale = max_dim / max(img.width, img.height)
-        img = img.resize((max(1, round(img.width * scale)), max(1, round(img.height * scale))),
-                          Image.LANCZOS)
-    buf = io.BytesIO()
-    img.save(buf, format="JPEG", quality=quality, optimize=True)
-    return img.width, img.height, buf.getvalue()
-
-
-def build_gemini_parts_stream(pdf_path: Path, chapter_id: str,
-                                part_pages: int = PART_PAGES,
-                                overlap: int = PART_OVERLAP,
-                                max_dim: int = GEMINI_MAX_DIM,
-                                quality: int = GEMINI_JPEG_QUALITY):
-    """Generator: split `pdf_path` into <=`part_pages`-page parts (consecutive parts
-    OVERLAP by `overlap` pages), downscaling + JPEG-recompressing every page so each
-    part stays small but legible. ALWAYS runs, even for a chapter within
-    `part_pages` (it still becomes one compressed part). Parts land in
-    work/<chapter>/gemini_parts/, cleared first so re-downloading is idempotent.
-
-    Yields progress dicts as it works; the LAST item is always
-    {"type": "result", "parts": [...], "dir": str} with each part
-    {path, name, pages, from, to, size_bytes} (1-based inclusive page numbers).
-    This is the ONLY thing that reads/writes gemini_parts/ - it never touches the
-    full-res PDF or the stitched strip used by Stitch/Framer.
-    """
-    import fitz
-
-    doc = fitz.open(str(pdf_path))
-    try:
-        total = doc.page_count
-        ranges = _gemini_part_ranges(total, part_pages, overlap)
-        out_dir = gemini_parts_dir(chapter_id)
-        for old in out_dir.glob("*.pdf"):
-            old.unlink()
-
-        width = len(str(len(ranges)))
-        parts: list[dict] = []
-        for idx, (a, b) in enumerate(ranges):
-            part_no = idx + 1
-            yield {"type": "log",
-                   "line": f"Part {part_no}/{len(ranges)}: pages {a + 1}-{b} "
-                           f"({b - a}p) - downscaling to {max_dim}px + JPEG "
-                           f"q{quality}…"}
-            out_pdf = fitz.open()
-            for i, pno in enumerate(range(a, b)):
-                w, h, jpeg_bytes = _compress_page_jpeg(fitz, doc.load_page(pno), max_dim, quality)
-                out_page = out_pdf.new_page(width=w, height=h)
-                out_page.insert_image(out_page.rect, stream=jpeg_bytes)
-                if (i + 1) % 20 == 0 or (i + 1) == (b - a):
-                    yield {"type": "progress", "part": part_no, "of_parts": len(ranges),
-                           "page": i + 1, "of_pages": b - a}
-            name = f"{pdf_path.stem}_part{part_no:0{width}d}_p{a + 1}-{b}.pdf"
-            out_path = out_dir / name
-            out_pdf.save(str(out_path), garbage=4, deflate=True)
-            out_pdf.close()
-            size_bytes = out_path.stat().st_size
-            parts.append({"path": str(out_path), "name": name, "pages": b - a,
-                          "from": a + 1, "to": b, "size_bytes": size_bytes})
-            yield {"type": "log",
-                   "line": f"  -> {name}  ({b - a}p, {_fmt_size(size_bytes)})"}
-        yield {"type": "result", "parts": parts, "dir": str(out_dir)}
     finally:
         doc.close()
 

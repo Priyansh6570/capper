@@ -17,10 +17,7 @@ def now_iso() -> str:
 
 def sse(obj: dict) -> str:
     """Format one Server-Sent Events 'message' frame. Shared by every SSE route
-    (/gemini_parts_stream, /api/projects/<slug>/merge_stream) - the old
-    /generate_stream route also used to use this before it moved to a polled
-    job queue (see the JOBS note below), but the other two routes never
-    stopped needing it."""
+    (e.g. /api/projects/<slug>/merge_stream)."""
     return "data: " + json.dumps(obj, ensure_ascii=False) + "\n\n"
 
 
@@ -31,7 +28,7 @@ def sse(obj: dict) -> str:
 # by reading `project` + `ch_no` (query args, JSON body, or form field - never
 # collides with the pre-existing `chapter`/`chapter_id` label param).
 #
-# NOTE on /gemini_parts_stream (SSE) and the render job worker thread
+# NOTE on the SSE streams and the render job worker thread
 # (_run_job, near /api/generate): Flask tears the request context down
 # before a streamed generator's body actually runs, and the job worker isn't
 # in a request context AT ALL (it's a persistent background thread, so a job

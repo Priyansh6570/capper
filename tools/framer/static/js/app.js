@@ -178,11 +178,8 @@ function openSiteHome(site) {
   window.open(SITE_HOME_URLS[site], '_blank', 'noopener');
 }
 
-// download a chapter -> PDF (auto-detecting webtoons.com vs kingofshojo.com
-// from the URL), then ALWAYS split+compress it into Gemini-ready parts
-// (streamed over SSE so a long chapter shows progress). The full-res PDF
-// still feeds the existing "Stitch PDF" flow unchanged: we drop its path
-// into the PDF-path field and the chapter id into its field.
+// download a chapter -> PDF (auto-detecting the site from the URL). The PDF feeds the
+// "Stitch PDF" flow: we drop its path into the PDF-path field and the chapter id into its field.
 // ---------------------------------------------------------------------------
 async function doDownload() {
   const url = $('dlUrl').value.trim();
@@ -208,10 +205,9 @@ async function doDownload() {
     S.source_pdf = d.pdf || null;
 
     setStatus((d.steps || []).join('\n'));
-    showToast('Downloaded ' + d.page_count + ' pages. Preparing Gemini parts…', null, null, 'ok');
-    $('stripInfo').textContent = `Downloaded ${d.page_count}p. Preparing Gemini parts…`;
-    hideOverlay();               // the download itself is done; parts stream on its own
-    startGeminiParts(d.chapter_id, d.pdf, d.page_count);
+    showToast('Downloaded ' + d.page_count + ' pages.', null, null, 'ok');
+    $('stripInfo').textContent = `Downloaded ${d.page_count}p. Click Stitch PDF.`;
+    hideOverlay();
   } catch (e) {
     setStatus('Download error: ' + e.message, true);
     hideOverlay();
@@ -220,67 +216,6 @@ async function doDownload() {
     clearGlobalProg();
     refreshChapterSourceStatus();   // re-derive from disk - disables Download if it now exists
   }
-}
-
-// ---------------------------------------------------------------------------
-// split + compress the downloaded PDF into Gemini-ready parts (SSE progress) -
-// always runs (even a short chapter becomes one compressed part). Parts land in
-// work/<chapter>/gemini_parts/; the result panel lists them with sizes and a
-// copyable folder path / "open folder" button.
-// ---------------------------------------------------------------------------
-let gpES = null;
-
-function startGeminiParts(chapterId, pdfPath, pageCount) {
-  if (gpES) { gpES.close(); gpES = null; }
-  $('gpRow').removeAttribute('hidden');
-  $('gpStatus').textContent = 'Preparing Gemini parts…';
-  $('gpResult').innerHTML = '';
-  setGlobalProg(0.02, 'Preparing Gemini parts');
-
-  const url = `/gemini_parts_stream?pdf_path=${encodeURIComponent(pdfPath)}` +
-              `&chapter_id=${encodeURIComponent(chapterId)}${scopeQS()}`;
-  gpES = new EventSource(url);
-  gpES.onmessage = e => { try { handleGeminiPartsEvent(JSON.parse(e.data), chapterId, pageCount); } catch (_) {} };
-  gpES.onerror = () => {
-    if (!gpES) return;           // already closed on a clean done/error
-    $('gpStatus').textContent = 'Gemini-parts stream disconnected.';
-    setStatus('Gemini-parts stream disconnected.', true);
-    finishGeminiParts();
-  };
-}
-
-function handleGeminiPartsEvent(ev, chapterId, pageCount) {
-  if (ev.type === 'start') {
-    $('gpStatus').textContent = ev.message || 'Preparing Gemini parts…';
-    setStatus(ev.message || 'Preparing Gemini parts…');
-  } else if (ev.type === 'log') {
-    $('gpStatus').textContent = ev.line || '';
-    setStatus(ev.line || '');
-  } else if (ev.type === 'progress') {
-    const frac = ev.of_parts ? (ev.part - 1 + ev.page / ev.of_pages) / ev.of_parts : null;
-    setGlobalProg(frac == null ? null : Math.max(0.02, Math.min(0.98, frac)), 'Preparing Gemini parts');
-    $('gpStatus').textContent =
-      `Part ${ev.part}/${ev.of_parts}: page ${ev.page}/${ev.of_pages}…`;
-  } else if (ev.type === 'done') {
-    setGlobalProg(1, 'Preparing Gemini parts');
-    showGeminiPartsResult(ev.dir, ev.parts || []);
-    $('gpStatus').textContent = `${ev.parts.length} Gemini part(s) ready in ${ev.dir}`;
-    showToast(`${ev.parts.length} Gemini part(s) ready.`, null, null, 'ok');
-    $('stripInfo').textContent = `Downloaded ${pageCount}p → ${ev.parts.length} Gemini ` +
-      `part(s). Click Stitch PDF.`;
-    setStatus(`✔ ${ev.parts.length} Gemini part(s) ready in ${ev.dir}. ` +
-              `Click "Stitch PDF" to load this chapter for framing.`);
-    finishGeminiParts();
-  } else if (ev.type === 'error') {
-    $('gpStatus').textContent = ev.message || 'Gemini-parts prep failed.';
-    setStatus(ev.message || 'Gemini-parts prep failed.', true);
-    finishGeminiParts();
-  }
-}
-
-function finishGeminiParts() {
-  if (gpES) { gpES.close(); gpES = null; }
-  clearGlobalProg();
 }
 
 // ---------------------------------------------------------------------------
@@ -455,29 +390,6 @@ function syncScriptJobUI() {
 async function cancelScriptJob(jobId) {
   await fetch(`/api/jobs/${encodeURIComponent(jobId)}/cancel`, { method: 'POST' });
   pollJobs();
-}
-
-function showGeminiPartsResult(dir, parts) {
-  const rows = parts.map(p =>
-    `<div class="gprow">
-       <span class="gpname">${p.name}</span>
-       <span class="gpmeta">p${p.from}-${p.to} (${p.pages}p) · ${fmtSize(p.size_bytes)}</span>
-       <button class="copybtn" type="button" data-path="${escAttr(p.path)}" title="Copy this part's path">${ic('copy',12)}</button>
-     </div>`).join('');
-  $('gpResult').innerHTML =
-    `<div class="jobcard">
-       <div class="jobhead">${ic('check',15)}<b>Gemini parts ready</b><span class="jobpath">${dir}</span></div>
-       <div class="gplist">${rows}</div>
-       <div class="jobacts">
-         <button class="btnlink" type="button" id="gpCopyDirBtn" data-path="${escAttr(dir)}">${ic('copy',14)}<span>Copy folder path</span></button>
-         <button class="btnlink" type="button" id="gpOpenDirBtn" data-path="${escAttr(dir)}">${ic('folder',14)}<span>Open folder</span></button>
-       </div>
-     </div>`;
-  $('gpResult').querySelectorAll('.copybtn, #gpCopyDirBtn').forEach(btn => {
-    btn.addEventListener('click', () => copyToClipboard(btn.dataset.path));
-  });
-  const openBtn = $('gpOpenDirBtn');
-  if (openBtn) openBtn.addEventListener('click', () => openFolder(openBtn.dataset.path));
 }
 
 function fmtSize(n) {
@@ -1509,12 +1421,6 @@ function applyChapterSourceStatus(d) {
     dlStatus.hidden = true;
   }
 
-  if (d.gemini_parts && d.gemini_parts.parts.length) {
-    $('gpRow').removeAttribute('hidden');
-    $('gpStatus').textContent = `${d.gemini_parts.parts.length} Gemini part(s) already prepared.`;
-    showGeminiPartsResult(d.gemini_parts.dir, d.gemini_parts.parts);
-  }
-
   if (d.video_url) showGenResult(d.video_url);
 
   const stitchBtn = $('loadPdfBtn'), stitchStatus = $('stitchStatus');
@@ -2049,7 +1955,7 @@ async function openProjectScreen(slug) {
 }
 
 // --- Pipeline queue (batch automation, see batch.py) ------------------------------
-const BATCH_STAGES = ['download', 'split', 'stitch', 'script', 'export', 'review', 'audio', 'video'];
+const BATCH_STAGES = ['download', 'stitch', 'script', 'export', 'review', 'audio', 'video'];
 const WINDOW_LABELS = { five_hour: '5-hour', seven_day: 'weekly' };
 let BATCH = null;   // the last /batch payload: {batch, usage, thresholds}
 
@@ -2830,7 +2736,7 @@ async function loadGpuStatus() {
 $('gpuRecheckBtn').onclick = loadGpuStatus;
 
 // --- Chapter list: a list view and a card view over one shared selection ---------------
-const PIPELINE_STEPS = ['download', 'split', 'stitch', 'script', 'export', 'audio', 'video'];
+const PIPELINE_STEPS = ['download', 'stitch', 'script', 'export', 'audio', 'video'];
 const STEP_STATE_LABEL = { done: 'done', current: 'running', stale: 'out of date', todo: 'not done' };
 const STATUS_LABELS = { boxed: 'needs render' };
 const SELECTION = new Set();     // chapter numbers ticked in either view
@@ -3800,7 +3706,6 @@ async function uploadAsset(kind, file) {
 
 // --- opening a chapter in the editor ------------------------------------------
 function resetEditorState() {
-  if (gpES) { try { gpES.close(); } catch (_) {} gpES = null; }
   // Render-job UI is reset SYNCHRONOUSLY here (not left stale from whatever
   // chapter was open before) and then re-synced from the server a moment
   // later in openChapterEditor() below (pollJobs()) - reset-then-verify, so
@@ -3822,7 +3727,6 @@ function resetEditorState() {
   $('scriptText').value = ''; $('txtPath').value = '';
   $('pdfPath').value = ''; $('dlUrl').value = ''; $('dlNo').value = '';
   $('genStatus').textContent = ''; clearGenResult();
-  $('gpResult').innerHTML = ''; $('gpRow').setAttribute('hidden', '');
   $('stripInfo').textContent = 'No strip loaded.';
   $('dlBtn').disabled = false; $('dlStatus').hidden = true; $('dlStatus').innerHTML = '';
   $('loadPdfBtn').disabled = false; $('stitchStatus').hidden = true; $('stitchStatus').innerHTML = '';

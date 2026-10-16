@@ -16,7 +16,7 @@ python tools/framer/app.py                  # prints http://127.0.0.1:5005/
 
 `app.py` builds the Flask app and serves it with waitress (`make_server`). The HTTP routes are blueprints in
 `routes/`, one module per feature (`projects`, `chapters`, `jobs`, `batch`, ...); the logic behind them is in
-`services/` (chapter files, the job queue, Gemini, batching, ...). Routes import services, never the other way round.
+`services/` (chapter files, the job queue, batching, ...). Routes import services, never the other way round.
 The page is `index.html` with its styles and script in `static/`.
 
 The chapter editor is a header + **left sidebar** (Chapter Source / Stitch
@@ -150,29 +150,14 @@ right before rendering, so a last-minute tweak still lands.
    `tools/framer/sites/`. Either way the result lands in the chapter's
    `download/` folder while a spinner shows. When the
    download finishes, the full-res PDF path is dropped into the Stitch-PDF field
-   automatically (untouched — this is what **Stitch PDF** / the framer always use),
-   and the tool **always** goes on to prepare Gemini-ready parts, live-streaming
-   progress in the panel below:
-   - the PDF is split into **≤100-page parts** (`PART_PAGES` in `services/chapter_files.py`), each
-     overlapping the previous part by **5 pages** (`PART_OVERLAP`) so Gemini keeps
-     continuity across the seam — e.g. `part1_p1-100`, `part2_p96-195`, …;
-   - every page in every part is **downscaled to ≤1600px** on its longest side
-     (`GEMINI_MAX_DIM`) and **re-encoded as JPEG at quality 75** (`GEMINI_JPEG_QUALITY`)
-     inside the part PDF, so text stays legible but the upload is much smaller;
-   - the compressed parts land in **`gemini_parts/`** under the chapter's folder
-     (cleared on each re-download). The result panel lists each part's page range and file
-     size, with **Copy folder path** / per-part copy buttons and an **Open folder**
-     button so you can hand them to Gemini.
-
-   The status panel lists each step (command/request log, page count,
-   per-part compress progress). webtoons.com downloads need the
+   automatically (untouched — this is what **Stitch PDF** / the framer always use).
+   The status panel lists each step (command/request log, page count). webtoons.com downloads need the
    `webtoon-downloader` CLI, installed by `setup.bat` along with everything
-   else in `requirements.txt`; kingofshojo.com needs nothing extra. We do NOT
-   touch Gemini; you upload the files.)
+   else in `requirements.txt`; the other sites need nothing extra.
 
    **Download and Stitch PDF both disable themselves once already done for a
    chapter** (see `/chapter_source_status` in `routes/editor_state.py`) - re-derived from
-   what's actually on disk (the PDF, the Gemini parts, the stitched strip)
+   what's actually on disk (the PDF, the stitched strip)
    every time you open a chapter, never from a saved-state blob that can go
    stale. Each shows a small **Re-download** / **Re-stitch** link to force it
    again.

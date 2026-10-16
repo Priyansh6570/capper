@@ -48,15 +48,15 @@ class PipelineStepDataTest(ApiTest):
 
     def test_a_downloaded_chapter_is_done_up_to_download(self):
         self.work_file(1, "download", "c.pdf")
-        self.assertEqual(self.steps(1), {"done": ["download"], "stale": [], "next": "split"})
+        self.assertEqual(self.steps(1), {"done": ["download"], "stale": [], "next": "stitch"})
 
     def test_a_step_older_than_an_earlier_one_is_stale(self):
-        self.work_file(2, "gemini_parts", "p.pdf", mtime=1_000)
+        self.work_file(2, "pages", "strip_001.png", mtime=1_000)
         self.work_file(2, "download", "c.pdf", mtime=2_000)
         steps = self.steps(2)
-        self.assertEqual(steps["done"], ["download", "split"])
-        self.assertEqual(steps["stale"], ["split"])
-        self.assertEqual(steps["next"], "split")
+        self.assertEqual(steps["done"], ["download", "stitch"])
+        self.assertEqual(steps["stale"], ["stitch"])
+        self.assertEqual(steps["next"], "stitch")
 
     def test_a_rendered_chapter_counts_every_step_as_done(self):
         touch(projects.chapter_dir(self.slug, 3) / "output" / "recap.mp4")

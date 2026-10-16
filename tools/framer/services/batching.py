@@ -18,7 +18,7 @@ import notify
 import projects
 from config import NO_CONSOLE, PROJECTS_DIR, chapter_output_dir, chapter_work_dir
 from manifest import Manifest
-from services.chapter_files import build_gemini_parts_stream, downloaded_pdf, stitch_chapter
+from services.chapter_files import downloaded_pdf, stitch_chapter
 from services.common import Refused
 from services.downloads import _download_chapter
 from services.editor_state import resolve_editor_state
@@ -75,7 +75,6 @@ def _stage_times(chapter_id: str) -> dict[str, float | None]:
     voiced = bool(beats) and all(beat.audio and Path(beat.audio).is_file() for beat in beats)
     return {
         "download": _newest((work / "download").rglob("*.pdf")),
-        "split": _newest((work / "gemini_parts").glob("*.pdf")),
         "stitch": _newest([work / "pages" / "strip_001.png"]),
         "script": _script_saved_at(work / "claude" / "state.json"),
         "export": _newest([work / "framer" / "mapping.json"]),
@@ -165,11 +164,6 @@ def batch_env(slug: str) -> batch.BatchEnv:
     def download(b: batch.Batch, n: int) -> None:
         _download_chapter(projects.load(slug)["url"], str(n), chapter_id(n), slug, str(n), lambda line: b.log(n, line))
 
-    def split(b: batch.Batch, n: int) -> None:
-        for event in build_gemini_parts_stream(_chapter_pdf(chapter_id(n)), chapter_id(n)):
-            if event["type"] == "log":
-                b.report(n, event["line"])
-
     def stitch(b: batch.Batch, n: int) -> None:
         stitch_chapter(_chapter_pdf(chapter_id(n)), chapter_id(n))
 
@@ -193,7 +187,7 @@ def batch_env(slug: str) -> batch.BatchEnv:
         projects.set_status(slug, str(n), "complete")
 
     return batch.BatchEnv(
-        runners={"download": download, "split": split, "stitch": stitch, "script": script,
+        runners={"download": download, "stitch": stitch, "script": script,
                  "export": export, "audio": render("voice"), "video": video},
         scope=lambda n: config.chapter_scope(projects.chapter_work_dir(slug, n), projects.chapter_output_dir(slug, n)),
         done_stages=lambda n: _stages_on_disk(chapter_id(n)),

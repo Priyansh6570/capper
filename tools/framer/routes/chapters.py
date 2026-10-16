@@ -1,4 +1,4 @@
-"""Routes for a chapter's source: download, split, stitch, tiles, crops, script loading and export."""
+"""Routes for a chapter's source: download, stitch, tiles, crops, script loading and export."""
 from __future__ import annotations
 
 import io
@@ -7,13 +7,10 @@ import re
 from pathlib import Path
 
 from PIL import Image
-from flask import Blueprint, Response, jsonify, request, send_file, send_from_directory
+from flask import Blueprint, jsonify, request, send_file, send_from_directory
 
-import config
-import projects
-from config import chapter_output_dir, chapter_work_dir
-from services.chapter_files import GEMINI_JPEG_QUALITY, GEMINI_MAX_DIM, PART_OVERLAP, PART_PAGES, THUMB_MAX, _framer_dir, _tiles_dir, build_gemini_parts_stream, ensure_dir, pdf_page_count, stitch_chapter
-from services.common import Refused, sanitize_chapter, scope_params, sse
+from services.chapter_files import THUMB_MAX, _framer_dir, _tiles_dir, ensure_dir, stitch_chapter
+from services.common import Refused, sanitize_chapter, scope_params
 from services.downloads import _download_chapter
 from services.frames import DEFAULT_BLUR_STYLE, blur_region, export_chapter
 from services.script_text import split_script_into_lines
@@ -23,12 +20,10 @@ bp = Blueprint("chapters", __name__)
 
 @bp.post("/download")
 def download():
-    """Download ONE chapter as a PDF. Gemini-part splitting/compression is a SEPARATE step
-    (see /gemini_parts_stream) so its progress can stream.
+    """Download ONE chapter as a PDF.
 
     Body: JSON {url, chapter_no?, chapter_id?}. Returns {chapter_id, pdf, page_count,
-    steps:[...]} - `pdf` is the full chapter PDF that feeds BOTH Stitch PDF (unchanged)
-    and Gemini-part prep."""
+    steps:[...]} - `pdf` is the full chapter PDF that feeds Stitch PDF."""
     data = request.get_json(silent=True) or {}
     try:
         return jsonify(_download_chapter((data.get("url") or "").strip().strip('"'),
@@ -36,68 +31,6 @@ def download():
                                          (data.get("chapter_id") or "").strip(), *scope_params()))
     except Refused as e:
         return jsonify(error=str(e)), e.status
-
-
-@bp.get("/gemini_parts_stream")
-def gemini_parts_stream():
-    """Split + compress a chapter PDF into Gemini-ready parts, streaming progress.
-
-    EventSource (GET) only, params in the query string:
-        ?pdf_path=...&chapter_id=...&project=<slug>&ch_no=<n>
-    `project`+`ch_no` scope the run to the project chapter's work dir (see the
-    note above scope_params - this generator re-enters the scope explicitly
-    since the request context is gone by the time it actually runs).
-    Always splits into <=PART_PAGES-page parts (PART_OVERLAP pages of overlap
-    between consecutive parts) and downscales/re-JPEGs every page (see
-    build_gemini_parts_stream). Emits {type:start|log|progress|done|error}; `done`
-    carries {parts:[{path,name,pages,from,to,size_bytes}], dir}."""
-    raw = (request.args.get("pdf_path") or "").strip().strip('"')
-    chapter_id = sanitize_chapter(request.args.get("chapter_id", ""))
-    pdf_path = Path(raw)
-    slug, ch_no = scope_params()
-    work_dir = projects.chapter_work_dir(slug, ch_no) if slug and ch_no else chapter_work_dir(chapter_id)
-    output_dir = projects.chapter_output_dir(slug, ch_no) if slug and ch_no else chapter_output_dir(chapter_id)
-
-    def stream():
-        # Outer catch-all: ANY exception escaping here (even one from
-        # entering config.chapter_scope, or a bug in code below that isn't
-        # one of the two anticipated failure points) would otherwise abort
-        # the HTTP response with no SSE payload at all - the browser's
-        # EventSource can't read a body off a dropped/never-started
-        # connection, so it just reports a generic "disconnected" and the
-        # REAL error (visible only in the server's own console/log) never
-        # reaches the user. Converting every failure into a proper
-        # {type:"error"} frame is what actually lets the UI show it.
-        try:
-            with config.chapter_scope(work_dir, output_dir):
-                if not raw or not pdf_path.is_file():
-                    yield sse({"type": "error", "message": f"PDF not found: {pdf_path}"})
-                    return
-                try:
-                    total = pdf_page_count(pdf_path)
-                except Exception as e:  # noqa: BLE001 - report, don't crash the stream
-                    yield sse({"type": "error", "message": f"{type(e).__name__}: {e}"})
-                    return
-
-                yield sse({"type": "start", "total_pages": total,
-                            "message": f"Preparing Gemini parts for {pdf_path.name} "
-                                       f"({total} pages) — ≤{PART_PAGES}p/part, "
-                                       f"{PART_OVERLAP}p overlap, max {GEMINI_MAX_DIM}px, "
-                                       f"JPEG q{GEMINI_JPEG_QUALITY}…"})
-                for item in build_gemini_parts_stream(pdf_path, chapter_id):
-                    if item["type"] == "result":
-                        yield sse({"type": "done", "ok": True,
-                                    "parts": item["parts"], "dir": item["dir"]})
-                    else:
-                        yield sse(item)
-        except GeneratorExit:
-            raise
-        except Exception as e:  # noqa: BLE001 - last-resort: still report, don't crash the stream
-            yield sse({"type": "error", "message": f"{type(e).__name__}: {e}"})
-
-    return Response(stream(), mimetype="text/event-stream",
-                    headers={"Cache-Control": "no-cache",
-                             "X-Accel-Buffering": "no"})
 
 
 @bp.post("/load_pdf")

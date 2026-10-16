@@ -31,14 +31,14 @@ from typing import Callable
 import claude_usage
 from atomic_io import atomic_write_json, read_json_with_backup_fallback
 
-LANE_STAGES = ("download", "split", "stitch", "script", "export", "audio", "video")
+LANE_STAGES = ("download", "stitch", "script", "export", "audio", "video")
 REVIEW = "review"
 ACTIVE_STATES = ("queued", "running", "waiting")
 LOG_LINES = 3000
 RESET_MARGIN_S = 60          # resume this long after a usage window's reset
 STALL_AFTER_S = 300          # a running step with no output for this long is flagged
 HISTORY_LEN = 8              # past durations kept per step for the finish-time estimate
-DEFAULT_STEP_SECONDS = {"download": 60, "split": 20, "stitch": 20, "script": 600, "export": 30,
+DEFAULT_STEP_SECONDS = {"download": 60, "stitch": 20, "script": 600, "export": 30,
                         "audio": 600, "video": 600}
 PROGRESS_LINE = re.compile(r"\d+%\||\bframe=\s*\d+|\d+/\d+ \[")   # tqdm / ffmpeg progress, shown as one updating line
 
@@ -86,6 +86,7 @@ class Batch:
         self._cond = threading.Condition()
         for chapter in self.chapters:
             chapter.setdefault("plan", list(LANE_STAGES))
+            _drop_retired_stages(chapter)
             if chapter["state"] == "running":
                 chapter["state"] = "queued"
         self._settle()
@@ -405,6 +406,16 @@ class Batch:
             return {"status": self.status, "created_at": self.created_at, "finished_at": self.finished_at,
                     "hold": self.hold, "ignore": dict(self.ignore), "chapters": chapters,
                     "finish_at": max(finish.values(), default=None)}
+
+
+def _drop_retired_stages(chapter: dict) -> None:
+    """A batch saved before a step was removed still names it: forget it, and if the chapter was
+    queued for it, queue the next step instead."""
+    known = (*LANE_STAGES, REVIEW)
+    chapter["plan"] = [s for s in chapter["plan"] if s in LANE_STAGES]
+    chapter["completed"] = [s for s in chapter["completed"] if s in known]
+    if chapter["stage"] is not None and chapter["stage"] not in known:
+        _advance(chapter, None, review=False)
 
 
 def _new_chapter(env: BatchEnv, n: int, plan: list[str]) -> dict:
