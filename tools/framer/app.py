@@ -2853,16 +2853,37 @@ def api_get_project(slug):
     project = projects.derive_all(slug)
     limit = request.args.get("limit", type=int)
     project["detail_limit"] = limit if limit is not None else len(project["chapters"])
+    _add_chapter_details(project, project["chapters"][:project["detail_limit"]])
+    project["claude_usage"] = totals.claude_usage(slug)
+    return jsonify(project=project)
+
+
+def _add_chapter_details(project: dict, chapters: list[dict]) -> None:
+    slug = project["slug"]
     chars_per_sec = totals.speech_rate(slug) or claude_engine.DEFAULT_CHARS_PER_SEC
-    for ch in project["chapters"][:project["detail_limit"]]:
+    for ch in chapters:
         ch["effective_tone"] = projects.chapter_tone(project, ch["n"])
         ch["narration"] = _narration_estimate(slug, ch["n"], chars_per_sec)
         video = projects.chapter_video_path(slug, ch["n"])
         ch["duration"] = branding.duration_of(video) if video.is_file() else None
         ch["steps"] = _chapter_steps(slug, ch["n"])
         ch["has_thumb"] = _thumb_source(slug, ch["n"]) is not None
-    project["claude_usage"] = totals.claude_usage(slug)
-    return jsonify(project=project)
+
+
+@app.get("/api/projects/<slug>/chapter_details")
+def api_chapter_details(slug):
+    """The detail api_get_project adds to a page of chapters, for the chapters in `numbers` (comma
+    separated), so a bulk action on chapters that are not on the page can still see their steps."""
+    if not projects.exists(slug):
+        return jsonify(error=f"No such project: {slug}"), 404
+    try:
+        wanted = {int(n) for n in request.args.get("numbers", "").split(",") if n}
+    except ValueError:
+        return jsonify(error="numbers must be chapter numbers."), 400
+    project = projects.derive_all(slug)
+    chapters = [ch for ch in project["chapters"] if ch["n"] in wanted]
+    _add_chapter_details(project, chapters)
+    return jsonify(chapters=chapters)
 
 
 @app.get("/api/projects/<slug>/chapters/<int:n>/thumb")

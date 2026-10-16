@@ -112,3 +112,32 @@ class DeleteProjectTest(ApiTest):
         self.assertEqual(self.delete(confirm="Api Series").status_code, 200)
         self.assertFalse(projects.exists(self.slug))
         self.assertFalse(projects.local_dir(self.slug).exists())
+
+
+class ChapterDetailsTest(ApiTest):
+    """Bulk actions can cover chapters beyond the loaded page, so their detail is fetched on demand."""
+
+    def details(self, numbers: str):
+        return self.client.get(f"/api/projects/{self.slug}/chapter_details", query_string={"numbers": numbers})
+
+    def test_returns_the_detail_of_the_requested_chapters_only(self):
+        self.work_file(9, "download", "c.pdf")
+        chapters = self.details("9,11").get_json()["chapters"]
+        self.assertEqual([c["n"] for c in chapters], [9, 11])
+        self.assertEqual(chapters[0]["steps"]["done"], ["download"])
+        self.assertEqual(chapters[0]["status"], "downloaded")
+        self.assertEqual(chapters[1]["steps"]["next"], "download")
+
+    def test_chapters_beyond_the_listed_page_are_covered(self):
+        listed = {c["n"] for c in self.get_project(limit=3)["chapters"] if "steps" in c}
+        self.assertEqual(listed, {0, 1, 2})
+        self.assertEqual([c["n"] for c in self.details("10").get_json()["chapters"]], [10])
+
+    def test_unknown_chapters_are_left_out_and_bad_input_is_rejected(self):
+        self.assertEqual(self.details("99").get_json()["chapters"], [])
+        self.assertEqual(self.details("a,b").status_code, 400)
+        self.assertEqual(self.client.get("/api/projects/nope/chapter_details").status_code, 404)
+
+    def test_asking_for_details_creates_no_chapter_folders(self):
+        self.details(",".join(map(str, range(12))))
+        self.assertEqual(self.chapter_folders(self.slug), [])

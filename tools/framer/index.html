@@ -4906,6 +4906,25 @@ let CHAPTER_VIEW = 'list';
 
 const chapterViewKey = slug => `recapper.chapterView.${slug}`;
 const chapterByNumber = n => CURRENT_PROJECT.chapters.find(c => c.n === n);
+
+// Only the chapters on the loaded page carry detail (steps, video length, ...). A bulk action can
+// cover chapters beyond it, so fetch the detail for the ones it is about to use.
+const hasDetail = n => !!chapterByNumber(n).steps;
+
+async function ensureChapterDetails(numbers) {
+  const missing = numbers.filter(n => !hasDetail(n));
+  if (!missing.length) return;
+  const slug = encodeURIComponent(CURRENT_PROJECT.slug);
+  const d = await (await fetch(`/api/projects/${slug}/chapter_details?numbers=${missing.join(',')}`)).json();
+  d.chapters.forEach(detail => Object.assign(chapterByNumber(detail.n), detail));
+}
+
+function loadSelectionDetails() {
+  const missing = [...SELECTION].filter(n => !hasDetail(n));
+  if (!missing.length) return;
+  ensureChapterDetails(missing).then(() => { updateMergeBar(); paintActionStates(); })
+    .catch(e => setStatus('Could not load chapter details: ' + e.message, true));
+}
 const hasVideo = ch => ch.duration != null;
 
 function loadChapterView(slug) {
@@ -4935,7 +4954,7 @@ function listNumbers(numbers) {
 }
 
 function selectChapter(n, on, range) {
-  const numbers = CURRENT_PROJECT.chapters.slice(0, chaptersShown).map(c => c.n);
+  const numbers = CURRENT_PROJECT.chapters.map(c => c.n);
   const [from, to] = range && selectionAnchor !== null ? [n, selectionAnchor].sort((a, b) => a - b) : [n, n];
   numbers.filter(x => x >= from && x <= to).forEach(x => on ? SELECTION.add(x) : SELECTION.delete(x));
   selectionAnchor = n;
@@ -5083,6 +5102,7 @@ function paintSelection() {
   $('selCount').textContent = `${SELECTION.size} selected`;
   updateMergeBar();
   paintActionStates();
+  loadSelectionDetails();
 }
 
 function runBlocker() {
@@ -5135,13 +5155,14 @@ $('chList').addEventListener('click', e => {
 
 $('viewListBtn').onclick = () => setChapterView('list');
 $('viewCardsBtn').onclick = () => setChapterView('cards');
-$('selAllBtn').onclick = () => toggleSelection(CURRENT_PROJECT.chapters.slice(0, chaptersShown).map(c => c.n));
-$('selCompleteBtn').onclick = () => toggleSelection(CURRENT_PROJECT.chapters.slice(0, chaptersShown).filter(c => c.status === 'complete').map(c => c.n));
+$('selAllBtn').onclick = () => toggleSelection(CURRENT_PROJECT.chapters.map(c => c.n));
+$('selCompleteBtn').onclick = () => toggleSelection(CURRENT_PROJECT.chapters.filter(c => c.status === 'complete').map(c => c.n));
 $('selClearBtn').onclick = () => { SELECTION.clear(); selectionAnchor = null; paintSelection(); };
 
 function mergeBlocker() {
   if (mergeES) return 'A merge is already running.';
   if (SELECTION.size < 2) return 'Select at least 2 chapters to merge.';
+  if ([...SELECTION].some(n => !hasDetail(n))) return 'Loading the selected chapters…';
   const without = [...SELECTION].filter(n => !hasVideo(chapterByNumber(n)));
   return without.length ? `Merge needs a video for every selected chapter. No video for ${listNumbers(without)}.` : '';
 }
@@ -5283,6 +5304,7 @@ async function openPipelineModal(numbers, step) {
   $('pipeModal').classList.add('on', 'loading');
   try {
     await loadCurrentProject(CURRENT_PROJECT.slug);   // the steps shown must be what the disk has now
+    await ensureChapterDetails(numbers);
   } catch (e) {
     $('pipeModal').classList.remove('on', 'loading');
     setStatus('Could not load the chapters: ' + e.message, true);
