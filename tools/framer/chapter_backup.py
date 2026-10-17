@@ -105,18 +105,46 @@ def _marker(slug: str, n) -> Path:
     return _local_root(slug, n) / "work" / CLEARED
 
 
-def cleared_kinds(slug: str, n) -> list[str]:
+def _read_marker(slug: str, n) -> dict:
     try:
-        return [k for k in json.loads(_marker(slug, n).read_text(encoding="utf-8")) if k in KINDS]
+        data = json.loads(_marker(slug, n).read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return []
+        return {}
+    return data if isinstance(data, dict) else {"kinds": data}
 
 
-def _write_cleared(slug: str, n, kinds: Iterable[str]) -> None:
+def cleared_kinds(slug: str, n) -> list[str]:
+    return [k for k in _read_marker(slug, n).get("kinds", []) if k in KINDS]
+
+
+def cached_video_duration(slug: str, n) -> Optional[float]:
+    """The chapter video's length, remembered when it was cleared (so the chapter list and the merge
+    bar don't have to read the file back from Drive)."""
+    if "video" not in cleared_kinds(slug, n):
+        return None
+    value = _read_marker(slug, n).get("video_duration")
+    if isinstance(value, (int, float)):
+        return float(value)
+    drive_video = _drive_root(slug, n) / "output" / "recap.mp4"     # cleared before the length was remembered
+    if drive_video.is_file():
+        import branding
+        try:
+            duration = branding.duration_of(drive_video)
+        except OSError:
+            return None
+        if duration:
+            _write_cleared(slug, n, cleared_kinds(slug, n), duration)
+            return float(duration)
+    return None
+
+
+def _write_cleared(slug: str, n, kinds: Iterable[str], video_duration: Optional[float] = None) -> None:
     path, kinds = _marker(slug, n), sorted(set(kinds))
     if kinds:
+        duration = video_duration if video_duration is not None else _read_marker(slug, n).get("video_duration")
+        data = {"kinds": kinds, **({"video_duration": duration} if duration and "video" in kinds else {})}
         path.parent.mkdir(parents=True, exist_ok=True)
-        atomic_write_text(path, json.dumps(kinds), backup=False)
+        atomic_write_text(path, json.dumps(data), backup=False)
     else:
         path.unlink(missing_ok=True)
 
@@ -206,6 +234,10 @@ def clear_kind(slug: str, n, kind_key: str) -> int:
     if not status["backed_up"]:
         raise ValueError(f"{kind.label} isn't fully backed up yet.")
     local = _local_root(slug, n)
+    duration = None
+    if kind_key == "video" and (local / "output" / "recap.mp4").is_file():
+        import branding
+        duration = branding.duration_of(local / "output" / "recap.mp4") or None
     freed = 0
     for rel in _files(local, kind):
         freed += _size(local / rel) or 0
@@ -222,7 +254,7 @@ def clear_kind(slug: str, n, kind_key: str) -> int:
                 target.rmdir()
             except OSError:
                 pass
-    _write_cleared(slug, n, [*cleared_kinds(slug, n), kind_key])
+    _write_cleared(slug, n, [*cleared_kinds(slug, n), kind_key], duration)
     return freed
 
 

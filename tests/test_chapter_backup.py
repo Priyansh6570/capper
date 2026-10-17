@@ -98,3 +98,39 @@ class BackupApiTest(ChapterBackupTest):
         self.assertIn('"type": "done"', reply.get_data(as_text=True))
         self.assertTrue((self.drive_ch / "work" / "audio" / "L001.wav").exists())
         self.assertFalse((self.drive_ch / "output").exists())
+
+
+class ClearedChapterStateTest(ChapterBackupTest):
+    """A chapter whose files were cleared after a Drive backup still counts as rendered."""
+
+    def _clear_everything(self, duration=12.5):
+        for kind in ("frames", "audio", "video"):
+            chapter_backup.backup_kind(self.slug, 1, kind)
+        with mock.patch("branding.duration_of", return_value=duration):
+            for kind in ("frames", "audio", "video"):
+                chapter_backup.clear_kind(self.slug, 1, kind)
+
+    def test_status_stays_rendered_after_clearing_the_video(self):
+        projects.set_status(self.slug, 1, "complete")
+        self._clear_everything()
+        self.assertFalse((self.local_ch / "output" / "recap.mp4").exists())
+        self.assertEqual(projects.derive_status(self.slug, 1)["status"], "complete")
+
+    def test_steps_count_cleared_outputs_as_done(self):
+        from services.batching import chapter_steps
+        self._clear_everything()
+        steps = chapter_steps(self.slug, 1)
+        self.assertIn("video", steps["done"])
+        self.assertIsNone(steps["next"])
+
+    def test_the_video_length_is_remembered_for_the_chapter_list(self):
+        self._clear_everything(duration=12.5)
+        self.assertEqual(chapter_backup.cached_video_duration(self.slug, 1), 12.5)
+        chapter_backup.restore(self.slug, 1, ["video"])
+        self.assertIsNone(chapter_backup.cached_video_duration(self.slug, 1))
+
+    def test_restoring_only_the_video_leaves_the_rest_cleared(self):
+        self._clear_everything()
+        chapter_backup.restore(self.slug, 1, ["video"])
+        self.assertTrue((self.local_ch / "output" / "recap.mp4").exists())
+        self.assertEqual(sorted(chapter_backup.cleared_kinds(self.slug, 1)), ["audio", "frames"])

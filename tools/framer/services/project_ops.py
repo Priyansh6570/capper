@@ -11,6 +11,7 @@ from PIL import Image
 from flask import Response, send_file
 
 import branding
+import chapter_backup
 import claude_engine
 import projects
 import totals
@@ -51,7 +52,8 @@ def add_chapter_details(project: dict, chapters: list[dict]) -> None:
         ch["effective_tone"] = projects.chapter_tone(project, ch["n"])
         ch["narration"] = narration_estimate(slug, ch["n"], chars_per_sec)
         video = projects.chapter_video_path(slug, ch["n"])
-        ch["duration"] = branding.duration_of(video) if video.is_file() else None
+        ch["duration"] = (branding.duration_of(video) if video.is_file()
+                          else chapter_backup.cached_video_duration(slug, ch["n"]))
         ch["steps"] = chapter_steps(slug, ch["n"])
         ch["has_thumb"] = thumb_source(slug, ch["n"]) is not None
 

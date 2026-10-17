@@ -11,6 +11,7 @@ from PIL import Image
 from flask import jsonify
 
 import batch
+import chapter_backup
 import claude_engine
 import config
 import gpu
@@ -83,14 +84,19 @@ def _stage_times(chapter_id: str) -> dict[str, float | None]:
     }
 
 
+# steps whose output was cleared from this PC after a Drive backup: they still count as done
+_STAGE_OF_KIND = {"pages": "stitch", "audio": "audio", "video": "video"}
+
+
 def chapter_steps(slug: str, n: int) -> dict:
     """The chapter's pipeline steps as the disk has them: `done` (a rendered video counts as having
     every step, older chapters never produced some intermediates), `stale` (done, but an earlier
     step was written after it), and `next`, the first step that is missing or stale."""
     with config.chapter_scope(projects.chapter_work_path(slug, n), projects.chapter_output_path(slug, n)):
         times = _stage_times(f"{slug}_ch{n}")
-    rendered = times["video"] is not None
-    done = [s for s in batch.LANE_STAGES if rendered or times[s] is not None]
+    cleared = {_STAGE_OF_KIND[k] for k in chapter_backup.cleared_kinds(slug, n) if k in _STAGE_OF_KIND}
+    rendered = times["video"] is not None or "video" in cleared
+    done = [s for s in batch.LANE_STAGES if rendered or times[s] is not None or s in cleared]
     stale = [s for i, s in enumerate(batch.LANE_STAGES)
              if times[s] is not None and any(t is not None and t > times[s] for t in map(times.get, batch.LANE_STAGES[:i]))]
     pending = [s for s in batch.LANE_STAGES if s not in done or s in stale]

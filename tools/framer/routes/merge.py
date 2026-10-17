@@ -8,6 +8,7 @@ from pathlib import Path
 from flask import Blueprint, Response, jsonify, request, send_from_directory
 
 import branding
+import chapter_backup
 import gpu
 import projects
 from config import NO_CONSOLE, ROOT
@@ -58,6 +59,11 @@ def merge_stream(slug):
                 ch = projects.get_chapter(projects.load(slug), n)
                 if ch is None:
                     yield sse({"type": "error", "message": f"No chapter {n} in this project."})
+                    return
+                try:
+                    chapter_backup.restore(slug, n, ["video"])   # a video cleared after a Drive backup comes back
+                except chapter_backup.BackupUnavailable as e:
+                    yield sse({"type": "error", "message": str(e)})
                     return
                 video = projects.chapter_video_path(slug, n)
                 if not video.is_file():

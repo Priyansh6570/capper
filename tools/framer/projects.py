@@ -569,8 +569,9 @@ def _apply_derived_status(slug: str, ch: dict) -> bool:
         derived = "downloaded"
     if (work / "framer" / "mapping.json").is_file():
         derived = "boxed"
-    if (chapter_dir(slug, ch["n"]) / "output" / "recap.mp4").is_file():
-        derived = "rendered"
+    import chapter_backup
+    if (chapter_dir(slug, ch["n"]) / "output" / "recap.mp4").is_file() or "video" in chapter_backup.cleared_kinds(slug, ch["n"]):
+        derived = "rendered"       # a video cleared after a Drive backup still counts
     video_gone = ch["status"] in ("rendered", "complete") and derived != "rendered"
     if STATUS_RANK[derived] > STATUS_RANK.get(ch["status"], 0) or video_gone:
         ch["status"] = derived
