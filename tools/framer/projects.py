@@ -11,8 +11,9 @@ plus one folder per chapter that has been worked on:
         chapter.json                that chapter's status/tone/...; only exists once it has progress
         <chapter>.pdf               the downloaded chapter (projects with a remembered source)
 
+      merged/                       merged videos (+ their _branded.mp4 finals), so they sync with the project
+
     projects/<slug>/                always on this PC's disk: working files that must not sync
-      merged/                       merged videos (+ their _branded.mp4 finals)
       cache/branding/               normalized intro/outro clips (regenerable)
       chapters/<n>/
         work/                       download/ pages/ framer/ frames/ audio/ ...
@@ -164,8 +165,16 @@ def chapter_video_path(slug: str, n) -> Path:
 
 
 def merged_dir(slug: str) -> Path:
-    d = local_dir(slug) / "merged"
+    """Merged videos live with the project (the shared/Drive folder when it is in one), so the
+    result of a merge is shared too. Merges made before that, kept on this PC's disk, are moved
+    over the first time the folder is used."""
+    d = project_dir(slug) / "merged"
     d.mkdir(parents=True, exist_ok=True)
+    legacy = local_dir(slug) / "merged"
+    if legacy != d and legacy.is_dir():
+        for old in legacy.iterdir():
+            if old.is_file() and not (d / old.name).exists():
+                shutil.move(str(old), str(d / old.name))
     return d
 
 
