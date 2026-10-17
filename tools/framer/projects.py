@@ -426,6 +426,14 @@ def delete(slug: str) -> None:
         raise OSError("Couldn't delete: " + ", ".join(sorted(set(leftovers))[:5]))
 
 
+def _cover_stamp(folder: Path) -> int:
+    """The cover file's mtime (0 when there is none), so the page can cache-bust a new cover."""
+    try:
+        return int((folder / "cover.jpg").stat().st_mtime)
+    except OSError:
+        return 0
+
+
 def _running_chapters(folder: Path) -> int:
     """Chapters still going through a live batch (batch.json), for the Projects screen."""
     try:
@@ -455,6 +463,7 @@ def list_projects() -> list[dict]:
         out.append({
             "slug": p["slug"], "name": p["name"], "url": p["url"],
             "chapters": len(p["chapters"]), "counts": counts, "running": _running_chapters(d),
+            "description": p.get("description") or "", "cover": _cover_stamp(d),
             "updated_at": max([p.get("updated_at") or "", *(ch["updated_at"] or "" for ch in p["chapters"])]),
         })
     out.sort(key=lambda r: r.get("updated_at") or "", reverse=True)

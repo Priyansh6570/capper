@@ -1,7 +1,8 @@
-# Work log - new Projects screen
+# Work log - covers, descriptions, wider cards
 
-- Projects screen restyled from the "Projects.dc.html" design (Claude Design project "Recapper chapters UI redesign"): totals row (complete / in pipeline / not started), cards with a cover slot (initial placeholder for now), host link, running pill, split progress bar.
-- `projects.py`: `list_projects()` now returns `running` (chapters in a live batch, from batch.json).
-- `index.html`, `static/js/app.js` (`renderProjectsList`), `static/css/app.css` (.pcard, .pstats).
-- Not done: real cover images / descriptions (needs the scrapers in `sites/` to save og:image + og:description), the cards/rows toggle and light/dark prop from the design (the app has its own theme button).
-- Commit before pressing "Check for updates" (it runs git reset --hard).
+- New `sites/meta.py`: reads og:image / og:description from the series page; all three adapters' `fetch_series` now also return `cover_url` and `description` (kingofshojo overrides with the real synopsis, since its og text is SEO boilerplate).
+- New `tools/framer/series_meta.py`: stores `description` in project.json and downloads the cover to `<project>/cover.jpg`. Called on project creation and Refetch (`routes/projects.py`); new route `GET /api/projects/<slug>/cover`.
+- `projects.list_projects()` returns `description` and `cover` (file mtime, for cache busting).
+- Projects screen: cover as the card image, 2-line description, cards min 420px, "last active" moved to the host line so it no longer overlaps the name.
+- Backfilled the two existing projects with a URL (100-Year-Old Top Chef, The Stellar Swordmaster). Other projects: press Refetch on the project page.
+- Restart the app to load the new route. mgeko.cc not tested live (no mgeko project here).

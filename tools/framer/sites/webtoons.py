@@ -26,6 +26,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from config import NO_CONSOLE
+from sites import meta
 from sites.errors import DownloadTimeout
 
 SITE_NAME = "webtoons.com"
@@ -123,7 +124,7 @@ def fetch_series(url: str) -> Optional[dict]:
         title = _extract_title(soup, list_url)
         chapters = [{"n": n, "title": titles.get(n, f"Episode {n}")} for n in range(1, total + 1)]
         return {"title": title, "total": total, "chapters": chapters, "source": "scraped",
-                "list_url": list_url}
+                "list_url": list_url, **meta.from_soup(soup, list_url)}
     except Exception:  # noqa: BLE001 - a scrape failure must never block project creation
         return None
 

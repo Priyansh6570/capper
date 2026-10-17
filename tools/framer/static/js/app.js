@@ -1803,13 +1803,18 @@ async function renderProjectsList() {
       card.className = 'pcard' + (running ? ' running' : '');
       card.innerHTML =
         `<div class="pthumb"></div>` +
-        `<div class="pinfo"><div class="phead"><span class="pname"></span><span class="popened">${escHtml(timeAgo(p.updated_at))}</span></div>` +
-        `<span class="purl"></span><div class="pgrow"></div>` +
+        `<div class="pinfo"><span class="pname"></span>` +
+        `<div class="psub"><span class="purl"></span><span class="popened">${escHtml(timeAgo(p.updated_at))}</span></div>` +
+        `<span class="pdesc"></span><div class="pgrow"></div>` +
         (running ? `<span class="prunpill"><i></i>RUNNING \u00b7 ${running} CH</span>` : '') +
         `<span class="ptrack"><span class="pfill" style="width:${Math.max(done ? 1 : 0, 100 * done / Math.max(1, p.chapters))}%"></span>` +
         `<span class="prun" style="width:${runPct}%"></span></span>` +
         `<div class="pmeta"><span class="pcount"><b>${done}</b> / ${p.chapters} chapters done</span><span class="ppct">${pct}%</span></div></div>`;
-      card.querySelector('.pthumb').textContent = (p.name || '?').trim().charAt(0).toUpperCase();
+      const thumb = card.querySelector('.pthumb');
+      if (p.cover) thumb.style.backgroundImage = `url(/api/projects/${encodeURIComponent(p.slug)}/cover?v=${p.cover})`;
+      else thumb.textContent = (p.name || '?').trim().charAt(0).toUpperCase();
+      thumb.classList.toggle('hascover', !!p.cover);
+      card.querySelector('.pdesc').textContent = p.description || '';
       card.querySelector('.pname').textContent = p.name;
       card.querySelector('.purl').textContent = host ? host + ' \u2197' : '(no URL set)';
       card.onclick = () => navTo({ project: p.slug });

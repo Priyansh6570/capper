@@ -15,6 +15,7 @@ from typing import Callable, Optional
 import requests
 from bs4 import BeautifulSoup
 
+from . import meta
 from .images import fetch_pages, images_to_pdf
 
 SITE_NAME = "mgeko.cc"
@@ -54,7 +55,8 @@ def fetch_series(url: str) -> Optional[dict]:
         if not slug:
             return None
         series_url = f"{HOME_URL}manga/{slug}/"
-        heading = BeautifulSoup(_get(series_url), "html.parser").select_one("h1.novel-title")
+        page = BeautifulSoup(_get(series_url), "html.parser")
+        heading = page.select_one("h1.novel-title")
         listing = _get(f"{series_url}all-chapters/")
         numbers = sorted({int(n) for n in re.findall(
             rf'href="/reader/en/{re.escape(slug)}-chapter-(\d+)-eng-li/"', listing)})
@@ -62,7 +64,8 @@ def fetch_series(url: str) -> Optional[dict]:
             return None
         chapters = [{"n": n, "title": f"Chapter {n}"} for n in numbers]
         return {"title": heading.get_text(strip=True) if heading else slug, "total": len(chapters),
-                "chapters": chapters, "source": "scraped"}
+                "chapters": chapters, "source": "scraped",
+                **meta.from_soup(page, series_url)}
     except Exception:  # noqa: BLE001 - a scrape failure must never block project creation
         return None
 

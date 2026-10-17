@@ -16,6 +16,7 @@ from typing import Callable, Optional
 import requests
 from bs4 import BeautifulSoup
 
+from . import meta
 from .images import fetch_pages, images_to_pdf
 
 SITE_NAME = "kingofshojo.com"
@@ -50,6 +51,18 @@ def _extract_title(soup: BeautifulSoup) -> str:
     return h1.get_text(strip=True) if h1 and h1.get_text(strip=True) else "Untitled series"
 
 
+def _synopsis(soup: BeautifulSoup) -> dict:
+    """The page's own synopsis. Its og:description is SEO text ("Read manhwa <titles>"); the real
+    blurb is in the entry body, after a first line of alternative titles."""
+    body = soup.select_one(".entry-content[itemprop=description] p")
+    if body is None:
+        return {}
+    lines = [t.strip() for t in body.get_text("\n").split("\n") if t.strip()]
+    if lines and lines[0].lower().startswith("read "):
+        lines = lines[1:]
+    return {"description": " ".join(lines)} if lines else {}
+
+
 def fetch_series(url: str) -> Optional[dict]:
     """Returns {"title", "total", "chapters": [{"n","title"}, ...], "source":
     "scraped"} on success, or None on ANY failure. The chapter list's own
@@ -74,7 +87,8 @@ def fetch_series(url: str) -> Optional[dict]:
         title = _extract_title(soup)
         chapters = [{"n": n, "title": f"Chapter {n}"} for n in range(nums[0], nums[-1] + 1)]
         return {"title": title, "total": len(chapters), "chapters": chapters,
-                "source": "scraped", "list_url": list_url}
+                "source": "scraped", "list_url": list_url,
+                **{**meta.from_soup(soup, list_url), **_synopsis(soup)}}
     except Exception:  # noqa: BLE001 - a scrape failure must never block project creation
         return None
 

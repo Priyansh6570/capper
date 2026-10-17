@@ -503,8 +503,8 @@
      width (i.e. the full unbreakable URL) and centering that instead of
      stretching it to the card - which is what caused the text to overflow
      symmetrically past both edges instead of truncating. */
-  .plist { grid-template-columns:repeat(auto-fill, minmax(min(340px,100%), 1fr)); gap:16px; }
-  .pcard { --pblue:oklch(0.8 0.09 250); display:grid; grid-template-columns:92px minmax(0,1fr); align-items:stretch; gap:18px;
+  .plist { grid-template-columns:repeat(auto-fill, minmax(min(420px,100%), 1fr)); gap:16px; }
+  .pcard { --pblue:oklch(0.8 0.09 250); display:grid; grid-template-columns:104px minmax(0,1fr); align-items:stretch; gap:18px;
            padding:16px; background:var(--panel); border:1px solid var(--line); border-radius:16px; cursor:pointer;
            text-align:left; min-width:0; overflow:hidden; }
   .pcard.running { border-color:oklch(0.7 0.1 250 / .4); }
@@ -513,9 +513,13 @@
                    background:repeating-linear-gradient(135deg,var(--input2) 0 10px,var(--surface) 10px 20px) center / cover;
                    font:700 30px ui-monospace,Consolas,monospace; color:var(--muted); }
   .pcard .pinfo { display:flex; flex-direction:column; gap:6px; min-width:0; }
-  .pcard .phead { display:flex; align-items:flex-start; gap:10px; }
-  .pcard .pname { flex:1; min-width:0; font-weight:700; font-size:16px; line-height:1.3; text-wrap:pretty; }
-  .pcard .purl { font-family:ui-monospace,Consolas,monospace; font-size:12px; color:var(--muted); min-width:0;
+  .pcard .psub { display:flex; align-items:baseline; gap:10px; min-width:0; }
+  .pcard .pdesc { font-size:12.5px; line-height:1.4; color:var(--muted); display:-webkit-box; -webkit-line-clamp:2;
+                  -webkit-box-orient:vertical; overflow:hidden; }
+  .pcard .pdesc:empty { display:none; }
+  .pcard .pthumb.hascover { background-size:cover; background-position:center; }
+  .pcard .pname { min-width:0; font-weight:700; font-size:16px; line-height:1.3; text-wrap:pretty; }
+  .pcard .purl { flex:1; font-family:ui-monospace,Consolas,monospace; font-size:12px; color:var(--muted); min-width:0;
                  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .pcard .pgrow { flex:1; min-height:8px; }
   .pcard .prunpill { align-self:flex-start; display:flex; align-items:center; gap:7px; height:22px; padding:0 9px; border-radius:20px;

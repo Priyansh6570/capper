@@ -13,6 +13,7 @@ import bulk_download
 import config
 import project_defaults
 import projects
+import series_meta
 import sites
 import totals
 from services.batching import BATCHES, chapter_thumb
@@ -58,6 +59,7 @@ def api_create_project():
         project["series_title"] = fetched["title"]
         project["source"] = "scraped"
         projects.fill_chapters(project, fetched["chapters"])
+        series_meta.save(project, fetched)
         fetch_result = {"ok": True, "title": fetched["title"], "total": fetched["total"]}
     else:
         fetch_result = {"ok": False, "reason": "Couldn't read the series page - enter "
@@ -65,6 +67,12 @@ def api_create_project():
     projects.save(project)
 
     return jsonify(slug=project["slug"], project=project, fetch=fetch_result)
+
+
+@bp.get("/api/projects/<slug>/cover")
+def api_project_cover(slug):
+    path = series_meta.cover_path(slug)
+    return send_file(path, mimetype="image/jpeg", max_age=0) if path.is_file() else (jsonify(error="No cover."), 404)
 
 
 @bp.get("/api/projects/<slug>/missing_chapters")
@@ -244,6 +252,7 @@ def api_set_chapters(slug):
         project["series_title"] = fetched["title"]
         project["source"] = "scraped"
         projects.fill_chapters(project, fetched["chapters"])
+        series_meta.save(project, fetched)
         projects.save(project)
         return jsonify(ok=True, project=project)
 
