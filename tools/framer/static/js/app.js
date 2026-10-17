@@ -1786,20 +1786,32 @@ async function renderProjectsList() {
       return;
     }
     list.innerHTML = '';
+    const sum = fn => items.reduce((acc, p) => acc + fn(p), 0);
+    const doneOf = p => (p.counts && ((p.counts.rendered || 0) + (p.counts.complete || 0))) || 0;
+    const totalDone = sum(doneOf), totalRunning = sum(p => p.running || 0), totalAll = sum(p => p.chapters);
+    $('pStats').innerHTML = [[totalDone, 'complete', 'ok'], [totalRunning, 'in pipeline', 'run'],
+      [Math.max(0, totalAll - totalDone - totalRunning), 'not started', '']]
+      .map(([v, label, kind]) => `<div class="pstat"><i class="${kind}"></i><b>${v}</b><span>${label}</span></div>`).join('') +
+      '<span class="pstatnote">chapters across all projects</span>';
     items.forEach(p => {
-      const done = (p.counts && ((p.counts.rendered || 0) + (p.counts.complete || 0))) || 0;
+      const done = doneOf(p), running = p.running || 0;
       const pct = p.chapters ? Math.round(100 * done / p.chapters) : 0;
+      const runPct = p.chapters ? 100 * running / p.chapters : 0;
+      let host = '';
+      try { host = p.url ? new URL(p.url).hostname.replace(/^www\./, '') : ''; } catch (e) { host = p.url || ''; }
       const card = document.createElement('button');
-      card.className = 'pcard';
+      card.className = 'pcard' + (running ? ' running' : '');
       card.innerHTML =
-        `<div class="ptop"><span class="pinitial"></span>` +
-        `<div class="ptexts"><span class="pname"></span><span class="purl"></span></div></div>` +
-        `<div class="pbottom"><span class="ptrack"><span class="pfill" style="width:${pct}%"></span></span>` +
-        `<div class="pmeta"><span class="pcount">${done}/${p.chapters} done</span>` +
-        `<span class="popened">${escHtml(timeAgo(p.updated_at))}</span></div></div>`;
-      card.querySelector('.pinitial').textContent = (p.name || '?').trim().charAt(0).toUpperCase();
+        `<div class="pthumb"></div>` +
+        `<div class="pinfo"><div class="phead"><span class="pname"></span><span class="popened">${escHtml(timeAgo(p.updated_at))}</span></div>` +
+        `<span class="purl"></span><div class="pgrow"></div>` +
+        (running ? `<span class="prunpill"><i></i>RUNNING \u00b7 ${running} CH</span>` : '') +
+        `<span class="ptrack"><span class="pfill" style="width:${Math.max(done ? 1 : 0, 100 * done / Math.max(1, p.chapters))}%"></span>` +
+        `<span class="prun" style="width:${runPct}%"></span></span>` +
+        `<div class="pmeta"><span class="pcount"><b>${done}</b> / ${p.chapters} chapters done</span><span class="ppct">${pct}%</span></div></div>`;
+      card.querySelector('.pthumb').textContent = (p.name || '?').trim().charAt(0).toUpperCase();
       card.querySelector('.pname').textContent = p.name;
-      card.querySelector('.purl').textContent = p.url || '(no URL set)';
+      card.querySelector('.purl').textContent = host ? host + ' \u2197' : '(no URL set)';
       card.onclick = () => navTo({ project: p.slug });
       list.appendChild(card);
     });

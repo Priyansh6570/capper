@@ -426,6 +426,17 @@ def delete(slug: str) -> None:
         raise OSError("Couldn't delete: " + ", ".join(sorted(set(leftovers))[:5]))
 
 
+def _running_chapters(folder: Path) -> int:
+    """Chapters still going through a live batch (batch.json), for the Projects screen."""
+    try:
+        batch = json.loads((folder / "batch.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return 0
+    if batch.get("status") not in ("running", "paused"):
+        return 0
+    return sum(1 for c in batch.get("chapters", []) if c.get("state") not in ("done", "failed", "cancelled"))
+
+
 def list_projects() -> list[dict]:
     out = []
     seen = set()
@@ -443,7 +454,7 @@ def list_projects() -> list[dict]:
             counts[ch["status"]] = counts.get(ch["status"], 0) + 1
         out.append({
             "slug": p["slug"], "name": p["name"], "url": p["url"],
-            "chapters": len(p["chapters"]), "counts": counts,
+            "chapters": len(p["chapters"]), "counts": counts, "running": _running_chapters(d),
             "updated_at": max([p.get("updated_at") or "", *(ch["updated_at"] or "" for ch in p["chapters"])]),
         })
     out.sort(key=lambda r: r.get("updated_at") or "", reverse=True)

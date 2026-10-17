@@ -1,8 +1,7 @@
-# Work log
+# Work log - new Projects screen
 
-- Volume settings card (narration 50-600%, music 0-30%) -> `projects.py`, `s7_assemble.py`, `index.html`, `app.js`.
-- Removed the "Download more chapters" button; pipeline shows "N videos done" instead of cards; merge no longer embeds a player on the Chapters page.
-- `defaults/settings.json` re-saved from `100-year-old-top-chef`; `audio` group label added in `project_defaults.py`.
-- Splash: 16ms frames, port probed every 0.25s (`splash.py`).
-- Merged `perf-refactor` into `main` and pushed `main`.
-- Note: the in-app "Check for updates" runs `git reset --hard HEAD` first, which wipes uncommitted work - commit before pressing it.
+- Projects screen restyled from the "Projects.dc.html" design (Claude Design project "Recapper chapters UI redesign"): totals row (complete / in pipeline / not started), cards with a cover slot (initial placeholder for now), host link, running pill, split progress bar.
+- `projects.py`: `list_projects()` now returns `running` (chapters in a live batch, from batch.json).
+- `index.html`, `static/js/app.js` (`renderProjectsList`), `static/css/app.css` (.pcard, .pstats).
+- Not done: real cover images / descriptions (needs the scrapers in `sites/` to save og:image + og:description), the cards/rows toggle and light/dark prop from the design (the app has its own theme button).
+- Commit before pressing "Check for updates" (it runs git reset --hard).
