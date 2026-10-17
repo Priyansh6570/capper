@@ -28,7 +28,8 @@
         <div class="recentlist" id="recentList"></div>
       </div>
       <div class="sidebarfoot">
-        <button id="checkUpdateBtn" data-icon="refresh" data-ic-size="14" title="Pull the latest app code from git"><span>Check for updates</span></button>
+        <div class="updwrap" id="updWrap"></div>
+        <button id="checkUpdateBtn" class="updbtn" title="Pull the latest app code from git"><span class="updico" id="updIco">&#8635;</span><span class="updtxt"><span id="updLabel">Check for updates</span><span class="updsub" id="updSub"></span></span></button>
         <button id="themeBtnP" data-icon="moon" data-ic-size="14"><span>Dark</span></button>
       </div>
     </aside>
@@ -42,70 +43,84 @@
         </div>
       </div>
       <div class="screenbody">
-        <div class="fetchresult" id="updateResult"></div>
         <div id="depsResult"></div>
 
-        <div class="composer" id="npComposer">
-          <div class="composerhead">
-            <div><h2>New project</h2><p>Paste a series or chapter URL - chapters are detected automatically.</p></div>
-            <button type="button" id="npCloseBtn" class="small ghost icon" data-icon="x" data-ic-size="12" title="Close"></button>
-          </div>
-          <div class="fieldrow">
-            <div class="field">
-              <label>Project name</label>
-              <input id="npName" type="text" placeholder="e.g. Omniscient Reader" style="width:100%" />
+        <div class="npmodal" id="npComposer">
+          <div class="npdialog" role="dialog" aria-label="New project">
+            <div class="nphead">
+              <div class="npheadtxt"><h2>New project</h2><p>Paste a series or chapter link. Chapters are found automatically.</p></div>
+              <button type="button" id="npCloseBtn" class="npx" title="Close">&#10005;</button>
             </div>
-            <div class="field">
-              <label>Manhwa URL</label>
-              <div class="row2">
-                <input id="npUrl" type="text" placeholder="webtoons.com, kingofshojo.com or mgeko.cc series/chapter URL" />
-                <button type="button" class="small ghost icon" data-icon="link" data-ic-size="14"
-                        title="Open webtoons.com" onclick="openSiteHome('webtoons')"></button>
-                <button type="button" class="small ghost icon" data-icon="link" data-ic-size="14"
-                        title="Open kingofshojo.com" onclick="openSiteHome('kingofshojo')"></button>
-                <button type="button" class="small ghost icon" data-icon="link" data-ic-size="14"
-                        title="Open mgeko.cc" onclick="openSiteHome('mgeko')"></button>
+            <div class="npbody">
+              <div class="npfield">
+                <span class="npl">Series URL</span>
+                <div class="npurl" id="npUrlBox">
+                  <span class="npglyph">&#8964;</span>
+                  <input id="npUrl" type="text" placeholder="https://www.webtoons.com/en/&hellip;" autocomplete="off" spellcheck="false" />
+                  <button type="button" id="npUrlClear" class="npclear" hidden title="Clear">&#10005;</button>
+                </div>
+                <span class="npmsg" id="npUrlMsg"></span>
+              </div>
+
+              <div class="npfield">
+                <span class="npcap">SUPPORTED SOURCES &middot; OPEN TO FIND A SERIES</span>
+                <div class="npsources">
+                  <a class="npsrc" data-host="webtoons.com" href="https://www.webtoons.com/en/" target="_blank" rel="noopener"><i>W</i><span><b>Webtoons</b><em>webtoons.com</em></span><u>&#8599;</u></a>
+                  <a class="npsrc" data-host="kingofshojo.com" href="https://kingofshojo.com/" target="_blank" rel="noopener"><i>K</i><span><b>King of Shojo</b><em>kingofshojo.com</em></span><u>&#8599;</u></a>
+                  <a class="npsrc" data-host="mgeko.cc" href="https://www.mgeko.cc/" target="_blank" rel="noopener"><i>M</i><span><b>MGeko</b><em>mgeko.cc</em></span><u>&#8599;</u></a>
+                </div>
+              </div>
+
+              <div class="npfield">
+                <span class="npl">Project name <em>optional &middot; taken from the series if empty</em></span>
+                <input id="npName" type="text" class="npinput" placeholder="e.g. Omniscient Reader" autocomplete="off" />
+              </div>
+
+              <div class="npfolders">
+                <div class="npfolder">
+                  <div class="nprow"><span class="npfl">Projects folder</span><span class="npfv" id="npFolderVal"></span><button type="button" class="npchange">Change</button></div>
+                  <div class="npedit" hidden>
+                    <div class="nprow2">
+                      <input id="npFolder" type="text" placeholder="Leave empty for the app's own folder" />
+                      <button type="button" class="npcancel">Cancel</button>
+                      <button type="button" id="npFolderBtn" class="npsave"><span>Save</span></button>
+                    </div>
+                    <span class="nphint">New projects are created here. Leave empty to use the app's own folder.</span>
+                  </div>
+                </div>
+                <div class="npfolder">
+                  <div class="nprow"><span class="npfl">Model cache</span><span class="npfv" id="npCacheVal"></span><button type="button" class="npchange">Change</button></div>
+                  <div class="npedit" hidden>
+                    <div class="nprow2">
+                      <input id="npCache" type="text" placeholder="Leave empty for the Windows default" />
+                      <button type="button" class="npcancel">Cancel</button>
+                      <button type="button" id="npCacheBtn" class="npsave"><span>Save</span></button>
+                    </div>
+                    <span class="nphint">Where the voice model is downloaded. Applies after the app restarts; models already downloaded are not moved. <span id="npCacheInUse"></span></span>
+                  </div>
+                </div>
+              </div>
+
+              <div class="newprog" id="npProg"><div class="spinner"></div><span>Fetching series details&hellip;</span></div>
+              <div class="fetchresult" id="npFetchResult"></div>
+              <div class="fieldrow" id="npManualRow" style="display:none">
+                <div class="field" style="max-width:120px">
+                  <label>First chapter</label>
+                  <input id="npFrom" type="number" min="1" value="1" />
+                </div>
+                <div class="field" style="max-width:120px">
+                  <label>Last chapter</label>
+                  <input id="npTo" type="number" min="1" value="1" />
+                </div>
+                <div class="field">
+                  <button id="npManualBtn" data-icon="check" data-ic-size="14"><span>Use this range</span></button>
+                </div>
               </div>
             </div>
-            <div class="field" style="flex:none">
-              <label>&nbsp;</label>
-              <button id="npCreateBtn" class="primary" data-icon="plus" data-ic-size="15"><span>Create project</span></button>
-            </div>
-          </div>
-          <div class="fieldrow">
-            <div class="field">
-              <label>Projects folder <span class="hint">(new projects are created here; leave empty for the app's own folder)</span></label>
-              <input id="npFolder" type="text" placeholder="e.g. G:\My Drive\RECAPPER\bebe" style="width:100%" />
-            </div>
-            <div class="field" style="flex:none">
-              <label>&nbsp;</label>
-              <button id="npFolderBtn" data-icon="check" data-ic-size="14"><span>Save folder</span></button>
-            </div>
-          </div>
-          <div class="fieldrow">
-            <div class="field">
-              <label>Model cache folder <span class="hint">(where the voice model is downloaded; leave empty for the Windows default. Applies after the app restarts; models already downloaded are not moved)</span></label>
-              <input id="npCache" type="text" placeholder="e.g. D:\hf_cache" style="width:100%" />
-              <span class="hint" id="npCacheInUse"></span>
-            </div>
-            <div class="field" style="flex:none">
-              <label>&nbsp;</label>
-              <button id="npCacheBtn" data-icon="check" data-ic-size="14"><span>Save folder</span></button>
-            </div>
-          </div>
-          <div class="newprog" id="npProg"><div class="spinner"></div><span>Fetching series details…</span></div>
-          <div class="fetchresult" id="npFetchResult"></div>
-          <div class="fieldrow" id="npManualRow" style="display:none">
-            <div class="field" style="max-width:120px">
-              <label>First chapter</label>
-              <input id="npFrom" type="number" min="1" value="1" />
-            </div>
-            <div class="field" style="max-width:120px">
-              <label>Last chapter</label>
-              <input id="npTo" type="number" min="1" value="1" />
-            </div>
-            <div class="field">
-              <button id="npManualBtn" data-icon="check" data-ic-size="14"><span>Use this range</span></button>
+            <div class="npfoot">
+              <span class="nphint2">Press Enter to create</span>
+              <button type="button" id="npCancelBtn">Cancel</button>
+              <button type="button" id="npCreateBtn" class="primary" disabled><span>Create project</span></button>
             </div>
           </div>
         </div>

@@ -1,8 +1,7 @@
-# Work log - covers, descriptions, wider cards
+# Work log - Projects page redesign (round 2)
 
-- New `sites/meta.py`: reads og:image / og:description from the series page; all three adapters' `fetch_series` now also return `cover_url` and `description` (kingofshojo overrides with the real synopsis, since its og text is SEO boilerplate).
-- New `tools/framer/series_meta.py`: stores `description` in project.json and downloads the cover to `<project>/cover.jpg`. Called on project creation and Refetch (`routes/projects.py`); new route `GET /api/projects/<slug>/cover`.
-- `projects.list_projects()` returns `description` and `cover` (file mtime, for cache busting).
-- Projects screen: cover as the card image, 2-line description, cards min 420px, "last active" moved to the host line so it no longer overlaps the name.
-- Backfilled the two existing projects with a URL (100-Year-Old Top Chef, The Stellar Swordmaster). Other projects: press Refetch on the project page.
-- Restart the app to load the new route. mgeko.cc not tested live (no mgeko project here).
+- Projects screen: "detailed" layout from the design (2 columns, 128px cover, 4-line description, host · time, running pill, split bar, dashed "New project" tile). `static/css/app.css`, `static/js/app.js` (`renderProjectsList`).
+- New project is now a modal dialog (`index.html`, css `.np*`, js `openNewProject` etc.): URL field with live "recognised / not supported" check, supported-source tiles, optional name (taken from the series title if empty - `routes/projects.py` `api_create_project`), inline Change/Save rows for Projects folder and Model cache. Create is enabled only for a supported site.
+- Check for updates: sidebar states (checking spinner, up to date, update ready card with Later / Restart now, error card with Dismiss / Try again, packages-to-install note) - js `checkForUpdate`, `setUpd`, `paintUpdate`; the old inline result bar is gone.
+- Not done: the design's "Updating... %" progress (the app's update is one git pull with no progress), the cards/rows layout switch, and the design's own theme toggle.
+- Checked in the browser on a throwaway server (port 5099, now stopped). Restart the real app and hard-refresh (Ctrl+F5).

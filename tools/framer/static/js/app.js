@@ -1803,9 +1803,9 @@ async function renderProjectsList() {
       card.className = 'pcard' + (running ? ' running' : '');
       card.innerHTML =
         `<div class="pthumb"></div>` +
-        `<div class="pinfo"><span class="pname"></span>` +
-        `<div class="psub"><span class="purl"></span><span class="popened">${escHtml(timeAgo(p.updated_at))}</span></div>` +
-        `<span class="pdesc"></span><div class="pgrow"></div>` +
+        `<div class="pinfo"><div class="phead"><span class="pname"></span>` +
+        `<span class="psub"><span class="purl"></span><span class="pdot">\u00b7</span><span class="popened">${escHtml(timeAgo(p.updated_at))}</span></span></div>` +
+        `<p class="pdesc"></p><div class="pgrow"></div>` +
         (running ? `<span class="prunpill"><i></i>RUNNING \u00b7 ${running} CH</span>` : '') +
         `<span class="ptrack"><span class="pfill" style="width:${Math.max(done ? 1 : 0, 100 * done / Math.max(1, p.chapters))}%"></span>` +
         `<span class="prun" style="width:${runPct}%"></span></span>` +
@@ -1814,12 +1814,17 @@ async function renderProjectsList() {
       if (p.cover) thumb.style.backgroundImage = `url(/api/projects/${encodeURIComponent(p.slug)}/cover?v=${p.cover})`;
       else thumb.textContent = (p.name || '?').trim().charAt(0).toUpperCase();
       thumb.classList.toggle('hascover', !!p.cover);
-      card.querySelector('.pdesc').textContent = p.description || '';
       card.querySelector('.pname').textContent = p.name;
       card.querySelector('.purl').textContent = host ? host + ' \u2197' : '(no URL set)';
+      card.querySelector('.pdesc').textContent = p.description || '';
       card.onclick = () => navTo({ project: p.slug });
       list.appendChild(card);
     });
+    const tile = document.createElement('button');
+    tile.className = 'pnewtile';
+    tile.innerHTML = '<span class="plus">+</span>New project<span class="psmall">Paste a series URL to start</span>';
+    tile.onclick = openNewProject;
+    list.appendChild(tile);
     recent.innerHTML = '';
     items.slice(0, 4).forEach(p => {
       const done = (p.counts && ((p.counts.rendered || 0) + (p.counts.complete || 0))) || 0;
@@ -1842,6 +1847,9 @@ async function loadAppSettings() {
   $('npFolder').value = d.projects_folder;
   $('npCache').value = d.model_cache;
   $('npCacheInUse').textContent = `In use now: ${d.model_cache_in_use}`;
+  $('npFolder').dataset.saved = d.projects_folder;
+  $('npCache').dataset.saved = d.model_cache;
+  npSyncFolders();
 }
 
 async function saveProjectsFolder() {
@@ -1852,6 +1860,8 @@ async function saveProjectsFolder() {
     const d = await res.json();
     if (!res.ok) throw new Error(d.error || 'failed');
     showToast(d.projects_folder ? `New projects go to ${d.projects_folder}` : "New projects go to the app's own folder.", null, null, 'ok');
+    $('npFolder').dataset.saved = d.projects_folder;
+    closeFolderEdits();
     renderProjectsList();
   } catch (e) { setStatus('Projects folder error: ' + e.message, true); }
   finally { btnBusy($('npFolderBtn'), false); }
@@ -1865,28 +1875,89 @@ async function saveModelCache() {
     const d = await res.json();
     if (!res.ok) throw new Error(d.error || 'failed');
     showToast(d.model_cache ? `Voice model cache set to ${d.model_cache}. Restart the app to use it.` : 'Voice model cache back to the Windows default. Restart the app to use it.', null, null, 'ok');
+    $('npCache').dataset.saved = d.model_cache;
+    closeFolderEdits();
   } catch (e) { setStatus('Model cache error: ' + e.message, true); }
   finally { btnBusy($('npCacheBtn'), false); }
 }
 
+// ---------------------------------------------------------------------------
+// New project dialog
+// ---------------------------------------------------------------------------
+const NP_SOURCES = [{ name: 'Webtoons', host: 'webtoons.com' }, { name: 'King of Shojo', host: 'kingofshojo.com' },
+                    { name: 'MGeko', host: 'mgeko.cc' }];
+
+function npMatch(url) {
+  const q = url.trim().toLowerCase();
+  return q ? NP_SOURCES.find(s => q.includes(s.host)) || null : null;
+}
+
+// a readable name from the URL's longest meaningful path segment, used as the field's placeholder
+// and as the fallback when the series page can't be read
+function titleFromUrl(url) {
+  const segs = url.replace(/^https?:\/\//, '').split(/[/?#]/).slice(1)
+    .filter(s => s && !/^(en|list|manga|series|comic|webtoon|title|chapter.*|ep.*|\d+|[a-z]{2})$/i.test(s) && !/=/.test(s));
+  const best = segs.sort((a, b) => b.length - a.length)[0];
+  return best ? best.replace(/[-_]+/g, ' ').replace(/\b\w/g, c => c.toUpperCase()) : '';
+}
+
+function paintNewProject() {
+  const url = $('npUrl').value.trim(), match = npMatch(url);
+  const state = !url ? '' : match ? 'ok' : 'bad';
+  $('npUrlBox').dataset.state = state;
+  $('npUrlClear').hidden = !url;
+  $('npUrlMsg').dataset.state = state;
+  $('npUrlMsg').textContent = !url ? '' : match
+    ? `\u2713 ${match.name} link recognised \u2014 chapters will be listed after creating.`
+    : 'This site isn\u2019t supported yet. Use one of the sources below.';
+  document.querySelectorAll('.npsrc').forEach(a => a.classList.toggle('on', !!match && a.dataset.host === match.host));
+  $('npName').placeholder = (match && titleFromUrl(url)) || 'e.g. Omniscient Reader';
+  $('npCreateBtn').disabled = !match || $('npCreateBtn').classList.contains('busy');
+}
+
+function openNewProject() {
+  $('npComposer').classList.add('on');
+  loadAppSettings();
+  paintNewProject();
+  setTimeout(() => $('npUrl').focus(), 30);
+}
+function closeNewProject() {
+  $('npComposer').classList.remove('on');
+  closeFolderEdits();
+}
+
+function closeFolderEdits() {
+  document.querySelectorAll('.npfolder').forEach(f => { f.querySelector('.npedit').hidden = true; f.querySelector('.npchange').hidden = false; });
+  npSyncFolders();
+}
+function npSyncFolders() {
+  $('npFolderVal').textContent = $('npFolder').value || 'Default';
+  $('npCacheVal').textContent = $('npCache').value || 'Default';
+}
+document.querySelectorAll('.npfolder').forEach(f => {
+  const input = f.querySelector('input');
+  f.querySelector('.npchange').onclick = e => { f.querySelector('.npedit').hidden = false; e.currentTarget.hidden = true; input.focus(); };
+  f.querySelector('.npcancel').onclick = () => { input.value = input.dataset.saved || ''; closeFolderEdits(); };
+});
+
 async function createProject() {
   const name = $('npName').value.trim();
   const url = $('npUrl').value.trim();
-  if (!name) { setStatus('Enter a project name.', true); return; }
+  if (!npMatch(url)) { paintNewProject(); return; }
   btnBusy($('npCreateBtn'), true);
   $('npProg').classList.add('on');
   $('npFetchResult').classList.remove('on', 'ok', 'warn');
   $('npManualRow').style.display = 'none';
   try {
     const res = await fetch('/api/projects', { method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ name, url }) });
+      body: JSON.stringify({ name, url, fallback_name: titleFromUrl(url) }) });
     const d = await res.json();
     if (!res.ok) throw new Error(d.error || 'create failed');
     if (d.fetch && d.fetch.ok) {
       $('npFetchResult').textContent = `Found ${d.fetch.total} chapter(s) - "${d.fetch.title}".`;
       $('npFetchResult').classList.add('on', 'ok');
       $('npName').value = ''; $('npUrl').value = '';
-      setTimeout(() => navTo({ project: d.slug }), 600);
+      setTimeout(() => { closeNewProject(); navTo({ project: d.slug }); }, 600);
     } else {
       $('npFetchResult').textContent = (d.fetch && d.fetch.reason) || "Couldn't read the series page.";
       $('npFetchResult').classList.add('on', 'warn');
@@ -1894,7 +1965,7 @@ async function createProject() {
       $('npManualRow').dataset.slug = d.slug;
     }
   } catch (e) { setStatus('Create project error: ' + e.message, true); }
-  finally { btnBusy($('npCreateBtn'), false); $('npProg').classList.remove('on'); }
+  finally { btnBusy($('npCreateBtn'), false); $('npProg').classList.remove('on'); paintNewProject(); }
 }
 
 async function useManualRange() {
@@ -3989,31 +4060,93 @@ function backToProject() { navTo(S.project ? { project: S.project } : {}); }
 // BEFORE the restart, so the restarted app has everything it imports.
 // ---------------------------------------------------------------------------
 async function checkForUpdate() {
-  const box = $('updateResult');
-  box.classList.remove('on', 'ok', 'warn');
+  if (UPD.state === 'checking' || UPD.state === 'restarting') return;
   $('depsResult').innerHTML = '';
-  btnBusy($('checkUpdateBtn'), true);
+  setUpd('checking');
   try {
     const res = await fetch('/api/update', { method: 'POST' });
     const d = await res.json();
     const missing = d.missing_packages || [];
     const tools = d.system_tools || [];
-    const kind = (d.ok && !missing.length) ? 'ok' : 'warn';
-    // An update was actually pulled (not "already up to date", not a
-    // failure) - offer to apply it right now instead of leaving the user to
-    // close and reopen start.bat themselves.
-    setFetchResult(box, d.message || (d.ok ? 'Updated.' : 'Update check failed.'), kind,
-                   d.ok && !d.already_up_to_date && !missing.length ? restartApp : null);
-    if (!d.ok) showToast('Update check failed.', null, null, 'err');
-    else if (missing.length || tools.length) showMissingPackagesPrompt(missing, tools);
-    else if (d.already_up_to_date) showToast('Already up to date.', null, null, 'ok');
-    else showToast(d.message, null, null, 'ok');
+    if (!d.ok) {
+      setUpd('error', d.message || 'Update check failed.');
+      showToast('Update check failed.', null, null, 'err');
+    } else if (missing.length || tools.length) {
+      // packages first, then restart (offered once they are installed)
+      showMissingPackagesPrompt(missing, tools);
+      setUpd('deps', d.message);
+    } else if (d.already_up_to_date) {
+      UPD.checkedAt = Date.now();
+      setUpd('uptodate');
+      clearTimeout(UPD.timer);
+      UPD.timer = setTimeout(() => { if (UPD.state === 'uptodate') setUpd('idle'); }, 4000);
+    } else {
+      setUpd('ready', d.message);
+    }
   } catch (e) {
-    setFetchResult(box, 'Update check failed: ' + e.message, 'warn');
+    setUpd('error', 'Update check failed: ' + e.message);
     showToast('Update check failed.', null, null, 'err');
-  } finally {
-    btnBusy($('checkUpdateBtn'), false);
   }
+}
+
+// --- sidebar update status: the button's label/sub-label and the card above it follow UPD.state
+// (idle | checking | uptodate | ready | deps | restarting | error)
+const UPD = { state: 'idle', message: '', checkedAt: null, timer: null };
+const APP_VERSION = (document.querySelector('.applogo .av') || {}).textContent || '';
+
+function setUpd(state, message) {
+  UPD.state = state;
+  UPD.message = message || '';
+  paintUpdate();
+}
+
+function paintUpdate() {
+  const s = UPD.state;
+  const [glyph, label, sub] = {
+    idle: ['\u21bb', 'Check for updates', UPD.checkedAt ? 'checked just now' : APP_VERSION],
+    checking: ['', 'Checking\u2026', 'contacting server'],
+    uptodate: ['\u2713', 'You\u2019re up to date', `${APP_VERSION} is the latest`],
+    ready: ['\u21bb', 'Restart to update', 'update installed'],
+    deps: ['\u2193', 'Update installed', 'install packages below'],
+    restarting: ['', 'Restarting\u2026', 'back in a moment'],
+    error: ['\u21bb', 'Check for updates', 'last check failed'],
+  }[s];
+  const busy = s === 'checking' || s === 'restarting';
+  const ico = $('updIco');
+  ico.innerHTML = busy ? '<span class="updspin"></span>' : escHtml(glyph);
+  ico.dataset.state = s;
+  $('updLabel').textContent = label;
+  $('updLabel').dataset.state = s;
+  $('updSub').textContent = sub;
+  $('checkUpdateBtn').classList.toggle('busy', busy);
+
+  const wrap = $('updWrap');
+  if (s === 'ready') {
+    wrap.innerHTML = '<div class="updcard ok"><div class="updrow"><span class="updchip">\u2191</span><span class="updmsg"><b>Update ready</b>' +
+      '<span class="updtext"></span></span></div><div class="updacts"><button type="button" class="updlater">Later</button>' +
+      '<button type="button" class="updnow">Restart now</button></div></div>';
+    wrap.querySelector('.updtext').textContent = UPD.message || 'The update is installed. Restart to start using it.';
+    wrap.querySelector('.updlater').onclick = () => setUpd('idle');
+    wrap.querySelector('.updnow').onclick = restartApp;
+  } else if (s === 'error') {
+    wrap.innerHTML = '<div class="updcard warn"><div class="updrow"><span class="updchip">!</span><span class="updmsg"><b>Couldn\u2019t check for updates</b>' +
+      '<span class="updtext mono"></span></span></div><div class="updacts"><button type="button" class="updlater">Dismiss</button>' +
+      '<button type="button" class="updretry">Try again</button></div></div>';
+    wrap.querySelector('.updtext').textContent = UPD.message;
+    wrap.querySelector('.updlater').onclick = () => setUpd('idle');
+    wrap.querySelector('.updretry').onclick = checkForUpdate;
+  } else if (s === 'deps') {
+    wrap.innerHTML = '<div class="updcard ok"><div class="updrow"><span class="updchip">\u2193</span><span class="updmsg"><b>Update installed</b>' +
+      '<span class="updtext"></span></span></div></div>';
+    wrap.querySelector('.updtext').textContent = 'Some packages need installing first \u2014 see the panel on the page.';
+  } else {
+    wrap.innerHTML = '';
+  }
+}
+
+// the button: restart when an update is waiting, otherwise check
+function onUpdateButton() {
+  if (UPD.state === 'ready') restartApp(); else checkForUpdate();
 }
 
 // --- dependency self-repair: missing packages after a pull (see api_deps_check
@@ -4072,7 +4205,7 @@ function handleDepsInstallEvent(ev) {
       : `${ev.missing.length} package(s) still missing - see the log above.`);
     if (ev.ok) {
       $('depsInstallBtn').disabled = true;   // nothing left to install
-      setFetchResult($('updateResult'), 'Packages installed. Restart to apply the update.', 'ok', restartApp);
+      setUpd('ready', 'Packages installed. Restart to apply the update.');
     }
   } else if (ev.type === 'error') {
     finishDepsInstall(false, ev.message || 'Install failed.');
@@ -4088,33 +4221,12 @@ function finishDepsInstall(ok, message) {
   setStatus(message, !ok);
 }
 
-// Fills a .fetchresult box with a message and, optionally, an action button -
-// built with DOM nodes (not innerHTML) since `message` can come straight from
-// git output. Shared by checkForUpdate() and restartApp() below.
-function setFetchResult(box, message, kind, onAction, actionLabel) {
-  box.textContent = '';
-  box.classList.remove('ok', 'warn');
-  const msg = document.createElement('span');
-  msg.textContent = message;
-  box.appendChild(msg);
-  if (onAction) {
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'small primary';
-    btn.innerHTML = ic('refresh', 13) + `<span>${actionLabel || 'Restart now'}</span>`;
-    btn.onclick = onAction;
-    box.appendChild(btn);
-  }
-  box.classList.add('on', kind);
-}
-
 // Applies a just-pulled update by restarting the Flask process (see
 // POST /api/restart in app.py, which spawns a fresh process then exits this
 // one) and reloading this page once the server answers again - so the user
 // never has to manually close/reopen start.bat to pick up new code.
 async function restartApp() {
-  const box = $('updateResult');
-  setFetchResult(box, 'Restarting…', 'warn');
+  setUpd('restarting');
   try {
     await fetch('/api/restart', { method: 'POST' });
   } catch (_) {
@@ -4124,8 +4236,7 @@ async function restartApp() {
   const deadlineMs = Date.now() + 30000;
   const poll = async () => {
     if (Date.now() > deadlineMs) {
-      setFetchResult(box, 'Restart is taking longer than expected - check the '
-        + 'console window, or reload this page manually in a moment.', 'warn');
+      setUpd('error', 'Restart is taking longer than expected - check the console window, or reload this page manually in a moment.');
       return;
     }
     try {
@@ -4142,7 +4253,8 @@ async function restartApp() {
 // ---------------------------------------------------------------------------
 $('npCreateBtn').onclick = createProject;
 $('npManualBtn').onclick = useManualRange;
-$('checkUpdateBtn').onclick = checkForUpdate;
+$('checkUpdateBtn').onclick = onUpdateButton;
+paintUpdate();
 $('themeBtnP').onclick = toggleTheme;
 $('importProjectBtn').onclick = () => $('importProjectFile').click();
 $('importProjectFile').onchange = importProject;
@@ -4150,8 +4262,13 @@ $('exportProjectBtn').onclick = exportProject;
 $('saveDefaultsBtn').onclick = saveDefaults;
 $('applyDefaultsBtn').onclick = () => applyDefaults(false);
 $('applyDefaultsAllBtn').onclick = () => applyDefaults(true);
-$('npToggleBtn').onclick = () => $('npComposer').classList.toggle('on');
-$('npCloseBtn').onclick = () => $('npComposer').classList.remove('on');
+$('npToggleBtn').onclick = openNewProject;
+$('npCloseBtn').onclick = $('npCancelBtn').onclick = closeNewProject;
+$('npComposer').addEventListener('mousedown', e => { if (e.target === $('npComposer')) closeNewProject(); });
+$('npUrl').oninput = paintNewProject;
+$('npUrlClear').onclick = () => { $('npUrl').value = ''; paintNewProject(); $('npUrl').focus(); };
+[$('npUrl'), $('npName')].forEach(el => el.addEventListener('keydown', e => { if (e.key === 'Enter' && !$('npCreateBtn').disabled) createProject(); }));
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && $('npComposer').classList.contains('on')) closeNewProject(); });
 $('backToProjectsBtn').onclick = () => navTo({});
 $('backToProjectBtn').onclick = backToProject;
 $('pjRefetchBtn').onclick = refetchChapters;

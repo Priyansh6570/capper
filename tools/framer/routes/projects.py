@@ -47,12 +47,14 @@ def api_create_project():
     data = request.get_json(silent=True) or {}
     name = (data.get("name") or "").strip()
     url = (data.get("url") or "").strip()
+    adapter = sites.detect(url) if url else None
+    fetched = adapter.fetch_series(url) if adapter else None
+    # the name is optional: the series' own title, else what the page worked out from the URL
+    name = name or (fetched or {}).get("title") or (data.get("fallback_name") or "").strip()
     if not name:
         return jsonify(error="Project name required."), 400
     project = project_defaults.create_project(name, url)
 
-    adapter = sites.detect(url) if url else None
-    fetched = adapter.fetch_series(url) if adapter else None
     if adapter:
         project["site"] = adapter.SITE_NAME
     if fetched:
