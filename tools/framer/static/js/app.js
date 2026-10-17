@@ -1951,7 +1951,7 @@ async function createProject() {
   try {
     const res = await fetch('/api/projects', { method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({ name, url, fallback_name: titleFromUrl(url) }) });
-    const d = await res.json();
+    const d = await res.json().catch(() => ({ error: `The server returned an error (HTTP ${res.status}). Details are in app_log.txt.` }));
     if (!res.ok) throw new Error(d.error || 'create failed');
     if (d.fetch && d.fetch.ok) {
       $('npFetchResult').textContent = `Found ${d.fetch.total} chapter(s) - "${d.fetch.title}".`;
@@ -1964,7 +1964,12 @@ async function createProject() {
       $('npManualRow').style.display = 'flex';
       $('npManualRow').dataset.slug = d.slug;
     }
-  } catch (e) { setStatus('Create project error: ' + e.message, true); }
+  } catch (e) {
+    setStatus('Create project error: ' + e.message, true);
+    $('npFetchResult').textContent = e.message;
+    $('npFetchResult').classList.remove('ok');
+    $('npFetchResult').classList.add('on', 'warn');
+  }
   finally { btnBusy($('npCreateBtn'), false); $('npProg').classList.remove('on'); paintNewProject(); }
 }
 

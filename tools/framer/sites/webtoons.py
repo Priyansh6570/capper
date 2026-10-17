@@ -64,7 +64,7 @@ def _normalize_list_url(url: str) -> Optional[str]:
 def _extract_title(soup: BeautifulSoup, fallback_url: str) -> str:
     h1 = soup.select_one("h1.subj")
     if h1 and h1.get_text(strip=True):
-        return h1.get_text(strip=True)
+        return " ".join(h1.get_text(" ", strip=True).split())  # the heading breaks lines with <br>
     og = soup.select_one('meta[property="og:title"]')
     if og and og.get("content"):
         return og["content"].strip()

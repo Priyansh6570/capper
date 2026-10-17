@@ -53,7 +53,14 @@ def api_create_project():
     name = name or (fetched or {}).get("title") or (data.get("fallback_name") or "").strip()
     if not name:
         return jsonify(error="Project name required."), 400
-    project = project_defaults.create_project(name, url)
+    try:
+        project = project_defaults.create_project(name, url)
+    except OSError as e:
+        folder = app_settings.projects_folder()
+        where = f"the projects folder ({folder})" if folder else "the app's projects folder"
+        return jsonify(error=f"Couldn't create the project folder in {where}: {e.strerror or e}. "
+                             "If it is on a drive that isn't connected, connect it or change the "
+                             "Projects folder in this dialog."), 500
 
     if adapter:
         project["site"] = adapter.SITE_NAME
