@@ -2004,6 +2004,7 @@ async function loadCurrentProject(slug) {
   if (!d.project) throw new Error(d.error || 'not found');
   CURRENT_PROJECT = d.project;
   projectLoadedAt = Date.now();
+  paintProjectFolder();
   return CURRENT_PROJECT;
 }
 
@@ -3747,6 +3748,32 @@ function streamEvents(url, onEvent) {
   });
 }
 
+async function paintProjectFolder() {
+  const field = $('pjFolder');
+  if (!field || !CURRENT_PROJECT) return;
+  try {
+    const d = await (await fetch(`/api/projects/${encodeURIComponent(CURRENT_PROJECT.slug)}/folder`)).json();
+    field.value = d.folder || '';
+    field.dataset.saved = field.value;
+  } catch (e) { /* the field stays empty */ }
+}
+
+async function changeProjectFolder() {
+  const { slug } = CURRENT_PROJECT;
+  const folder = $('pjFolder').value.trim();
+  if (folder === $('pjFolder').dataset.saved) { showToast('That is already the project folder.', null, null, 'ok'); return; }
+  btnBusy($('pjFolderBtn'), true);
+  try {
+    const res = await fetch(`/api/projects/${encodeURIComponent(slug)}/folder`, { method:'POST',
+      headers:{'Content-Type':'application/json'}, body: JSON.stringify({ folder, move: $('pjFolderMove').checked }) });
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.error || 'failed');
+    $('pjFolder').value = $('pjFolder').dataset.saved = d.folder;
+    showToast(`Project folder is now ${d.folder}`, null, null, 'ok');
+  } catch (e) { setStatus('Project folder error: ' + e.message, true); }
+  finally { btnBusy($('pjFolderBtn'), false); }
+}
+
 async function deleteProject() {
   const { slug, name } = CURRENT_PROJECT;
   const typed = prompt(`This permanently deletes "${name}" and every file of it - chapters, scripts, audio, videos and the copy in the projects folder.
@@ -4395,6 +4422,7 @@ $('backToProjectsBtn').onclick = () => navTo({});
 $('backToProjectBtn').onclick = backToProject;
 $('pjRefetchBtn').onclick = refetchChapters;
 $('pjDeleteBtn').onclick = deleteProject;
+$('pjFolderBtn').onclick = changeProjectFolder;
 $('npFolderBtn').onclick = saveProjectsFolder;
 $('npCacheBtn').onclick = saveModelCache;
 $('mergeBtn').onclick = startMerge;

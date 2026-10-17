@@ -39,6 +39,24 @@ def set_projects_folder(folder: str) -> Path | None:
     return _set_folder("projects_folder", folder)
 
 
+def project_folders() -> dict[str, Path]:
+    """Projects whose folder was pointed somewhere other than <projects folder>/<slug> on this PC."""
+    found = _read().get("project_folders")
+    return {slug: Path(p) for slug, p in found.items() if p} if isinstance(found, dict) else {}
+
+
+def set_project_folder(slug: str, folder: str) -> Path | None:
+    """Point `slug` at `folder` (created if missing); an empty folder goes back to the default place."""
+    path = Path(folder.strip()).expanduser() if folder.strip() else None
+    if path:
+        path.mkdir(parents=True, exist_ok=True)
+    folders = {s: str(p) for s, p in project_folders().items() if s != slug}
+    if path:
+        folders[slug] = str(path)
+    atomic_write_text(SETTINGS_FILE, json.dumps({**_read(), "project_folders": folders}, indent=2), backup=False)
+    return path
+
+
 def model_cache() -> Path | None:
     """The Hugging Face cache folder the voice model is stored in (applied as HF_HOME, see config.py), or
     None for the Windows default under the user profile."""

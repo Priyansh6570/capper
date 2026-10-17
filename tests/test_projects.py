@@ -114,3 +114,23 @@ class AppSettingsTest(IsolatedProjects):
         self.assertEqual(app_settings.projects_folder(), self.shared)
         app_settings.set_projects_folder("")
         self.assertIsNone(app_settings.projects_folder())
+
+
+class RelocateTest(IsolatedProjects):
+    def test_move_to_another_folder_keeps_the_project(self):
+        self.use_shared_folder()
+        slug = self.new_project("Angry Nymph")["slug"]
+        target = self.shared / "bebe"
+        projects.relocate(slug, str(target))
+        self.assertEqual(projects.project_dir(slug), target)
+        self.assertTrue((target / "project.json").is_file())
+        self.assertFalse((self.shared / slug).exists())
+        self.assertEqual([p["slug"] for p in projects.list_projects()], [slug])
+        projects.relocate(slug, "")
+        self.assertEqual(projects.project_dir(slug), self.shared / slug)
+        self.assertEqual(app_settings.project_folders(), {})
+
+    def test_point_at_a_folder_without_project_is_refused(self):
+        slug = self.new_project()["slug"]
+        with self.assertRaises(ValueError):
+            projects.relocate(slug, str(self.tmp / "nothing"), move=False)

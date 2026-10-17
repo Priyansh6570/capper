@@ -381,6 +381,7 @@
           <a href="#s-gpu">GPU acceleration</a>
           <a href="#s-defaults">Default settings</a>
           <a href="#s-backup">Export project</a>
+          <a href="#s-folder">Project folder</a>
           <a href="#s-delete">Delete project</a>
           <div class="settingsnote">Changes apply to every chapter rendered in this project. Already-rendered chapters need a re-render.</div>
         </nav>
@@ -625,6 +626,15 @@
             <div class="setbody">
               <label class="field" style="margin:0;flex-direction:row;gap:8px;align-items:center"><input type="checkbox" id="exportVideos" checked /><span>Include rendered videos (larger file)</span></label>
               <div class="filerow"><button type="button" id="exportProjectBtn" class="small ghost" data-icon="download" data-ic-size="14"><span>Export project</span></button></div>
+            </div>
+          </div>
+
+          <div class="setcard" id="s-folder">
+            <div class="setlabel"><b>Project folder</b><span>Where this project's files are stored on this PC, e.g. a folder inside Google Drive. Change it if the project ended up in the wrong folder. Leave empty to use the default projects folder.</span></div>
+            <div class="setbody">
+              <input type="text" id="pjFolder" placeholder="G:\My Drive\RECAPPER\project-name" spellcheck="false" />
+              <label class="field" style="margin:0;flex-direction:row;gap:8px;align-items:center"><input type="checkbox" id="pjFolderMove" checked /><span>Move the files there (untick if the project is already in that folder)</span></label>
+              <div class="filerow"><button type="button" id="pjFolderBtn" class="small ghost" data-icon="check" data-ic-size="14"><span>Change folder</span></button></div>
             </div>
           </div>
 

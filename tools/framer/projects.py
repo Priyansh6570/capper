@@ -86,7 +86,10 @@ def unique_slug(name: str) -> str:
 # --------------------------------------------------------------------------- #
 def project_dir(slug: str) -> Path:
     """The project's folder: project.json, settings assets and the downloaded chapters. New projects
-    go to the shared projects folder when one is set."""
+    go to the shared projects folder when one is set. A folder chosen for this one project wins."""
+    chosen = app_settings.project_folders().get(slug)
+    if chosen:
+        return chosen
     for root in _roots():
         if (root / slug / "project.json").is_file():
             return root / slug
@@ -436,12 +439,41 @@ def delete(slug: str) -> None:
     and any chapter folders a run left in the app's legacy work/ and output/ trees. Raises OSError,
     listing what is left, if something could not be removed."""
     folders = [root / slug for root in _roots()]
+    if slug in app_settings.project_folders():
+        folders.append(app_settings.project_folders()[slug])
     folders += [d for tree in (WORK_DIR, OUTPUT_DIR) if tree.is_dir() for d in tree.glob(f"{slug}_ch*")]
     leftovers = []
     for folder in filter(Path.exists, folders):
         shutil.rmtree(folder, onexc=lambda _func, path, _exc: leftovers.append(str(path)))
     if leftovers:
         raise OSError("Couldn't delete: " + ", ".join(sorted(set(leftovers))[:5]))
+
+
+def relocate(slug: str, folder: str, move: bool = True) -> Path:
+    """Make `folder` the project's folder on this PC (empty: back to <projects folder>/<slug>). With
+    `move` the existing project folder is moved there, absolute paths stored in its JSON files
+    included; without it the folder is only pointed at (it must then already hold the project).
+    Raises ValueError for an unusable folder."""
+    old = project_dir(slug)
+    target = Path(folder.strip()).expanduser() if folder.strip() else (app_settings.projects_folder() or PROJECTS_DIR) / slug
+    if target.resolve() == old.resolve():
+        return old
+    if move:
+        if target.exists() and any(target.iterdir()):
+            raise ValueError(f"{target} is not empty. Choose an empty or new folder, or untick 'Move the files'.")
+        if str(target.resolve()).lower().startswith(str(old.resolve()).lower() + os.sep):
+            raise ValueError("The new folder can't be inside the project's current folder.")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if target.exists():
+            target.rmdir()
+        shutil.move(str(old), str(target))
+        _rebase_paths(target, str(old), str(target))
+    elif not (target / "project.json").is_file():
+        raise ValueError(f"{target} doesn't contain a project (project.json is missing).")
+    default = (app_settings.projects_folder() or PROJECTS_DIR) / slug
+    app_settings.set_project_folder(slug, "" if target == default else str(target))
+    write_all_media_snapshots(slug)
+    return target
 
 
 def _cover_stamp(folder: Path) -> int:
@@ -466,13 +498,16 @@ def _running_chapters(folder: Path) -> int:
 def list_projects() -> list[dict]:
     out = []
     seen = set()
-    folders = sorted(d for root in _roots() if root.is_dir() for d in root.iterdir())
+    chosen = app_settings.project_folders()
+    folders = [chosen[s] for s in sorted(chosen)]
+    folders += sorted(d for root in _roots() if root.is_dir() for d in root.iterdir())
     for d in folders:
-        if d.name in seen or not (d / "project.json").is_file():
+        slug = next((s for s, p in chosen.items() if p == d), d.name)
+        if slug in seen or not (d / "project.json").is_file():
             continue
-        seen.add(d.name)
+        seen.add(slug)
         try:
-            p = load(d.name)
+            p = load(slug)
         except Exception:  # noqa: BLE001 - a corrupt project.json must not sink the list
             continue
         counts: dict[str, int] = {}

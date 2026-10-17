@@ -187,6 +187,32 @@ def api_chapter_thumb(slug, n):
     return send_file(thumb, mimetype="image/jpeg", max_age=0) if thumb else (jsonify(error="No frame yet."), 404)
 
 
+@bp.get("/api/projects/<slug>/folder")
+def api_get_project_folder(slug):
+    if not projects.exists(slug):
+        return jsonify(error=f"No such project: {slug}"), 404
+    return jsonify(folder=str(projects.project_dir(slug)))
+
+
+@bp.post("/api/projects/<slug>/folder")
+def api_set_project_folder(slug):
+    """Body: JSON {folder, move?}. Changes where this project's folder is on this PC (e.g. another Drive
+    folder); `move` (default true) moves the existing files there, else the folder must already hold it."""
+    if not projects.exists(slug):
+        return jsonify(error=f"No such project: {slug}"), 404
+    running = BATCHES.get(slug)
+    if (running and running.active) or any(j.slug == slug and j.status in ("queued", "running") for j in JOBS.values()):
+        return jsonify(error="This project is busy - cancel its pipeline and jobs first."), 409
+    data = request.get_json(silent=True) or {}
+    try:
+        folder = projects.relocate(slug, data.get("folder") or "", move=data.get("move", True) is not False)
+    except ValueError as e:
+        return jsonify(error=str(e)), 400
+    except OSError as e:
+        return jsonify(error=f"Couldn't use that folder: {e.strerror or e}"), 500
+    return jsonify(ok=True, folder=str(folder))
+
+
 @bp.get("/api/projects/<slug>/export")
 def api_export_project(slug):
     """Zip the whole project folder (downloads, frames, audio, renders, assets,
