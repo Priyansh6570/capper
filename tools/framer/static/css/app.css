@@ -598,10 +598,10 @@
   .pcard .pthumb.hascover { background-size:cover; background-position:center; }
   .pcard .pinfo { display:flex; flex-direction:column; gap:8px; min-width:0; }
   .pcard .phead { display:flex; flex-direction:column; gap:3px; }
-  .pcard .pname { min-width:0; font-weight:700; font-size:17px; line-height:1.3; text-wrap:pretty; }
+  .pcard .pname { white-space:normal; min-width:0; font-weight:700; font-size:17px; line-height:1.3; text-wrap:pretty; }
   .pcard .psub { display:flex; gap:10px; font:12.5px ui-monospace,Consolas,monospace; color:var(--muted); min-width:0; }
   .pcard .purl { color:var(--txt); opacity:.8; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-  .pcard .pdesc { margin:0; font-size:13.5px; line-height:1.55; color:var(--muted); display:-webkit-box; -webkit-line-clamp:4;
+  .pcard .pdesc { white-space:normal; font-weight:400; margin:0; font-size:13.5px; line-height:1.55; color:var(--muted); display:-webkit-box; -webkit-line-clamp:4;
                   -webkit-box-orient:vertical; overflow:hidden; text-wrap:pretty; }
   .pcard .pdesc:empty { display:none; }
   .pcard .pgrow { flex:1; min-height:6px; }
