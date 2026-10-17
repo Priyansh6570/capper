@@ -187,6 +187,9 @@ def _atomic_write(path: Path, text: str) -> None:
 def default_settings() -> dict:
     return {
         "music": {"mode": "default", "file": None},
+        # Gains stage 7 applies to the narration and the music bed (1.0 = unchanged); the defaults
+        # are s7_assemble's NARRATION_VOL / MUSIC_VOL.
+        "audio": {"narration_vol": 2.5, "music_vol": 0.03},
         # engine: "chatterbox" clones the reference voice (mode/file); "kokoro" has no cloning and
         # speaks with one of its own voices (stages/tts_kokoro.py).
         "voice": {"mode": "default", "file": None, "engine": "chatterbox",
@@ -596,6 +599,9 @@ def update_settings(slug: str, settings: dict) -> dict:
         music = project["settings"]["music"]
         if music.get("mode") not in ("default", "file", "none"):
             music["mode"] = "default"
+        audio = project["settings"]["audio"]
+        audio["narration_vol"] = max(0.5, min(6.0, float(audio.get("narration_vol", 2.5))))
+        audio["music_vol"] = max(0.0, min(0.3, float(audio.get("music_vol", 0.03))))
         bg = project["settings"]["background"]
         bg["dim"] = max(0.1, min(1.0, float(bg.get("dim", 0.85))))
         if bg.get("mode") not in ("blur", "image", "video"):
@@ -699,6 +705,7 @@ def media_settings_snapshot(slug: str, n) -> dict:
     out = {
         "music": _resolved_str(slug, music.get("file")) if music.get("mode") == "file" else None,
         "music_off": music.get("mode") == "none",
+        "audio": dict(s["audio"]),
         "voice": _resolved_str(slug, voice.get("file")) if voice.get("mode") == "file" else None,
         "tts": {"engine": voice["engine"], "kokoro_voice": voice["kokoro_voice"]},
         "tone": chapter_tone(project, n),

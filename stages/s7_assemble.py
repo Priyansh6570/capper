@@ -294,6 +294,15 @@ def _music_file() -> Path | None:
     return files[0] if files else None
 
 
+def _resolve_volumes(settings: dict) -> tuple[float, float]:
+    """(narration gain, music gain) from the project's audio settings, else the built-in levels."""
+    audio = settings.get("audio") or {}
+    try:
+        return float(audio.get("narration_vol", NARRATION_VOL)), float(audio.get("music_vol", MUSIC_VOL))
+    except (TypeError, ValueError):
+        return NARRATION_VOL, MUSIC_VOL
+
+
 def _resolve_music(settings: dict) -> Path | None:
     """The project's chosen music track, else today's global assets/music scan;
     None when the project opted out of a music bed."""
@@ -647,7 +656,8 @@ def _build_filtergraph(items: list[dict], music_in: int | None, total: float,
                        transition: str = "fade", crossfade: float = CROSSFADE,
                        zoom: float | None = None, bg_in: int | None = None,
                        bg_dim: float = 0.85, out_height: int = H, blur_bg: bool = False,
-                       back_in: int | None = None, wm_in: int | None = None
+                       back_in: int | None = None, wm_in: int | None = None,
+                       narration_vol: float = NARRATION_VOL, music_vol: float = MUSIC_VOL
                        ) -> tuple[list[str], str, str | None]:
     """Build the ffmpeg filter_complex graphs for the video transition chain + audio
     mix. Image inputs are 0..n-1; narration audio inputs follow; the video
@@ -756,7 +766,7 @@ def _build_filtergraph(items: list[dict], music_in: int | None, total: float,
         delay = max(0, int(round(it["start"] * 1000)))
         lab = f"[na{a_in}]"
         rest.append(f"[{a_in}:a]aresample={AUDIO_SR},aformat=channel_layouts=stereo,"
-                     f"volume={NARRATION_VOL},alimiter=limit=0.95,adelay={delay}:all=1{lab}")
+                     f"volume={narration_vol},alimiter=limit=0.95,adelay={delay}:all=1{lab}")
         narr_labels.append(lab)
         a_in += 1
 
@@ -772,7 +782,7 @@ def _build_filtergraph(items: list[dict], music_in: int | None, total: float,
     music = None
     if music_in is not None:
         rest.append(f"[{music_in}:a]aresample={AUDIO_SR},"
-                     f"aformat=channel_layouts=stereo,volume={MUSIC_VOL}[music]")
+                     f"aformat=channel_layouts=stereo,volume={music_vol}[music]")
         music = "[music]"
 
     if narr and music:
@@ -797,7 +807,8 @@ def _build_cmd(ffmpeg: str, items: list[dict], music_path: Path | None,
                total: float, out: Path, quality: dict,
                transition: str = "fade", crossfade: float = CROSSFADE,
                zoom: float | None = None, video_bg: Path | None = None,
-               bg_dim: float = 0.85, wm_layer: Path | None = None) -> list[str]:
+               bg_dim: float = 0.85, wm_layer: Path | None = None,
+               narration_vol: float = NARRATION_VOL, music_vol: float = MUSIC_VOL) -> list[str]:
     cmd = [ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-stats"]
     # Image inputs: one frame each, repeated to its duration by the filtergraph.
     for it in items:
@@ -832,7 +843,7 @@ def _build_cmd(ffmpeg: str, items: list[dict], music_path: Path | None,
 
     graphs, vlabel, alabel = _build_filtergraph(items, music_in, total, transition, crossfade,
                                                 zoom, bg_in, bg_dim, quality["height"], quality["blur_bg"],
-                                                back_in, wm_in)
+                                                back_in, wm_in, narration_vol, music_vol)
     # the graphs go through files: inline, a long chapter overflows Windows' command-line limit
     for k, graph in enumerate(graphs):
         script = Path(items[0]["still"]).with_name(f"filtergraph_{k}.txt")
@@ -912,13 +923,14 @@ def _ffmpeg_version(ffmpeg: str) -> str:
 def _assemble_ffmpeg(items: list[dict], music_path: Path | None, total: float, out: Path,
                      quality: dict, transition: str = "fade", crossfade: float = CROSSFADE,
                      zoom: float | None = None, video_bg: Path | None = None,
-                     bg_dim: float = 0.85, wm_layer: Path | None = None) -> str:
+                     bg_dim: float = 0.85, wm_layer: Path | None = None,
+                     narration_vol: float = NARRATION_VOL, music_vol: float = MUSIC_VOL) -> str:
     """Render with ffmpeg directly, logging exactly what is being run. Returns the codec used;
     raises if ffmpeg fails (there is no fallback renderer)."""
     ffmpeg = _require_ffmpeg()
     total_frames = int(round(total * FPS))
     cmd = _build_cmd(ffmpeg, items, music_path, total, out, quality, transition, crossfade,
-                     zoom, video_bg, bg_dim, wm_layer)
+                     zoom, video_bg, bg_dim, wm_layer, narration_vol, music_vol)
     print(f"  ffmpeg: {ffmpeg}", flush=True)
     print(f"          {_ffmpeg_version(ffmpeg)}", flush=True)
     print(f"  encoder: libx264 (CPU), preset {X264_PRESET}, crf {quality['crf']}, "
@@ -960,6 +972,7 @@ def run(m: Manifest) -> Manifest:
     quality_name, quality = _resolve_quality(settings)
     items, total, lines = _plan(beats, mapping, crossfade)
     music_path = _resolve_music(settings)
+    narration_vol, music_vol = _resolve_volumes(settings)
     wm_cfg = settings.get("watermark")
     print(f"  [debug] media_settings.json watermark cfg: {wm_cfg!r}")
     watermark = _build_watermark_layer(settings)
@@ -1023,7 +1036,7 @@ def run(m: Manifest) -> Manifest:
         t_pre = time.perf_counter() - t0
         print(f"  precompose took {t_pre:.1f}s ({len(items) / max(t_pre, 0.001):.1f} stills/s)", flush=True)
         codec = _assemble_ffmpeg(items, music_path, total, out, quality, transition, crossfade,
-                                 zoom, video_bg, bg_dim, wm_layer)
+                                 zoom, video_bg, bg_dim, wm_layer, narration_vol, music_vol)
         path = "ffmpeg"
     finally:
         shutil.rmtree(stills_dir, ignore_errors=True)
@@ -1031,7 +1044,7 @@ def run(m: Manifest) -> Manifest:
     dt = time.perf_counter() - t0
     record_usage("video", codec, False)
     if music_path:
-        print(f"  music bed: {music_path.name} @ vol {MUSIC_VOL} (ducked)")
+        print(f"  music bed: {music_path.name} @ vol {music_vol} (ducked)")
     print(f"  rendered {len(lines)} lines / {len(items)} stills ({total:.1f}s, "
           f"{FPS}fps, {quality_name} {quality['height']}p, {codec} via {path}, "
           f"{out.stat().st_size / 1e6:.1f} MB) in {dt:.1f}s -> {out}")

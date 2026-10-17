@@ -51,7 +51,8 @@ LOGO_SIZE = 86
 MESSAGES = ["Waking the cat", "Loading panel reader", "Warming up narrator",
             "Preparing timeline", "Ready"]
 
-FRAME_MS = 50  # ~20fps - smooth enough for the breathe/spin/fade, cheap enough to never stutter
+FRAME_MS = 16  # ~60fps: a frame costs ~7ms to draw, and 20fps made the ring visibly step
+PORT_CHECK_S = 0.25  # how often to probe the server port (a blocking connect, so not every frame)
 
 
 def _ease_out(t: float) -> float:
@@ -194,6 +195,7 @@ def _run(host: str, port: int, logo_path: Path, min_s: float, max_s: float) -> N
     tag_font = _load_font(["consola.ttf", "cour.ttf", "arial.ttf"], 10)
 
     start = time.monotonic()
+    port_state = {"ready": False, "checked": -PORT_CHECK_S}
 
     def _port_open() -> bool:
         try:
@@ -290,7 +292,10 @@ def _run(host: str, port: int, logo_path: Path, min_s: float, max_s: float) -> N
 
     def tick() -> None:
         elapsed = time.monotonic() - start
-        ready = _port_open()
+        if not port_state["ready"] and elapsed - port_state["checked"] >= PORT_CHECK_S:
+            port_state["checked"] = elapsed
+            port_state["ready"] = _port_open()
+        ready = port_state["ready"]
         done = (ready and elapsed >= min_s) or elapsed >= max_s
 
         raw = min(1.0, elapsed / max(min_s, 0.001))

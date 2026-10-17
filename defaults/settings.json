@@ -3,10 +3,14 @@
     "mode": "default",
     "file": null
   },
+  "audio": {
+    "narration_vol": 3.0,
+    "music_vol": 0.01
+  },
   "voice": {
     "mode": "default",
     "file": null,
-    "engine": "chatterbox",
+    "engine": "kokoro",
     "kokoro_voice": "am_adam"
   },
   "watermark": {

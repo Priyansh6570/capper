@@ -151,7 +151,6 @@
           <a href="javascript:void(0)" id="pjSourceLink" class="srclink" data-icon="link" data-ic-size="10" title="Open source in browser" hidden><span id="pjSourceLabel"></span></a>
         </div>
         <div class="actions">
-          <button id="pjMoreBtn" class="small primary" data-icon="download" data-ic-size="14" title="Refresh the chapter list, then download the next chapters not yet in the project folder" hidden><span>Download more chapters</span></button>
           <button id="pjRefetchBtn" class="small ghost" data-icon="refresh" data-ic-size="14" title="Re-fetch chapter list from the series URL"><span>Refetch</span></button>
         </div>
       </div>
@@ -355,6 +354,7 @@
           <span class="navlabel" style="margin-top:14px">Output</span>
           <a href="#s-video">Video size</a>
           <a href="#s-music">Background music</a>
+          <a href="#s-volume">Volume</a>
           <a href="#s-voice">Narration voice</a>
           <a href="#s-watermark">Watermark</a>
           <span class="navlabel" style="margin-top:14px">Visuals</span>
@@ -469,6 +469,16 @@
                 <span class="swatch" id="musicName"></span>
                 <input id="musicFile" type="file" accept="audio/*" class="filehidden" tabindex="-1" />
               </div>
+            </div>
+          </div>
+
+          <div class="setcard" id="s-volume">
+            <div class="setlabel"><b>Volume</b><span>Narration loudness and the music bed level. Applies to the next render of each chapter (Re-render voice is not needed).</span></div>
+            <div class="setbody">
+              <label class="slider"><div class="slbl"><span>Narration volume</span><span id="narrVolLbl"></span></div>
+                <input id="narrVol" type="range" min="50" max="600" step="10" value="250" /></label>
+              <label class="slider"><div class="slbl"><span>Music volume</span><span id="musicVolLbl"></span></div>
+                <input id="musicVol" type="range" min="0" max="30" step="1" value="3" /></label>
             </div>
           </div>
 

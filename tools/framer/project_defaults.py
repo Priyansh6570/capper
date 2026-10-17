@@ -30,6 +30,7 @@ ASSET_FIELDS = {
     "intro": ("branding", "intro"), "outro": ("branding", "outro"),
 }
 GROUP_LABELS = {
+    "audio": "Narration and music volume",
     "music": "Background music", "voice": "Narration voice", "watermark": "Watermark",
     "background": "Video background", "animation": "Frame animation", "video": "Video size",
     "branding": "Intro / outro", "script": "Script tone and style",

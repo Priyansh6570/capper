@@ -1,8 +1,8 @@
 # Work log
 
-Fixed chapter 5's download failure ("Using http2=True, but the 'h2' package is not installed").
-
-- `webtoon-downloader` asks httpx for HTTP/2, which needs the `h2` package; nothing in the requirements pulled it in, so every webtoons.com download failed.
-- `requirements.txt`: added `h2>=4.1`. Installed it in `.venv` (h2, hpack, hyperframe); CUDA torch still `True`, `deps.py check` clean.
-
-**Run next:** click Retry download on chapter 5 in the pipeline card. Other PCs get the fix by re-running `setup.bat` (or the in-app update).
+- Volume settings card (narration 50-600%, music 0-30%) -> `projects.py`, `s7_assemble.py`, `index.html`, `app.js`.
+- Removed the "Download more chapters" button; pipeline shows "N videos done" instead of cards; merge no longer embeds a player on the Chapters page.
+- `defaults/settings.json` re-saved from `100-year-old-top-chef`; `audio` group label added in `project_defaults.py`.
+- Splash: 16ms frames, port probed every 0.25s (`splash.py`).
+- Merged `perf-refactor` into `main` and pushed `main`.
+- Note: the in-app "Check for updates" runs `git reset --hard HEAD` first, which wipes uncommitted work - commit before pressing it.

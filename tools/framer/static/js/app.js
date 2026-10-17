@@ -1926,7 +1926,6 @@ function paintProjectChrome() {
   if ($('pjClaudeUsage')) $('pjClaudeUsage').innerHTML = usage && usage.output
     ? `Claude tokens: ${tokenLine(usage)}<br>${costLine(usage)}` : '';
   if ($('pjSideProgressFill')) $('pjSideProgressFill').style.width = (chapters.length ? Math.round(100 * done / chapters.length) : 0) + '%';
-  $('pjMoreBtn').hidden = !p.site;
   const src = $('pjSourceLink');
   if (src) {
     if (p.url) { src.hidden = false; $('pjSourceLabel').textContent = shortHost(p.url); src.onclick = () => window.open(p.url, '_blank'); }
@@ -2337,20 +2336,8 @@ function metersHtml() {
 }
 
 function resultsHtml(data) {
-  const done = data.chapters.filter(c => c.state === 'done');
-  const cards = done.map(c => {
-    const ch = CURRENT_PROJECT.chapters.find(x => x.n === c.n), on = SELECTION.has(c.n);
-    const segs = BATCH_STAGES.filter(s => c.stage_seconds[s]).map(s =>
-      `<i title="${s} · ${spanText(c.stage_seconds[s])}" style="flex-grow:${c.stage_seconds[s]};background:${stageColor(s, .95)}"></i>`).join('');
-    return `<div class="bvideo ${on ? 'on' : ''}" data-n="${c.n}"><div class="thumb">` +
-      `<div class="cb" data-act="toggle" title="Select for merge">${on ? '✓' : ''}</div><button class="play" data-act="open" title="Open in the editor">▶</button>` +
-      `${ch && ch.duration != null ? `<span class="len">${spanText(ch.duration)}</span>` : ''}</div>` +
-      `<div class="body"><div class="line"><b>Chapter ${c.n}</b><span>${spanText(sumOf(Object.values(c.stage_seconds)))}</span></div>` +
-      `<div class="segs">${segs}</div><div class="btns"><button class="soft" data-act="open">Editor</button>` +
-      `<span class="cost">${c.claude ? money(c.claude.cost_usd) : ''}</span></div></div></div>`;
-  }).join('');
-  return `<div class="bhead"><b>${done.length} video${done.length === 1 ? '' : 's'} ready</b><span class="sub">Tick videos to merge them</span><span class="grow"></span>` +
-    `<button class="plainbtn" data-act="all">Select all</button><button class="plainbtn" data-act="none">Clear</button></div><div class="bvideos">${cards}</div>`;
+  const done = data.chapters.filter(c => c.state === 'done').length;
+  return `<div class="bhead"><b>${done} video${done === 1 ? '' : 's'} done</b><span class="sub">Find and merge them on the Chapters screen.</span></div>`;
 }
 
 function whereTimeHtml(data) {
@@ -2422,18 +2409,6 @@ function renderBatch() {
 function wireBatch() {
   $('batchTimeline').querySelectorAll('[data-filter]').forEach(btn => {
     btn.onclick = () => { BATCH_FILTER = btn.dataset.filter; renderBatch(); };
-  });
-  $('batchResults').querySelectorAll('[data-act]').forEach(el => {
-    el.onclick = () => {
-      const n = +el.closest('.bvideo')?.dataset.n;
-      if (el.dataset.act === 'open') return navTo({ project: CURRENT_PROJECT.slug, chapter: n });
-      const done = BATCH.batch.chapters.filter(c => c.state === 'done').map(c => c.n);
-      if (el.dataset.act === 'toggle') SELECTION.has(n) ? SELECTION.delete(n) : SELECTION.add(n);
-      else done.forEach(x => el.dataset.act === 'all' ? SELECTION.add(x) : SELECTION.delete(x));
-      selectionAnchor = null;
-      paintSelection();
-      renderBatch();
-    };
   });
   $('batchList').querySelectorAll('[data-act]').forEach(btn => {
     const n = +btn.closest('.bchap').dataset.n;
@@ -3495,7 +3470,7 @@ function handleMergeEvent(ev) {
       setMergeBar(1, false);
       appendMergeLog('OK  ' + (ev.message || 'Done.'));
       showToast('Merged video ready.', null, null, 'ok');
-      if (ev.video) showMergeResult(ev.video);
+      if (ev.video) showMergeResult();
       setStatus(ev.message || 'Merge complete.');
     } else {
       $('mergeProgress').classList.add('err');
@@ -3512,17 +3487,12 @@ function handleMergeEvent(ev) {
   }
 }
 
-function showMergeResult(videoUrl) {
-  const sep = videoUrl.includes('?') ? '&' : '?';
-  const src = videoUrl + sep + 't=' + Date.now();
+function showMergeResult() {
   $('mergeResult').innerHTML =
     `<div class="jobcard">
-       <div class="jobhead">${ic('check',15)}<b>Merged video ready</b><span class="jobpath">${videoUrl}</span></div>
-       <video class="genvideo" src="${src}" controls preload="metadata"></video>
+       <div class="jobhead">${ic('check',15)}<b>Merged video ready</b></div>
        <div class="jobacts">
-         <a class="btnlink" href="${src}" target="_blank">${ic('play',14)}<span>Play full size</span></a>
-         <a class="btnlink" href="${src}" download="merged.mp4">${ic('download',14)}<span>Download</span></a>
-         <button class="btnlink" onclick="navTo({ project: CURRENT_PROJECT.slug, view: 'merged' })">${ic('film',14)}<span>Add intro / outro</span></button>
+         <button class="btnlink" onclick="navTo({ project: CURRENT_PROJECT.slug, view: 'merged' })">${ic('film',14)}<span>Open merged videos</span></button>
        </div>
      </div>`;
 }
@@ -3567,29 +3537,6 @@ function streamEvents(url, onEvent) {
   });
 }
 
-async function downloadMoreChapters() {
-  const slug = encodeURIComponent(CURRENT_PROJECT.slug), btn = $('pjMoreBtn');
-  btnBusy(btn, true);
-  try {
-    setStatus('Refreshing the chapter list…');
-    await refetchChapters();
-    const missing = await (await fetch(`/api/projects/${slug}/missing_chapters`)).json();
-    if (!missing.count) { setStatus('All chapters are already downloaded.'); return; }
-    const answer = prompt(`${missing.count} of ${missing.total} chapters are not downloaded yet. How many should be downloaded now?`, String(Math.min(5, missing.count)));
-    const count = parseInt(answer, 10);
-    if (!count || count < 1) { setStatus('Nothing downloaded.'); return; }
-    const result = await streamEvents(`/api/projects/${slug}/download_stream?count=${count}`, f => {
-      if (f.type === 'progress') setStatus(`Downloading chapter ${f.chapter} (${f.position} of ${f.total})…`);
-      else if (f.line) setStatus(f.line);
-    });
-    await loadCurrentProject(CURRENT_PROJECT.slug);
-    renderChapterList();
-    const failed = result.failed.map(x => `${x.chapter} (${x.error})`).join(', ');
-    setStatus(failed ? `Downloaded ${result.requested - result.failed.length} of ${result.requested} chapters. Failed: ${failed}` : `Downloaded ${result.requested} chapter(s).`, !!failed);
-  } catch (e) { setStatus('Download error: ' + e.message, true); }
-  finally { btnBusy(btn, false); }
-}
-
 async function deleteProject() {
   const { slug, name } = CURRENT_PROJECT;
   const typed = prompt(`This permanently deletes "${name}" and every file of it - chapters, scripts, audio, videos and the copy in the projects folder.
@@ -3629,6 +3576,9 @@ function fillSettingsForm() {
   const s = CURRENT_PROJECT.settings;
   document.querySelector(`input[name=musicMode][value="${s.music.mode}"]`).checked = true;
   $('musicName').textContent = s.music.file ? s.music.file.split('/').pop() : '';
+
+  $('narrVol').value = Math.round(s.audio.narration_vol * 100);
+  $('musicVol').value = Math.round(s.audio.music_vol * 100);
 
   document.querySelector(`input[name=voiceMode][value="${s.voice.mode}"]`).checked = true;
   document.querySelector(`input[name=voiceEngine][value="${s.voice.engine || 'chatterbox'}"]`).checked = true;
@@ -3700,6 +3650,8 @@ function updateSliderLabels() {
   $('wmSizeLbl').textContent = $('wmSize').value + '%';
   $('wmSpacingLbl').textContent = $('wmSpacing').value + '%';
   $('wmAngleLbl').textContent = $('wmAngle').value + '°';
+  $('narrVolLbl').textContent = $('narrVol').value + '%';
+  $('musicVolLbl').textContent = $('musicVol').value + '%';
   $('bgDimLbl').textContent = $('bgDim').value + '%';
   $('animDurationLbl').textContent = (+$('animDuration').value / 100).toFixed(2) + 's';
 }
@@ -3754,6 +3706,7 @@ function refreshVoiceActive() {
 function currentSettingsFromForm() {
   return {
     music: { mode: document.querySelector('input[name=musicMode]:checked').value },
+    audio: { narration_vol: (+$('narrVol').value) / 100, music_vol: (+$('musicVol').value) / 100 },
     voice: { mode: document.querySelector('input[name=voiceMode]:checked').value,
              engine: document.querySelector('input[name=voiceEngine]:checked').value,
              kokoro_voice: $('kokoroVoice').value },
@@ -4185,7 +4138,6 @@ $('npCloseBtn').onclick = () => $('npComposer').classList.remove('on');
 $('backToProjectsBtn').onclick = () => navTo({});
 $('backToProjectBtn').onclick = backToProject;
 $('pjRefetchBtn').onclick = refetchChapters;
-$('pjMoreBtn').onclick = downloadMoreChapters;
 $('pjDeleteBtn').onclick = deleteProject;
 $('npFolderBtn').onclick = saveProjectsFolder;
 $('npCacheBtn').onclick = saveModelCache;
@@ -4222,7 +4174,7 @@ $('animZoomAmount').oninput = () => {
   saveSettingsDebounced();
 };
 $('framingBlur').onchange = saveSettingsDebounced;
-['wmOpacity', 'wmSize', 'wmSpacing', 'wmAngle', 'bgDim', 'animDuration'].forEach(id => { $(id).oninput = saveSettingsDebounced; });
+['wmOpacity', 'wmSize', 'wmSpacing', 'wmAngle', 'bgDim', 'animDuration', 'narrVol', 'musicVol'].forEach(id => { $(id).oninput = saveSettingsDebounced; });
 $('scriptTone').onchange = saveSettingsDebounced;
 $('scriptNarrationType').onchange = saveSettingsDebounced;
 $('scriptStyleRef').oninput = saveSettingsDebounced;
