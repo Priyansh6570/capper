@@ -53,7 +53,7 @@ def api_backup_status(slug):
     merged_bytes = sum(m["size"] + (m["final"] or {}).get("size", 0) for m in merges)
     return jsonify(
         shared=shared, folder=str(projects.project_dir(slug)), busy=sorted(_busy_chapters(slug)),
-        kinds=[{"key": k.key, "label": k.label, "hint": k.hint, "clearable": k.clearable}
+        kinds=[{"key": k.key, "label": k.label, "hint": k.hint, "clearable": k.clearable, "default": k.default}
                for k in chapter_backup.KINDS.values()],
         chapters=chapters, merged={"count": len(merges), "bytes": merged_bytes})
 

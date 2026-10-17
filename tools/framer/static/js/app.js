@@ -2597,8 +2597,8 @@ async function openBackup() {
   }
   $('bkLoading').hidden = true;
   if (!BK.shared) { $('bkNotShared').hidden = false; return; }
-  BK.selected = new Set(BK.chapters.filter(c => bkPending(c, BK.kinds.map(k => k.key))).map(c => c.n));
-  BK.kindsOn = new Set(BK.kinds.map(k => k.key));
+  BK.kindsOn = new Set(BK.kinds.filter(k => k.default).map(k => k.key));
+  BK.selected = new Set(BK.chapters.filter(c => bkPending(c, [...BK.kindsOn])).map(c => c.n));
   $('bkMain').hidden = false; $('bkRun').hidden = false;
   $('bkFolder').textContent = BK.folder;
   renderBackup();

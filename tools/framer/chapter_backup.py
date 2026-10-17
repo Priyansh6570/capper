@@ -38,6 +38,7 @@ class Kind:
     hint: str
     clearable: bool
     paths: tuple[str, ...]    # relative to the chapter folder; a folder means everything under it
+    default: bool = True      # ticked by default in the backup dialog
 
 
 KINDS: dict[str, Kind] = {k.key: k for k in (
@@ -46,8 +47,8 @@ KINDS: dict[str, Kind] = {k.key: k for k in (
           "work/manifest.json.bak", "work/media_settings.json", "work/media_settings.json.bak")),
     Kind("frames", "Frames", "The cropped frames shown in the video.", True, ("work/frames",)),
     Kind("audio", "Narration audio", "The voiced lines.", True, ("work/audio",)),
-    Kind("pages", "Page images", "The stitched strip, panels and editor tiles. Can be rebuilt from the PDF.", True,
-         ("work/pages", "work/panels", "work/framer/tiles")),
+    Kind("pages", "Page images", "The stitched strip, panels and editor tiles. Large, and can be rebuilt from the PDF.", True,
+         ("work/pages", "work/panels", "work/framer/tiles"), default=False),
     Kind("video", "Chapter video", "The rendered recap.mp4.", True, ("output",)),
 )}
 
