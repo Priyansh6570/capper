@@ -44,8 +44,9 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import waitress  # noqa: E402 - the server the app runs on, see make_server()
-from flask import Flask  # noqa: E402
+from flask import Flask, jsonify  # noqa: E402
 
+import chapter_backup  # noqa: E402 - cleared chapters are restored on first use
 import config  # noqa: E402 - module import so chapter_scope()/set_/clear_ are reachable
 import projects  # noqa: E402 - the project system (this package: tools/framer/projects.py)
 from routes import register_blueprints  # noqa: E402
@@ -64,8 +65,11 @@ register_blueprints(app)
 def _apply_chapter_scope():
     slug, ch_no = scope_params()
     if slug and ch_no:
-        config.set_chapter_scope(projects.chapter_work_dir(slug, ch_no),
-                                  projects.chapter_output_dir(slug, ch_no))
+        try:
+            config.set_chapter_scope(projects.chapter_work_dir(slug, ch_no),
+                                      projects.chapter_output_dir(slug, ch_no))
+        except chapter_backup.BackupUnavailable as e:
+            return jsonify(error=str(e)), 503
     else:
         config.clear_chapter_scope()
 

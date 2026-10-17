@@ -2575,6 +2575,123 @@ async function apiJson(url, method, body) {
   return { ok: res.ok, data: await res.json().catch(() => ({})) };
 }
 
+// ---------------------------------------------------------------------------
+// Back up to Drive: copy chapter files (script, frames, audio, pages, video) into the project's Drive
+// folder, and clear the heavy ones from this PC once they are verified there. Cleared chapters come
+// back by themselves the next time they are opened (server: chapter_backup.py).
+// ---------------------------------------------------------------------------
+let BK = null, bkRunning = false;
+
+async function openBackup() {
+  $('backupModal').classList.add('on');
+  $('bkLoading').hidden = false; $('bkMain').hidden = true; $('bkNotShared').hidden = true;
+  $('bkRun').hidden = true; $('bkSummary').textContent = '';
+  try {
+    const res = await fetch(projectApi('/backup'));
+    BK = await res.json();
+    if (!res.ok) throw new Error(BK.error || 'failed');
+  } catch (e) {
+    $('bkLoading').hidden = true;
+    $('bkNotShared').hidden = false; $('bkNotShared').textContent = 'Could not read the backup state: ' + e.message;
+    return;
+  }
+  $('bkLoading').hidden = true;
+  if (!BK.shared) { $('bkNotShared').hidden = false; return; }
+  BK.selected = new Set(BK.chapters.filter(c => bkPending(c, BK.kinds.map(k => k.key))).map(c => c.n));
+  BK.kindsOn = new Set(BK.kinds.map(k => k.key));
+  $('bkMain').hidden = false; $('bkRun').hidden = false;
+  $('bkFolder').textContent = BK.folder;
+  renderBackup();
+}
+
+const bkPending = (chapter, kinds) => kinds.some(k => chapter.kinds[k].files && !chapter.kinds[k].backed_up);
+
+function renderBackup() {
+  const kindsOn = [...BK.kindsOn], selected = BK.chapters.filter(c => BK.selected.has(c.n));
+  $('bkKinds').innerHTML = BK.kinds.map(k => {
+    const bytes = BK.chapters.filter(c => BK.selected.has(c.n)).reduce((a, c) => a + c.kinds[k.key].local_bytes, 0);
+    return `<label class="bkkind"><input type="checkbox" data-kind="${k.key}" ${BK.kindsOn.has(k.key) ? 'checked' : ''} />` +
+      `<span class="bkktxt"><b>${escHtml(k.label)}</b><em>${escHtml(k.hint)}</em></span><span class="bksize">${fmtSize(bytes) || '0B'}</span></label>`;
+  }).join('');
+  $('bkChapters').innerHTML = BK.chapters.length ? BK.chapters.map(c => {
+    const chips = BK.kinds.filter(k => c.kinds[k.key].files || c.kinds[k.key].cleared).map(k => {
+      const s = c.kinds[k.key];
+      const state = s.cleared ? 'cleared' : s.backed_up ? 'done' : 'todo';
+      const mark = { cleared: 'in Drive only', done: 'backed up', todo: 'not backed up' }[state];
+      return `<span class="bkchip ${state}" title="${escAttr(k.label + ': ' + mark)}">${escHtml(k.label.split(' ')[0])} \u00b7 ${state === 'cleared' ? 'cleared' : fmtSize(s.local_bytes)}</span>`;
+    }).join('');
+    return `<label class="bkrow ${BK.busy.includes(c.n) ? 'busy' : ''}"><input type="checkbox" data-n="${c.n}" ${BK.selected.has(c.n) ? 'checked' : ''} />` +
+      `<span class="bkname">Ch ${c.n} <em>${escHtml(c.title)}</em></span><span class="bkchips">${chips}</span></label>`;
+  }).join('') : '<div class="empty">No chapter has files on this PC yet.</div>';
+  $('bkMerged').innerHTML = BK.merged.count
+    ? `<b>Merged videos</b> \u2014 ${BK.merged.count} (${fmtSize(BK.merged.bytes)}) are already saved in this project's Drive folder, so there is nothing to back up there.`
+    : `<b>Merged videos</b> \u2014 these are saved in this project's Drive folder automatically when you merge.`;
+
+  const todo = selected.reduce((a, c) => a + kindsOn.reduce((b, k) => b + (c.kinds[k].files && !c.kinds[k].backed_up ? c.kinds[k].local_bytes : 0), 0), 0);
+  $('bkSummary').textContent = !selected.length || !kindsOn.length ? 'Pick at least one chapter and one kind of file.'
+    : todo ? `${selected.length} chapter(s) \u00b7 ${fmtSize(todo)} to copy.` : `${selected.length} chapter(s) \u00b7 everything chosen is already backed up.`;
+  $('bkRun').disabled = bkRunning || !selected.length || !kindsOn.length;
+
+  const clearKinds = BK.kinds.filter(k => k.clearable).map(k => k.key);
+  const freeable = selected.filter(c => !BK.busy.includes(c.n)).reduce((a, c) => a + clearKinds.reduce((b, k) => {
+    const s = c.kinds[k]; return b + (s.files && s.backed_up && !s.cleared ? s.local_bytes : 0); }, 0), 0);
+  $('bkFreeText').textContent = freeable
+    ? `${fmtSize(freeable)} of the selected chapters is already verified in Drive and can be removed from this PC (frames, audio, page images and chapter videos). They come back automatically when you open the chapter again; scripts and key mappings always stay here.`
+    : 'Nothing in the selected chapters is backed up and still on this PC. Back up first; once files are verified in Drive, you can clear them here to free up space.';
+  $('bkClear').disabled = bkRunning || !freeable;
+
+  $('bkKinds').querySelectorAll('input').forEach(i => i.onchange = () => {
+    i.checked ? BK.kindsOn.add(i.dataset.kind) : BK.kindsOn.delete(i.dataset.kind); renderBackup(); });
+  $('bkChapters').querySelectorAll('input').forEach(i => i.onchange = () => {
+    i.checked ? BK.selected.add(+i.dataset.n) : BK.selected.delete(+i.dataset.n); renderBackup(); });
+}
+
+async function runBackup() {
+  if (bkRunning) return;
+  const chapters = [...BK.selected].join(','), kinds = [...BK.kindsOn].join(',');
+  bkRunning = true; renderBackup();
+  $('bkProg').hidden = false; $('bkBar').style.width = '0%';
+  try {
+    const result = await streamEvents(projectApi(`/backup_stream?chapters=${chapters}&kinds=${kinds}`), f => {
+      if (f.type !== 'progress') return;
+      const label = (BK.kinds.find(k => k.key === f.kind) || {}).label || f.kind;
+      $('bkBar').style.width = `${Math.round(100 * (f.step - 1) / f.steps)}%`;
+      $('bkProgText').textContent = `Chapter ${f.chapter} \u00b7 ${label} (${f.step} of ${f.steps})`;
+    });
+    $('bkBar').style.width = '100%';
+    showToast(result.copied ? `Backed up ${result.copied} file(s), ${fmtSize(result.bytes)}.` : 'Everything chosen was already backed up.', null, null, 'ok');
+  } catch (e) {
+    showToast('Backup failed: ' + e.message, null, null, 'err');
+  }
+  bkRunning = false;
+  $('bkProg').hidden = true;
+  await refreshBackup();
+}
+
+async function refreshBackup() {
+  const keepSel = BK.selected, keepKinds = BK.kindsOn;
+  const fresh = await (await fetch(projectApi('/backup'))).json();
+  BK = { ...fresh, selected: keepSel, kindsOn: keepKinds };
+  renderBackup();
+}
+
+async function clearBackedUp() {
+  const clearKinds = BK.kinds.filter(k => k.clearable).map(k => k.key);
+  const numbers = [...BK.selected];
+  const ok = await askConfirm({
+    title: 'Clear from this PC?',
+    body: `<p>The frames, audio, page images and chapter videos of ${numbers.length} chapter(s) will be deleted from this PC, but only the files that are verified in this project's Drive folder.</p>
+           <p class="hint">They are copied back automatically the next time you open a chapter or render it. This needs Drive to be connected then. Scripts and key mappings are not touched.</p>`,
+    confirmLabel: 'Clear from this PC' });
+  if (!ok) return;
+  bkRunning = true; renderBackup();
+  const { ok: good, data } = await apiJson(projectApi('/backup_clear'), 'POST', { chapters: numbers, kinds: clearKinds });
+  bkRunning = false;
+  if (!good) showToast(data.error || 'Clear failed.', null, null, 'err');
+  else showToast(`Freed ${fmtSize(data.freed) || '0B'}.` + (data.skipped.length ? ` ${data.skipped.length} item(s) were skipped.` : ''), null, null, 'ok');
+  await refreshBackup();
+}
+
 function askConfirm({ title, body, confirmLabel }) {
   return new Promise(resolve => {
     $('cfmTitle').textContent = title;
@@ -4281,6 +4398,13 @@ $('pjDeleteBtn').onclick = deleteProject;
 $('npFolderBtn').onclick = saveProjectsFolder;
 $('npCacheBtn').onclick = saveModelCache;
 $('mergeBtn').onclick = startMerge;
+$('backupBtn').onclick = openBackup;
+$('bkRun').onclick = runBackup;
+$('bkClear').onclick = clearBackedUp;
+$('bkClose').onclick = () => { if (!bkRunning) $('backupModal').classList.remove('on'); };
+$('bkAll').onclick = () => { BK.selected = new Set(BK.chapters.map(c => c.n)); renderBackup(); };
+$('bkNone').onclick = () => { BK.selected = new Set(); renderBackup(); };
+$('bkPending').onclick = () => { BK.selected = new Set(BK.chapters.filter(c => bkPending(c, [...BK.kindsOn])).map(c => c.n)); renderBackup(); };
 $('mergeCancelBtn').onclick = cancelMerge;
 $('pjCrumbProjects').onclick = () => navTo({});
 $('pjSettingsBtn').onclick = () => navTo({ project: CURRENT_PROJECT.slug, view: 'settings' });

@@ -147,14 +147,23 @@ def chapter_output_path(slug: str, n) -> Path:
     return chapter_dir(slug, n) / "output"
 
 
+def _restore_cleared(slug: str, n) -> None:
+    """A chapter whose heavy files were cleared after a Drive backup gets them back the first time
+    its folders are used again (chapter_backup.py)."""
+    import chapter_backup
+    chapter_backup.ensure_local(slug, n)
+
+
 def chapter_work_dir(slug: str, n) -> Path:
     """chapter_work_path, created: for code that is about to write into it."""
+    _restore_cleared(slug, n)
     d = chapter_work_path(slug, n)
     d.mkdir(parents=True, exist_ok=True)
     return d
 
 
 def chapter_output_dir(slug: str, n) -> Path:
+    _restore_cleared(slug, n)
     d = chapter_output_path(slug, n)
     d.mkdir(parents=True, exist_ok=True)
     return d

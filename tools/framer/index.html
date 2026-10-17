@@ -227,6 +227,7 @@
             <button id="selAllBtn" class="small ghost" data-icon="checkbox" data-ic-size="13"><span>Select all</span></button>
             <button id="selCompleteBtn" class="small ghost" data-icon="checkbox" data-ic-size="13"><span>Select all complete</span></button>
             <button id="selClearBtn" class="small ghost"><span>Clear</span></button>
+            <button id="backupBtn" class="small ghost" data-icon="upload" data-ic-size="13" title="Copy chapter files to this project's Drive folder"><span>Back up to Drive</span></button>
             <span class="grow"></span>
             <span class="actionwhy" id="runWhy"></span>
             <button id="batchRunBtn" class="small primary" data-icon="play" data-ic-size="13" disabled><span>Run pipeline</span></button>
@@ -878,6 +879,47 @@
       <div class="macts">
         <button id="pipeCancel" class="small ghost"><span>Cancel</span></button>
         <button id="pipeRun" class="primary" data-icon="play" data-ic-size="14"><span>Run</span></button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="modalback" id="backupModal">
+  <div class="modal pipemodal bkmodal" role="dialog" aria-modal="true" aria-labelledby="bkTitle">
+    <h3 id="bkTitle">Back up to Drive</h3>
+    <div class="bkloading" id="bkLoading"><div class="spinner"></div><span>Checking what is on this PC&hellip;</span></div>
+    <div class="bknote" id="bkNotShared" hidden>
+      This project is stored on this PC only, so there is no Drive folder to back up to. Create projects in a Drive
+      folder (set the Projects folder in the New project dialog) to use this.
+    </div>
+    <div class="pipebody" id="bkMain" hidden>
+      <p class="pipehint">Copies chapter files into this project's Drive folder (<span id="bkFolder"></span>). Only files that are
+        new or changed are copied.</p>
+      <div class="bksec">
+        <b class="bkh">What to back up</b>
+        <div id="bkKinds"></div>
+      </div>
+      <div class="bksec">
+        <div class="bkhead"><b class="bkh">Chapters</b><span class="grow"></span>
+          <button type="button" class="small ghost" id="bkAll"><span>All</span></button>
+          <button type="button" class="small ghost" id="bkPending"><span>Not backed up</span></button>
+          <button type="button" class="small ghost" id="bkNone"><span>None</span></button>
+        </div>
+        <div class="bklist" id="bkChapters"></div>
+      </div>
+      <div class="bkinfo" id="bkMerged"></div>
+      <div class="bkprog" id="bkProg" hidden><div class="bkbar"><span id="bkBar"></span></div><span id="bkProgText"></span></div>
+      <div class="bksec bkfree">
+        <b class="bkh">Free up space on this PC</b>
+        <p class="pipehint" id="bkFreeText"></p>
+        <div><button type="button" class="small danger" id="bkClear"><span>Clear from this PC</span></button></div>
+      </div>
+    </div>
+    <div class="pipefoot">
+      <div class="pipesummary" id="bkSummary" aria-live="polite"></div>
+      <div class="macts">
+        <button id="bkClose" class="small ghost"><span>Close</span></button>
+        <button id="bkRun" class="primary" data-icon="upload" data-ic-size="14"><span>Back up</span></button>
       </div>
     </div>
   </div>
