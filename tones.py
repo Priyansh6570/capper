@@ -42,10 +42,23 @@ TONES = {
     },
     "comedic": {
         "label": "Comedic",
-        "style": ("Comedic: light, wry, conversational. Deadpan understatement, ironic contrast between what "
-                  "a character believes and what happens, punchlines placed at the end of a sentence, playful "
-                  "word choice. Joke only about things the notes show, never at the plot's expense; when a "
-                  "scene is truly sad or frightening, play it straight."),
+        "style": ("Comedic: a funny, sarcastic best friend retelling this chapter, so the viewer is entertained "
+                  "all the way through. Be openly funny, not just light: roughly every second or third block "
+                  "that is not serious carries a joke, and a chapter with no jokes is a failure. Mix these, and "
+                  "never use the same kind twice in a row: (1) puns and wordplay on what is on screen (a sword "
+                  "fight 'cuts both ways', a lazy villain 'phones in' his evil plan); (2) masked swearing, written the way it should be spoken, with no dashes or asterisks: minced oaths and "
+                  "bleeped words such as 'what the fudge', 'son of a biscuit', 'holy shiitake mushrooms', 'you "
+                  "absolute muppet', 'that little bleep', 'he called him a big bleeping idiot', or a mock-polite "
+                  "insult like 'you absolute walnut'; never a real slur or anything aimed at a group of people; "
+                  "(3) quick, punchy asides: sarcasm, exaggerated understatement ('this went well'), "
+                  "ironic contrast between what a character believes and what happens, a deadpan one-liner "
+                  "after a dramatic beat, a mock-serious comparison, a roast of an obviously dumb decision; "
+                  "(4) rule-of-three setups with a twist in the last item. Put the punchline at the END of the "
+                  "sentence and keep each joke to one short sentence. Give such blocks the \"comic\" pace. "
+                  "Never joke in a truly sad, tragic or frightening scene, a death or an emotional peak: play "
+                  "those straight (calm or sad pace) and let the humour come back in the next light moment. "
+                  "Jokes are always about the characters, the situation or the genre's clichés, never at the "
+                  "plot's expense: every plot fact must stay accurate."),
         "delivery": Delivery(1.06),
     },
 }

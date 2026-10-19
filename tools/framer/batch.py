@@ -32,6 +32,7 @@ import claude_usage
 from atomic_io import atomic_write_json, read_json_with_backup_fallback
 
 LANE_STAGES = ("download", "stitch", "script", "export", "audio", "video")
+SHORTS_STAGES = ("shorts_find", "shorts_render")
 REVIEW = "review"
 ACTIVE_STATES = ("queued", "running", "waiting")
 LOG_LINES = 3000
@@ -39,7 +40,7 @@ RESET_MARGIN_S = 60          # resume this long after a usage window's reset
 STALL_AFTER_S = 300          # a running step with no output for this long is flagged
 HISTORY_LEN = 8              # past durations kept per step for the finish-time estimate
 DEFAULT_STEP_SECONDS = {"download": 60, "stitch": 20, "script": 600, "export": 30,
-                        "audio": 600, "video": 600}
+                        "audio": 600, "video": 600, "shorts_find": 90, "shorts_render": 240}
 PROGRESS_LINE = re.compile(r"\d+%\||\bframe=\s*\d+|\d+/\d+ \[")   # tqdm / ffmpeg progress, shown as one updating line
 
 
@@ -59,6 +60,9 @@ class BatchEnv:
     notify: Callable[[str, str], None]                    # desktop notification (title, message)
     claude_total: Callable[[int], dict | None]            # tokens / cost / seconds Claude spent on chapter n
     usage: Callable[[], dict] = claude_usage.current
+    stages: tuple[str, ...] = LANE_STAGES                   # the steps this batch runs, one lane each
+    space_low: Callable[[], bool] = lambda: False           # free disk space is under the project's limit
+    offload: Callable[[set[int]], int] = lambda active: 0   # back finished chapters up and clear them from the PC
 
 
 def _now() -> str:
@@ -83,17 +87,20 @@ class Batch:
         self._times = self._load_times()              # step -> recent durations, kept across batches
         self._generation = 0                          # bumped when a cancelled batch is revived
         self._closed = False
+        self._pinned: set[int] | None = None          # low disk space: only these chapters may go on until they are done
+        self._offloading = False                      # finished chapters are being uploaded and cleared right now
+        self._skip_space = False                      # the last clean-up freed nothing; don't hold again until a chapter finishes
         self._cond = threading.Condition()
         for chapter in self.chapters:
-            chapter.setdefault("plan", list(LANE_STAGES))
-            _drop_retired_stages(chapter)
+            chapter.setdefault("plan", list(self.env.stages))
+            _drop_retired_stages(chapter, self.env.stages)
             if chapter["state"] == "running":
                 chapter["state"] = "queued"
         self._settle()
         self._start_lanes()
 
     def _start_lanes(self) -> None:
-        for stage in LANE_STAGES:
+        for stage in self.env.stages:
             threading.Thread(target=self._lane, args=(stage, self._generation), daemon=True).start()
 
     @classmethod
@@ -163,12 +170,54 @@ class Batch:
     def _next_queued(self, stage: str) -> dict | None:
         if self.status != "running":
             return None
-        return next((c for c in self.chapters if c["stage"] == stage and c["state"] == "queued"), None)
+        held = self._space_hold()
+        return next((c for c in self.chapters if c["stage"] == stage and c["state"] == "queued"
+                     and (not held or c["n"] in self._pinned)), None)
+
+    def _space_hold(self) -> bool:
+        """True while free disk space is low: chapters already under way finish, nothing new starts, and once
+        they are done the finished chapters are uploaded and cleared from the PC before the pipeline goes on."""
+        if self._pinned is None:
+            return False
+        if self._offloading or self._busy or any(c["n"] in self._pinned and c["state"] in ("queued", "running")
+                                                 for c in self.chapters):
+            return True
+        self._offloading = True
+        threading.Thread(target=self._free_space, daemon=True).start()
+        return True
+
+    def _begin_space_hold(self) -> None:
+        self._pinned = {c["n"] for c in self.chapters if c["started_at"] and c["state"] in ("queued", "running")}
+        message = ("Disk space is low: finishing the chapters under way, then uploading finished chapters to "
+                   "Drive and clearing them from this PC before going on.")
+        for n in self._pinned or [c["n"] for c in self.chapters if c["state"] == "queued"][:1]:
+            self.log(n, message)
+        self._notify("Low disk space", "Finishing the current chapter, then freeing space by uploading to Drive.")
+
+    def _free_space(self) -> None:
+        freed, error = 0, None
+        try:
+            freed = self.env.offload({c["n"] for c in self.chapters if c["state"] in ACTIVE_STATES})
+        except Exception as e:  # noqa: BLE001 - a Drive problem must not kill the batch; it just goes on
+            error = f"{type(e).__name__}: {e}"
+        with self._cond:
+            self._pinned, self._offloading, self._skip_space = None, False, freed == 0
+            for chapter in self.chapters:
+                if chapter["state"] in ACTIVE_STATES:
+                    self.log(chapter["n"], f"Couldn't free space on this PC ({error}); going on."
+                             if error else f"Freed {freed / 1e9:.1f} GB on this PC; resuming.")
+                    break
+            self._cond.notify_all()
+        self._notify("Pipeline resuming", f"Freed {freed / 1e9:.1f} GB." if not error else f"Drive upload failed: {error}")
 
     def _claim(self, stage: str, generation: int) -> int | None:
         with self._cond:
             while not self._stopped() and generation == self._generation:
                 chapter = self._next_queued(stage)
+                if (chapter and chapter["started_at"] is None and self._pinned is None and not self._skip_space
+                        and self.env.space_low()):
+                    self._begin_space_hold()
+                    continue
                 if chapter:
                     chapter.update(state="running", error=None, stage_started_at=_now(),
                                    started_at=chapter["started_at"] or _now())
@@ -215,6 +264,7 @@ class Batch:
                     self._record_time(stage, seconds)
                 _advance(chapter, stage, review=self.env.review_enabled())
                 if chapter["state"] == "done":
+                    self._skip_space = False
                     self._notify(f"Chapter {n} is complete", "Its video is rendered.")
                 elif chapter["state"] == "waiting":
                     self._notify(f"Chapter {n} is ready for review", "Check its frames, then continue to audio.")
@@ -364,14 +414,14 @@ class Batch:
     # --- view -----------------------------------------------------------------
     def _step_estimates(self) -> dict[str, float]:
         return {stage: sum(history) / len(history) if (history := self._times.get(stage))
-                else float(DEFAULT_STEP_SECONDS[stage]) for stage in LANE_STAGES}
+                else float(DEFAULT_STEP_SECONDS[stage]) for stage in self.env.stages}
 
     def _estimate(self) -> dict[int, float]:
         """When (epoch seconds) each unfinished chapter should be done, simulating the lanes:
         a chapter enters a step once it has left the previous one and the step's lane is free."""
         now = time.time()
         step = self._step_estimates()
-        lane_free = {stage: now for stage in LANE_STAGES}
+        lane_free = {stage: now for stage in self.env.stages}
         if self.hold:
             lane_free["script"] = self.hold["resume_at"]
         finish = {}
@@ -408,23 +458,26 @@ class Batch:
                                  "job": job, "warnings": warnings, "claude": self.env.claude_total(n),
                                  "finish_at": finish.get(n)})
             return {"status": self.status, "created_at": self.created_at, "finished_at": self.finished_at,
-                    "hold": self.hold, "ignore": dict(self.ignore), "chapters": chapters,
+                    "hold": self.hold, "disk_hold": None if self._pinned is None else
+                    {"finishing": sorted(self._pinned), "offloading": self._offloading}, "ignore": dict(self.ignore), "chapters": chapters,
                     "finish_at": max(finish.values(), default=None)}
 
 
-def _drop_retired_stages(chapter: dict) -> None:
+def _drop_retired_stages(chapter: dict, stages: tuple[str, ...] = LANE_STAGES) -> None:
     """A batch saved before a step was removed still names it: forget it, and if the chapter was
     queued for it, queue the next step instead."""
-    known = (*LANE_STAGES, REVIEW)
-    chapter["plan"] = [s for s in chapter["plan"] if s in LANE_STAGES]
+    known = (*stages, REVIEW)
+    chapter["plan"] = [s for s in chapter["plan"] if s in stages]
     chapter["completed"] = [s for s in chapter["completed"] if s in known]
     if chapter["stage"] is not None and chapter["stage"] not in known:
         _advance(chapter, None, review=False)
 
 
 def _new_chapter(env: BatchEnv, n: int, plan: list[str]) -> dict:
-    with env.scope(n):
-        completed = [s for s in env.done_stages(n) if s not in plan]
+    completed = []
+    if any(s not in plan for s in env.stages):      # entering the chapter can mean restoring it from Drive
+        with env.scope(n):
+            completed = [s for s in env.done_stages(n) if s not in plan]
     chapter = {"n": n, "plan": plan, "completed": completed, "stage": None, "state": "queued", "error": None,
                "started_at": None, "finished_at": None, "stage_started_at": None, "stage_seconds": {},
                "stage_spans": {}}

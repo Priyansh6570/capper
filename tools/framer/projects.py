@@ -205,6 +205,15 @@ def _atomic_write(path: Path, text: str) -> None:
 # --------------------------------------------------------------------------- #
 # schema helpers (dataclasses used only for shape/defaults; disk format is dict)
 # --------------------------------------------------------------------------- #
+def _default_watermark() -> dict:
+    return {"enabled": False, "type": "text", "text": "", "file": None,
+            "opacity": 0.12, "size": 0.12, "spacing": 1.0, "angle": -30}
+
+
+def _default_background() -> dict:
+    return {"mode": "blur", "file": None, "dim": 0.85}
+
+
 def default_settings() -> dict:
     return {
         "music": {"mode": "default", "file": None},
@@ -215,13 +224,18 @@ def default_settings() -> dict:
         # speaks with one of its own voices (stages/tts_kokoro.py).
         "voice": {"mode": "default", "file": None, "engine": "chatterbox",
                   "kokoro_voice": tts_kokoro.DEFAULT_VOICE},
-        "watermark": {"enabled": False, "type": "text", "text": "", "file": None,
-                      "opacity": 0.12, "size": 0.12, "spacing": 1.0, "angle": -30},
+        "watermark": _default_watermark(),
         # mode: "blur" (default) | "image" | "video" - a video background is
         # played LOOPED behind the frames (see s7_assemble._resolve_video_
         # background); "dim" applies to either custom mode (brightness for
         # image, an approximate eq=brightness offset for video).
-        "background": {"mode": "blur", "file": None, "dim": 0.85},
+        "background": _default_background(),
+        # Shorts (stages/s8_shorts.py) look like the main video unless `own_look` gives them a watermark
+        # and a background of their own, with the same fields as the main ones.
+        # `layout`: "frame" shows each frame whole over the background, "cover" fills the screen with it and puts
+        # the watermark above.
+        "shorts": {"layout": "frame", "own_look": False, "watermark": _default_watermark(),
+                   "background": _default_background()},
         # Frame entry/exit animation for stage 7's render. "fade"/0.35s matches the crossfade
         # s7_assemble.py has always hardcoded. `zoom` alternates a slow zoom in / out per still
         # (peak scale `zoom_amount`), independent of the transition style; see s7_assemble.
@@ -231,7 +245,7 @@ def default_settings() -> dict:
         # manual blur regions reach the exported frames.
         "framing": {"blur_text": False},
         # Output size preset for the render, one of s7_assemble.QUALITY.
-        "video": {"quality": DEFAULT_QUALITY},
+        "video": {"quality": DEFAULT_QUALITY, "layout": "frame"},
         # Intro/outro joined onto MERGED videos only (see branding.py). `file`
         # is a custom upload; None means the bundled recapper_intro/outro.mp4.
         # The flags are the project's remembered choice for its next merge.
@@ -247,8 +261,11 @@ def default_settings() -> dict:
         # before audio; Claude work is held once subscription usage reaches these percentages.
         # auto_wait_five_hour: wait out a reached five-hour limit and resume by itself (the weekly one
         # always asks); notifications: desktop toasts for finished / failed chapters and limit holds.
+        # auto_offload: once a chapter's video is rendered and free disk space is under offload_below_gb,
+        # back the chapter up to the project's Drive folder and clear it from this PC (chapter_backup.py).
         "batch": {"review_before_audio": False, "five_hour_pct": 70, "seven_day_pct": 60,
-                  "auto_wait_five_hour": True, "notifications": True},
+                  "auto_wait_five_hour": True, "notifications": True,
+                  "auto_offload": False, "offload_below_gb": 10},
     }
 
 
@@ -641,7 +658,8 @@ def derive_all(slug: str) -> dict:
 # --------------------------------------------------------------------------- #
 # settings + media snapshot for stage 7 (see stages/s7_assemble.py)
 # --------------------------------------------------------------------------- #
-VALID_ASSET_KINDS = ("music", "voice", "watermark", "background", "intro", "outro")
+VALID_ASSET_KINDS = ("music", "voice", "watermark", "background", "intro", "outro",
+                     "shorts_watermark", "shorts_background")
 _ASSET_EXTS = {
     "music": {".mp3", ".wav", ".m4a", ".ogg", ".oga", ".aac", ".flac"},
     "voice": {".wav"},          # Chatterbox reference clip - wav only
@@ -653,6 +671,8 @@ _ASSET_EXTS = {
     "intro": {".mp4", ".mov", ".webm", ".mkv", ".m4v"},
     "outro": {".mp4", ".mov", ".webm", ".mkv", ".m4v"},
 }
+_ASSET_EXTS["shorts_watermark"] = _ASSET_EXTS["watermark"]
+_ASSET_EXTS["shorts_background"] = _ASSET_EXTS["background"]
 
 
 def update_settings(slug: str, settings: dict) -> dict:
@@ -660,11 +680,15 @@ def update_settings(slug: str, settings: dict) -> dict:
         project = load(slug)
         _deep_merge(project["settings"], settings)
         # clamp numeric sliders into sane ranges regardless of what the client sent
-        wm = project["settings"]["watermark"]
-        wm["opacity"] = max(0.0, min(1.0, float(wm.get("opacity", 0.12))))
-        wm["size"] = max(0.02, min(0.6, float(wm.get("size", 0.12))))
-        wm["spacing"] = max(0.0, min(4.0, float(wm.get("spacing", 1.0))))
-        wm["angle"] = max(-90, min(90, float(wm.get("angle", -30))))
+        shorts = project["settings"]["shorts"]
+        shorts["own_look"] = bool(shorts.get("own_look"))
+        if shorts.get("layout") not in ("frame", "cover"):
+            shorts["layout"] = "frame"
+        for wm in (project["settings"]["watermark"], shorts["watermark"]):
+            wm["opacity"] = max(0.0, min(1.0, float(wm.get("opacity", 0.12))))
+            wm["size"] = max(0.02, min(0.6, float(wm.get("size", 0.12))))
+            wm["spacing"] = max(0.0, min(4.0, float(wm.get("spacing", 1.0))))
+            wm["angle"] = max(-90, min(90, float(wm.get("angle", -30))))
         voice = project["settings"]["voice"]
         if voice.get("engine") not in ("chatterbox", "kokoro"):
             voice["engine"] = "chatterbox"
@@ -676,10 +700,10 @@ def update_settings(slug: str, settings: dict) -> dict:
         audio = project["settings"]["audio"]
         audio["narration_vol"] = max(0.5, min(6.0, float(audio.get("narration_vol", 2.5))))
         audio["music_vol"] = max(0.0, min(0.3, float(audio.get("music_vol", 0.03))))
-        bg = project["settings"]["background"]
-        bg["dim"] = max(0.1, min(1.0, float(bg.get("dim", 0.85))))
-        if bg.get("mode") not in ("blur", "image", "video"):
-            bg["mode"] = "blur"
+        for bg in (project["settings"]["background"], shorts["background"]):
+            bg["dim"] = max(0.1, min(1.0, float(bg.get("dim", 0.85))))
+            if bg.get("mode") not in ("blur", "image", "video"):
+                bg["mode"] = "blur"
         anim = project["settings"]["animation"]
         if anim.get("style") not in ("cut", "fade", "slide", "zoom"):
             anim["style"] = "fade"
@@ -691,11 +715,13 @@ def update_settings(slug: str, settings: dict) -> dict:
         project["settings"]["framing"]["blur_text"] = bool(project["settings"]["framing"].get("blur_text"))
         if project["settings"]["video"].get("quality") not in QUALITY:
             project["settings"]["video"]["quality"] = DEFAULT_QUALITY
+        if project["settings"]["video"].get("layout") not in ("frame", "cover"):
+            project["settings"]["video"]["layout"] = "frame"
         for clip in project["settings"]["branding"].values():
             clip["enabled"] = bool(clip.get("enabled"))
         script = project["settings"]["script"]
         script["tone"] = tones.normalize(script.get("tone")) or tones.DEFAULT_TONE
-        if script.get("narration_type") not in ("first_person", "third_person"):
+        if script.get("narration_type") not in ("first_person", "third_person", "mixed"):
             script["narration_type"] = "first_person"
         script["style_reference"] = str(script.get("style_reference") or "")[:12000]
         cl = project["settings"]["claude"]
@@ -704,9 +730,10 @@ def update_settings(slug: str, settings: dict) -> dict:
             if cl.get(key) not in claude_cli.MODELS:
                 cl[key] = default_settings()["claude"][key]
         cl["min_frame_s"] = max(1.0, min(10.0, float(cl.get("min_frame_s") or 3)))
-        bt = settings["batch"]
-        for key in ("review_before_audio", "auto_wait_five_hour", "notifications"):
+        bt = project["settings"]["batch"]
+        for key in ("review_before_audio", "auto_wait_five_hour", "notifications", "auto_offload"):
             bt[key] = bool(bt.get(key))
+        bt["offload_below_gb"] = max(1, min(5000, int(bt.get("offload_below_gb") or 10)))
         for key, default in (("five_hour_pct", 70), ("seven_day_pct", 60)):
             bt[key] = max(1, min(100, int(bt.get(key) or default)))
         save(project)
@@ -764,6 +791,21 @@ def _resolved_str(slug: str, rel_path: Optional[str]) -> Optional[str]:
     return str(p) if p is not None else None
 
 
+def _watermark_snapshot(slug: str, watermark: dict) -> Optional[dict]:
+    if not watermark.get("enabled"):
+        return None
+    return {**watermark,
+            "file": _resolved_str(slug, watermark.get("file")) if watermark.get("type") == "image" else None}
+
+
+def _background_snapshot(slug: str, background: dict) -> Optional[dict]:
+    if background.get("mode") not in ("image", "video"):
+        return None
+    # "kind" (not "mode") is what s7_assemble._load_background / _resolve_video_background branch on
+    return {"file": _resolved_str(slug, background.get("file")), "dim": background.get("dim", 0.85),
+            "kind": background.get("mode")}
+
+
 def media_settings_snapshot(slug: str, n) -> dict:
     """Resolve a project's settings into ABSOLUTE paths for stages 6+7 to
     consume, with defaults folded in (None fields mean "use the built-in
@@ -774,8 +816,6 @@ def media_settings_snapshot(slug: str, n) -> dict:
     s = project["settings"]
     music = s["music"]
     voice = s["voice"]
-    watermark = dict(s["watermark"])
-    background = s["background"]
     out = {
         "music": _resolved_str(slug, music.get("file")) if music.get("mode") == "file" else None,
         "music_off": music.get("mode") == "none",
@@ -783,25 +823,20 @@ def media_settings_snapshot(slug: str, n) -> dict:
         "voice": _resolved_str(slug, voice.get("file")) if voice.get("mode") == "file" else None,
         "tts": {"engine": voice["engine"], "kokoro_voice": voice["kokoro_voice"]},
         "tone": chapter_tone(project, n),
-        "watermark": {
-            **watermark,
-            "file": _resolved_str(slug, watermark.get("file")) if watermark.get("type") == "image" else None,
-        } if watermark.get("enabled") else None,
-        "background": {
-            "file": _resolved_str(slug, background.get("file")),
-            "dim": background.get("dim", 0.85),
-            # "kind" (not "mode") is what s7_assemble._load_background /
-            # _resolve_video_background actually branch on, so a snapshot
-            # written before "video" existed (kind missing -> KeyError-safe
-            # via .get() there) still resolves as an image, unchanged.
-            "kind": background.get("mode"),
-        } if background.get("mode") in ("image", "video") else None,
+        "watermark": _watermark_snapshot(slug, s["watermark"]),
+        "background": _background_snapshot(slug, s["background"]),
+        # `look`: what the shorts show in place of the main watermark and background, when they have their own
+        "shorts": {"layout": s["shorts"]["layout"],
+                   "look": {"watermark": _watermark_snapshot(slug, s["shorts"]["watermark"]),
+                            "background": _background_snapshot(slug, s["shorts"]["background"])}
+                           if s["shorts"]["own_look"] else None},
         # No paths to resolve here (style/direction/duration are plain
         # scalars) - passed straight through; load()'s deep-merge guarantees
         # this key exists even for a project.json saved before this setting
         # existed, so stage 7 always gets a value, never a missing key.
         "animation": s["animation"],
         "quality": s["video"]["quality"],
+        "layout": s["video"]["layout"],
     }
     return out
 

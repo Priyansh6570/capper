@@ -5,7 +5,7 @@ from flask import Flask
 
 
 def register_blueprints(app: Flask) -> None:
-    from routes import web, settings, chapters, jobs, files, editor_state, system, projects, merge, library, batch, backup
+    from routes import web, settings, chapters, jobs, files, editor_state, system, projects, merge, library, batch, backup, shorts
 
-    for module in (web, settings, chapters, jobs, files, editor_state, system, projects, merge, library, batch, backup):
+    for module in (web, settings, chapters, jobs, files, editor_state, system, projects, merge, library, batch, backup, shorts):
         app.register_blueprint(module.bp)

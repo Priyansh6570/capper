@@ -88,10 +88,10 @@ class ModelTest(unittest.TestCase):
         loader.assert_called_once_with(device="cpu")
         halve.assert_not_called()
 
-    def test_synthesis_passes_only_the_text(self):
+    def test_synthesis_passes_the_text_and_temperature(self):
         model = FakeModel("cpu")
         s6_tts._generate(model, "cpu", "Hello there.", autocast=False)
-        self.assertEqual(model.generated, [(("Hello there.",), {})])
+        self.assertEqual(model.generated, [(("Hello there.",), {"temperature": 0.8})])
 
     def test_setup_downloads_the_turbo_repo_only(self):
         repo, patterns = predownload_tts_models.MODEL
@@ -113,7 +113,7 @@ class FakeEngine:
     def prepare_ref(self, ref_path, chapter_id):
         self.ref = ref_path
 
-    def synth(self, text):
+    def synth(self, text, temperature=0.8):
         self.said.append(text)
         return torch.full((2400 * len(text.split()),), 0.1), self.sr, "cpu"
 
@@ -126,6 +126,9 @@ class RunTest(unittest.TestCase):
         scope.__enter__()
         self.addCleanup(scope.__exit__, None, None, None)
         (self.tmp / "work").mkdir()
+        patch = mock.patch.object(tempfile, "gettempdir", return_value=str(self.tmp / "temp"))   # the sentence cache
+        patch.start()
+        self.addCleanup(patch.stop)
         self.beats = [Panel("L000", [0, 0, 1, 1], 0, script_line="He walked in. Nobody noticed.", emotion="tense"),
                       Panel("L001", [0, 0, 1, 1], 1, script_line="   "),
                       Panel("L002", [0, 0, 1, 1], 2, script_line="Then the door slammed.", emotion="reveal")]

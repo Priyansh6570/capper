@@ -21,32 +21,42 @@ from gpu import ffmpeg_path
 class Pace(NamedTuple):
     """Seconds of silence before the line, between its sentences, before its last sentence (the
     reveal or the punchline) and after it; the longest pause left inside a sentence (at a comma);
-    and the speaking rate (above 1 is faster)."""
+    and the speaking rate (above 1 is faster). The rest shape the voice itself: `temperature` (how
+    freely an engine that has the setting varies its delivery: low is flat and steady, high is lively),
+    `pitch` (above 1 is higher) and `gain` (above 1 is louder, as in a shout)."""
     lead: float
     sentence: float
     last: float
     tail: float
     inner: float
     speed: float
+    temperature: float = 0.8
+    pitch: float = 1.0
+    gain: float = 1.0
 
 
+# Pauses are kept short on purpose: the longest silence between two lines is about half a second.
 PACES = {
-    "calm":   Pace(0.00, 0.45, 0.45, 0.70, 0.28, 1.00),
-    "action": Pace(0.00, 0.15, 0.15, 0.25, 0.14, 1.08),
-    "tense":  Pace(0.00, 0.28, 0.28, 0.40, 0.20, 1.04),
-    "reveal": Pace(0.70, 0.40, 0.65, 0.80, 0.30, 0.97),
-    "sad":    Pace(0.15, 0.70, 0.70, 1.00, 0.42, 0.92),
-    "comic":  Pace(0.00, 0.30, 0.65, 0.55, 0.24, 1.03),
+    "calm":    Pace(0.00, 0.22, 0.22, 0.30, 0.18, 1.00, 0.75, 1.00, 1.00),
+    "action":  Pace(0.00, 0.08, 0.08, 0.12, 0.10, 1.10, 0.90, 1.03, 1.10),
+    "tense":   Pace(0.00, 0.14, 0.14, 0.20, 0.14, 1.05, 0.85, 0.99, 1.00),
+    "reveal":  Pace(0.20, 0.20, 0.35, 0.40, 0.20, 0.97, 0.85, 1.00, 1.05),
+    "sad":     Pace(0.05, 0.35, 0.35, 0.50, 0.30, 0.91, 0.65, 0.95, 0.88),
+    "comic":   Pace(0.00, 0.15, 0.30, 0.28, 0.16, 1.05, 0.90, 1.03, 1.00),
+    "excited": Pace(0.00, 0.10, 0.15, 0.15, 0.10, 1.12, 0.95, 1.06, 1.12),
+    "angry":   Pace(0.00, 0.10, 0.12, 0.15, 0.10, 1.06, 0.90, 0.97, 1.15),
 }
 DEFAULT_PACE = "calm"
 
 # older emotion tags in pace terms
-_ALIASES = {"neutral": "calm", "excited": "action", "angry": "tense", "surprised": "reveal"}
+_ALIASES = {"neutral": "calm", "happy": "excited", "joyful": "excited", "furious": "angry", "surprised": "reveal",
+            "sorrow": "sad", "fear": "tense"}
 
 BREATH = 0.12             # after a line that stops mid-sentence
 PUNCTUATION_WEIGHT = {"?": 1.15, "!": 0.85, "…": 1.5}   # scales the gap after a sentence by how it ends
 MIN_SENTENCE_WORDS = 2    # shorter sentences are voiced with the next one (engines garble single words)
-SPEED_RANGE = (0.85, 1.15)
+SPEED_RANGE = (0.85, 1.30)
+NARRATION_SPEED = 1.1     # overall speed of all narration: a pace's "1.0x" is spoken at this rate
 SILENCE_DB = -42          # a stretch this far below the clip's peak loudness counts as silence
 PAUSE_FRAME = 0.01        # resolution at which silences inside a sentence are measured
 EDGE_KEEP = 0.04          # speech kept either side of the trim, so consonants are not clipped
@@ -143,13 +153,17 @@ def cap_pauses(wav: np.ndarray, sample_rate: int, longest: float) -> np.ndarray:
     return wav[keep]
 
 
-def stretch(wav: np.ndarray, sample_rate: int, speed: float) -> np.ndarray:
-    """`wav` spoken `speed` times as fast, pitch unchanged (ffmpeg's atempo)."""
-    if abs(speed - 1.0) < 0.005:
+def stretch(wav: np.ndarray, sample_rate: int, speed: float, pitch: float = 1.0) -> np.ndarray:
+    """`wav` spoken `speed` times as fast (ffmpeg's atempo), at `pitch` times the pitch (1 = unchanged)."""
+    if abs(speed - 1.0) < 0.005 and abs(pitch - 1.0) < 0.005:
         return wav
+    # a pitch change resamples (which also speeds it up by `pitch`), so atempo takes that back out
+    filters = [f"atempo={speed / pitch:.4f}"]
+    if abs(pitch - 1.0) >= 0.005:
+        filters = [f"asetrate={round(sample_rate * pitch)}", f"aresample={sample_rate}"] + filters
     result = subprocess.run(
         [ffmpeg_path(), "-loglevel", "error", "-f", "f32le", "-ar", str(sample_rate), "-ac", "1", "-i", "pipe:0",
-         "-filter:a", f"atempo={speed:.4f}", "-f", "f32le", "pipe:1"],
+         "-filter:a", ",".join(filters), "-f", "f32le", "pipe:1"],
         input=wav.astype(np.float32).tobytes(), capture_output=True, check=True, **NO_CONSOLE)
     return np.frombuffer(result.stdout, dtype=np.float32)
 
@@ -172,7 +186,7 @@ def voice_line(text: str, mood: str | None, speak: Callable[[str, float], np.nda
     `speed` (the line's pace times `speed`, the caller's own factor) itself, natively or with `stretch`.
     """
     pace = PACES[pace_of(mood, text)]
-    rate = min(SPEED_RANGE[1], max(SPEED_RANGE[0], pace.speed * speed))
+    rate = min(SPEED_RANGE[1], max(SPEED_RANGE[0], pace.speed * speed * NARRATION_SPEED))
     sentences = split_sentences(text) or [text]
 
     def silence(seconds: float) -> np.ndarray:
@@ -181,6 +195,8 @@ def voice_line(text: str, mood: str | None, speak: Callable[[str, float], np.nda
     pieces = [silence(pace.lead)]
     for number, sentence in enumerate(sentences):
         spoken = cap_pauses(trim_silence(speak(sentence, rate), sample_rate), sample_rate, pace.inner)
+        if abs(pace.gain - 1.0) >= 0.01:
+            spoken = np.clip(spoken * pace.gain, -1.0, 1.0)
         pieces.append(_faded(spoken, sample_rate))
         if number < len(sentences) - 1:
             before_last = number == len(sentences) - 2

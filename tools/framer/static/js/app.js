@@ -720,7 +720,7 @@ function thumbUrl(f) { return cropUrl(f.bbox, f.blur); }
 // script lines
 // ---------------------------------------------------------------------------
 // how a line is delivered by the voice (see pacing.py); null = chosen from the text
-const PACES = ['calm', 'tense', 'action', 'reveal', 'sad', 'comic'];
+const PACES = ['calm', 'tense', 'action', 'reveal', 'sad', 'comic', 'excited', 'angry'];
 function newLine(text, pace) { return { text: text||'', duration_s:4, pace: pace||null, mode:'sequence', frames:[] }; }
 
 async function loadScript() {
@@ -1667,7 +1667,7 @@ function navTo(params, push) {
 function dispatchRoute(params) {
   if (params.project && params.chapter) openChapterEditor(params.project, params.chapter);
   else if (params.project && params.view === 'settings') openSettingsScreen(params.project);
-  else if (params.project && (params.view === 'merged' || params.view === 'library')) openHubScreen(params.project, params.view);
+  else if (params.project && ['merged', 'library', 'shorts'].includes(params.view)) openHubScreen(params.project, params.view);
   else if (params.project) openProjectScreen(params.project);
   else { showScreen('projects'); renderProjectsList(); }
 }
@@ -2567,6 +2567,7 @@ $('batchContinueBtn').onclick = () => batchCall('/usage', { choice: 'continue' }
 // (with intro/outro branding) and the media library (space used, deleting
 // regenerable files). Everything shown is read from the server, i.e. from disk.
 let HUB_VIEW = 'merged';
+const HUB_TITLES = { merged: 'Merged videos', library: 'Media library', shorts: 'Shorts' };
 const enc = encodeURIComponent;
 const projectApi = path => `/api/projects/${enc(CURRENT_PROJECT.slug)}${path}`;
 
@@ -2725,18 +2726,274 @@ async function openHubScreen(slug, view) {
   HUB_VIEW = view;
   $('hubMerged').hidden = view !== 'merged';
   $('hubLibrary').hidden = view !== 'library';
-  $('hubViewCrumb').textContent = view === 'merged' ? 'Merged videos' : 'Media library';
+  $('hubShorts').hidden = view !== 'shorts';
+  $('hubViewCrumb').textContent = HUB_TITLES[view];
   document.querySelectorAll('#scr-hub [data-hubview]')
     .forEach(a => a.classList.toggle('on', a.dataset.hubview === view));
   try {
     await loadCurrentProject(slug);
     $('hubCrumbProject').textContent = CURRENT_PROJECT.name;
     paintProjectChrome();
-    if (view === 'merged') await loadMerged(); else await loadLibrary();
+    await { merged: loadMerged, library: loadLibrary, shorts: loadShorts }[view]();
   } catch (e) {
     setStatus(`Open ${view} error: ${e.message}`, true);
   }
 }
+
+// --- shorts ----------------------------------------------------------------------
+// Vertical clips of the strongest segments of finished chapters (server: shorts.py, routes/shorts.py).
+// A chapter's work is choosing its segments (a small share) and then rendering them one by one.
+let SHORTS = { chapters: [], batch: null };
+let shortsTimer = null, shortsSig = '', shortsStarting = null, shortsDismissed = null;
+const shortsOpen = new Set();   // shorts whose details are expanded
+const SHORT_FIND_SHARE = 0.15;
+const shortsActive = () => !!SHORTS.batch && ['running', 'paused'].includes(SHORTS.batch.status);
+const fmtShortTime = s => `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, '0')}`;
+const shortUrl = (n, short) => projectApi(`/library/${n}/file?path=${enc('output/shorts/' + short.file)}`);
+
+async function makeShorts() {
+  const chapters = [...SELECTION];
+  shortsStarting = chapters;
+  navTo({ project: CURRENT_PROJECT.slug, view: 'shorts' });
+  const { ok, data } = await apiJson(projectApi('/shorts/batch'), 'POST', { chapters });
+  shortsStarting = null;
+  if (!ok) showToast(data.error || 'Could not start the shorts.', null, null, 'err');
+  else if (data.skipped.length) {
+    showToast('Skipped ' + data.skipped.map(s => `chapter ${s.n} (${s.reason})`).join(', ') + '.', null, null, 'warn');
+  }
+  await loadShorts();
+}
+
+async function stopShorts() {
+  const { ok, data } = await apiJson(projectApi('/shorts/batch/cancel'), 'POST');
+  if (!ok) showToast(data.error || 'Could not stop the shorts.', null, null, 'err');
+  await loadShorts();
+}
+
+async function loadShorts() {
+  clearTimeout(shortsTimer);
+  const res = await fetch(projectApi('/shorts'), { cache: 'no-store' });
+  SHORTS = await res.json();
+  if (!res.ok) throw new Error(SHORTS.error || 'shorts unavailable');
+  renderShorts();
+  if (shortsActive()) shortsTimer = setTimeout(() => {
+    if (SCREEN === 'hub' && HUB_VIEW === 'shorts') loadShorts().catch(() => {});
+  }, 2500);
+}
+
+// One chapter of the running batch as the page shows it: where it is and how far along.
+function shortRun(c) {
+  const job = c.job && c.job.status === 'running' ? c.job : null;
+  const planned = c.planned || [];
+  const found = c.completed.includes('shorts_find');
+  let phase = 'wait';
+  if (c.state === 'done') phase = 'done';
+  else if (c.state === 'failed') phase = 'failed';
+  else if (c.state === 'cancelled') phase = 'stopped';
+  else if (c.state === 'running') phase = c.stage === 'shorts_find' ? 'choose' : 'render';
+  const cp = found ? 1 : job ? job.progress || 0 : 0;
+  const rp = phase === 'done' ? 1 : phase === 'render' && job ? job.progress || 0 : 0;
+  const count = job && job.short_count ? job.short_count : planned.length;
+  const current = phase === 'render' && job ? job.short_no : 0;
+  const within = current && count ? Math.max(0, Math.min(1, (job.progress || 0) * count - (current - 1))) : 0;
+  const pct = phase === 'done' ? 100 : Math.round(100 * (SHORT_FIND_SHARE * cp + (1 - SHORT_FIND_SHARE) * rp));
+  return { c, phase, planned, cp, rp, count, current, within, pct };
+}
+
+const SHORT_PHASE = {
+  wait: 'Waiting', choose: 'Choosing segments', render: 'Rendering', done: 'Done', failed: 'Failed', stopped: 'Stopped' };
+
+function renderShorts() {
+  const runs = SHORTS.batch ? SHORTS.batch.chapters.map(shortRun) : [];
+  renderShortsHead();
+  renderShortsJob(runs);
+  const sig = JSON.stringify([SHORTS.chapters, runs.map(r => [r.c.n, r.phase, r.current, r.planned])]);
+  if (sig !== shortsSig) { shortsSig = sig; renderShortsGroups(runs); }
+  paintShortsProgress(runs);
+}
+
+function renderShortsHead() {
+  const made = SHORTS.chapters.flatMap(c => c.shorts);
+  const seconds = made.reduce((a, s) => a + s.duration_s, 0);
+  const stats = [[made.length, 'shorts'], [SHORTS.chapters.filter(c => c.shorts.length).length, 'chapters'],
+                 [fmtShortTime(seconds), 'total length']];
+  $('shortsStats').innerHTML = made.length
+    ? stats.map(([v, label]) => `<div class="shstat"><b>${v}</b><span>${label}</span></div>`).join('') : '';
+}
+
+function renderShortsJob(runs) {
+  const b = SHORTS.batch;
+  const starting = shortsStarting && !shortsActive();
+  const finished = b && !shortsActive() && shortsDismissed !== b.created_at;
+  const box = $('shortsJob');
+  if (!starting && !shortsActive() && !finished) { box.innerHTML = ''; return; }
+  let icon, tone, title, sub, overall = '', action = '', rows = '', total = 0;
+  if (starting) {
+    icon = '<span class="shspin"></span>'; tone = 'run'; title = 'Making shorts';
+    sub = `Starting the shorts for chapter(s) ${shortsStarting.join(', ')}...`;
+  } else {
+    total = runs.length ? runs.reduce((a, r) => a + r.pct, 0) / runs.length : 0;
+    const done = runs.filter(r => r.phase === 'done').length;
+    if (shortsActive()) {
+      const live = runs.find(r => r.phase === 'render') || runs.find(r => r.phase === 'choose');
+      icon = '<span class="shspin"></span>'; tone = 'run'; title = b.status === 'paused' ? 'Shorts paused' : 'Making shorts';
+      sub = !live ? 'Waiting for the next step'
+        : live.phase === 'choose' ? 'Claude is picking the strongest segments of each chapter'
+        : `Chapter ${live.c.n} · rendering short ${live.current || 1} of ${live.count || '?'}${live.planned[live.current - 1] ? ': ' + live.planned[live.current - 1].title : ''}`;
+      overall = `${done} of ${runs.length} chapters · ${Math.round(total)}%`;
+      action = '<button class="shbtn shstop" id="shortsStopBtn">■ Stop</button>';
+    } else {
+      const made = runs.reduce((a, r) => a + r.planned.length, 0);
+      const stopped = b.status === 'cancelled';
+      icon = ic(stopped ? 'stop' : 'check', 15); tone = stopped ? 'warn' : 'ok';
+      title = stopped ? 'Shorts stopped' : 'Shorts ready';
+      sub = `${done} of ${runs.length} chapters finished · ${made} shorts made`;
+      action = '<button class="shbtn" id="shortsDismissBtn">Dismiss</button>';
+    }
+    if (shortsActive()) rows = runs.map(shortRowHtml).join('');
+  }
+  box.innerHTML = `<div class="shjob ${tone}">
+    <div class="shjobhead"><span class="shjobicon">${icon}</span>
+      <div class="shjobtext"><b>${escHtml(title)}</b><span>${escHtml(sub)}</span></div>
+      <span class="shjobtotal">${overall}</span>${action}</div>
+    ${shortsActive() ? `<div class="shbar"><span id="shortsTotalBar" style="width:${total}%"></span></div>` : ''}${rows}</div>`;
+  if ($('shortsStopBtn')) $('shortsStopBtn').onclick = stopShorts;
+  if ($('shortsDismissBtn')) $('shortsDismissBtn').onclick = () => { shortsDismissed = b.created_at; renderShortsJob(runs); };
+}
+
+function shortRowHtml(r) {
+  const { c, phase, planned, count, current } = r;
+  const sub = c.error ? c.error : phase === 'choose' ? 'Planning shorts…'
+    : phase === 'done' ? `${planned.length} shorts ready` : planned.length ? `${planned.length} shorts planned` : 'Waiting';
+  const status = phase === 'render' ? `Rendering ${current || 1} of ${count || '?'}` : phase === 'wait' && c.stage === 'shorts_render'
+    ? 'Waiting for render' : SHORT_PHASE[phase];
+  const renderLabel = phase === 'render' ? `Render shorts · ${current || 1}/${count || '?'}` : phase === 'wait' && c.completed.includes('shorts_find')
+    ? 'Render shorts · queued' : 'Render shorts';
+  const tone = ['choose', 'render'].includes(phase) ? 'run' : phase === 'done' ? 'ok' : phase === 'failed' ? 'bad' : '';
+  const step = (key, label, value, on) => `<div class="shstep"><div class="shtrack"><span data-row="${c.n}" data-bar="${key}"
+    class="${value >= 1 ? 'ok' : 'run'}" style="width:${value * 100}%"></span></div>
+    <span class="${on ? 'on' : value >= 1 ? 'done' : ''}">${escHtml(label)}</span></div>`;
+  return `<div class="shrow" data-row="${c.n}">
+    <span class="shcode">CH ${c.n}</span>
+    <div class="shrowname"><b>${escHtml(c.title || 'Chapter ' + c.n)}</b><span title="${escAttr(sub)}">${escHtml(sub)}</span></div>
+    <div class="shsteps">${step('find', 'Choose segments', r.cp, phase === 'choose')}${step('render', renderLabel, r.rp, phase === 'render')}</div>
+    <span class="shstatus ${tone}">${escHtml(status)}<em>${phase === 'done' ? '' : r.pct + '%'}</em></span></div>`;
+}
+
+// The numbers that change every poll (bars, the rendering card) are updated in place, so the cards and
+// their thumbnails are not rebuilt.
+function paintShortsProgress(runs) {
+  if ($('shortsTotalBar')) {
+    $('shortsTotalBar').style.width = (runs.reduce((a, r) => a + r.pct, 0) / Math.max(1, runs.length)) + '%';
+  }
+  runs.forEach(r => {
+    document.querySelectorAll(`[data-row="${r.c.n}"][data-bar]`).forEach(bar => {
+      bar.style.width = (bar.dataset.bar === 'find' ? r.cp : r.rp) * 100 + '%';
+    });
+    const card = document.querySelector(`.shskel[data-ch="${r.c.n}"][data-no="${r.current}"]`);
+    if (card) {
+      card.querySelector('.shskpct').style.width = r.within * 100 + '%';
+      card.querySelector('.shsklabel').lastChild.textContent = `Rendering ${Math.round(r.within * 100)}%`;
+    }
+  });
+}
+
+function renderShortsGroups(runs) {
+  const byChapter = new Map(runs.map(r => [r.c.n, r]));
+  const chapters = new Map(SHORTS.chapters.filter(c => c.shorts.length).map(c => [c.n, c]));
+  const numbers = [...new Set([...chapters.keys(), ...runs.filter(r => ['wait', 'choose', 'render'].includes(r.phase)).map(r => r.c.n)])]
+    .sort((a, b) => a - b);
+  $('shortsEmpty').hidden = numbers.length > 0 || shortsActive() || !!shortsStarting;
+  const box = $('shortsGroups');
+  box.innerHTML = '';
+  numbers.forEach(n => {
+    const run = byChapter.get(n);
+    const live = run && ['wait', 'choose', 'render'].includes(run.phase);
+    const made = chapters.has(n) ? chapters.get(n).shorts : [];
+    const title = chapters.has(n) ? chapters.get(n).title : run.c.title;
+    const sub = !live ? `${made.length} shorts` : run.phase === 'choose' ? 'choosing segments…'
+      : run.phase === 'wait' ? 'waiting to render' : 'rendering…';
+    const section = document.createElement('section');
+    section.className = 'shgroup';
+    section.innerHTML = `<div class="shgrouphead"><span class="shcode">CH ${n}</span><b>${escHtml(title || 'Chapter ' + n)}</b>
+      <span class="${live ? 'run' : ''}">${sub}</span><i></i>
+      ${!live && made.length ? `<a class="shbtn ghost" href="${projectApi(`/shorts/${n}/zip`)}" download>${ic('download', 14)}Download all</a>` : ''}</div>
+      <div class="shgrid"></div>`;
+    const grid = section.querySelector('.shgrid');
+    if (!live) made.forEach((s, i) => grid.appendChild(shortCardEl(n, s, i + 1)));
+    else if (run.planned.length) run.planned.forEach((p, i) =>
+      grid.appendChild(made[i] && run.phase === 'render' ? shortCardEl(n, made[i], i + 1) : shortSkeletonEl(run, p, i + 1)));
+    else grid.appendChild(shortSkeletonEl(run, null, 1));
+    box.appendChild(section);
+  });
+}
+
+function shortCardEl(n, short, number) {
+  const key = `${n}-${number}`;
+  const url = shortUrl(n, short);
+  const card = document.createElement('article');
+  card.className = 'shcard' + (shortsOpen.has(key) ? ' open' : '');
+  card.innerHTML = `<button class="shthumb" title="Play"><video muted preload="metadata" src="${url}#t=0.5"></video>
+      <span class="shplay">${ic('play', 14)}</span><span class="shdur">${fmtShortTime(short.duration_s)}</span><span class="shnum">#${number}</span></button>
+    <div class="shinfo"><span class="shname" title="${escAttr(short.title)}">${escHtml(short.title)}</span>
+      <span class="shmeta">lines ${short.first_line}–${short.last_line} · ${fmtSize(short.size)}</span>
+      <div class="shactions"><button class="shdetails">${ic('chevdown', 13)}Details</button>
+        <button class="shicon shcopytitle" title="Copy title">${ic('copy', 13)}</button>
+        <a class="shicon" href="${url}" download="${escAttr(short.file)}" title="Download">${ic('download', 14)}</a></div>
+      <div class="shdetailbody">
+        <div class="shfield"><div><span>DESCRIPTION</span><button class="shcopy shcopydesc">${ic('copy', 13)}Copy</button></div><p>${escHtml(short.description)}</p></div>
+        <div class="shfield why"><span>WHY THIS CLIP</span><p>${escHtml(short.reason)}</p></div></div></div>`;
+  card.querySelector('.shthumb').onclick = () => playShort(n, short, number);
+  card.querySelector('.shdetails').onclick = () => {
+    card.classList.toggle('open');
+    card.classList.contains('open') ? shortsOpen.add(key) : shortsOpen.delete(key);
+  };
+  card.querySelector('.shcopytitle').onclick = e => copyShortText(short.title, e.currentTarget);
+  card.querySelector('.shcopydesc').onclick = e => copyShortText(short.description, e.currentTarget);
+  return card;
+}
+
+function shortSkeletonEl(run, planned, number) {
+  const active = run.phase === 'choose' || (run.phase === 'render' && run.current === number);
+  const label = run.phase === 'choose' ? 'Choosing…' : active ? `Rendering ${Math.round(run.within * 100)}%` : 'Queued';
+  const card = document.createElement('div');
+  card.className = 'shcard shskel' + (active ? ' active' : '');
+  card.dataset.ch = run.c.n;
+  card.dataset.no = number;
+  card.innerHTML = `<div class="shthumb skeleton"><span class="shsklabel ${active ? 'run' : ''}">${active ? '<i></i>' : ''}${label}</span>
+      <span class="shnum">#${number}</span><span class="shskbar"><span class="shskpct" style="width:${active && run.phase === 'render' ? run.within * 100 : 0}%"></span></span></div>
+    <div class="shinfo">${planned ? `<span class="shname">${escHtml(planned.title)}</span>`
+      : '<div class="shlines"><span></span><span></span></div>'}<div class="shph short"></div><div class="shph button"></div></div>`;
+  return card;
+}
+
+async function copyShortText(text, button) {
+  try { await navigator.clipboard.writeText(text); } catch (_) { setStatus('Copy this text: ' + text, false); return; }
+  const before = button.innerHTML;
+  button.classList.add('copied');
+  button.innerHTML = button.classList.contains('shcopy') ? ic('check', 13) + 'Copied' : ic('check', 13);
+  setTimeout(() => { button.classList.remove('copied'); button.innerHTML = before; }, 1400);
+}
+
+function playShort(n, short, number) {
+  const player = $('shortsPlayer');
+  player.querySelector('video').src = shortUrl(n, short);
+  $('shortsPlayerCode').textContent = `CH ${n} · SHORT #${number}`;
+  $('shortsPlayerTitle').textContent = short.title;
+  $('shortsPlayerDesc').textContent = short.description;
+  player.hidden = false;
+  player.querySelector('video').play().catch(() => {});
+}
+
+function closeShortPlayer() {
+  const video = $('shortsPlayer').querySelector('video');
+  video.pause();
+  video.removeAttribute('src');
+  video.load();
+  $('shortsPlayer').hidden = true;
+}
+
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && !$('shortsPlayer').hidden) closeShortPlayer(); });
 
 // --- merged videos -------------------------------------------------------------
 let MERGED = { merges: [], branding: {}, default_clips: {}, folder: '' };
@@ -2954,7 +3211,7 @@ function syncMergedJobs() {
 let LIB = null;                       // GET /library: sizes per type, chapter and project
 const LIB_OPEN = new Set();           // chapters whose folder is expanded
 const LIB_FILE_LIMIT = 30;
-const BULK_LABELS = { video: 'Videos', audio: 'Audio', frames: 'Frames', panels: 'Panels', strips: 'Strips', pdfs: 'PDFs' };
+const BULK_LABELS = { video: 'Videos', shorts: 'Shorts', audio: 'Audio', frames: 'Frames', panels: 'Panels', strips: 'Strips', pdfs: 'PDFs' };
 const bulk = { kind: 'video', selected: new Set() };
 
 async function loadLibrary() {
@@ -3389,6 +3646,10 @@ function paintActionStates() {
   $('batchRunBtn').title = blocker;
   $('runWhy').textContent = blocker;
   $('batchRunBtn').querySelector('span').textContent = SELECTION.size ? `Run pipeline for ${SELECTION.size}` : 'Run pipeline';
+  $('shortsBtn').disabled = !SELECTION.size;
+  $('shortsBtn').title = SELECTION.size ? 'Pick the strongest segments of the selected chapters and render them as vertical shorts'
+    : 'Select chapters with a finished video to make shorts from';
+  $('shortsBtn').querySelector('span').textContent = SELECTION.size ? `Make shorts for ${SELECTION.size}` : 'Make shorts';
   paintTrackers();
 }
 
@@ -3430,7 +3691,15 @@ $('viewListBtn').onclick = () => setChapterView('list');
 $('viewCardsBtn').onclick = () => setChapterView('cards');
 $('selAllBtn').onclick = () => toggleSelection(CURRENT_PROJECT.chapters.map(c => c.n));
 $('selCompleteBtn').onclick = () => toggleSelection(CURRENT_PROJECT.chapters.filter(c => c.status === 'complete').map(c => c.n));
-$('selClearBtn').onclick = () => { SELECTION.clear(); selectionAnchor = null; paintSelection(); };
+$('selRangeBtn').onclick = () => {
+  const a = parseInt($('selFrom').value, 10), b = parseInt($('selTo').value, 10);
+  if (Number.isNaN(a) || Number.isNaN(b)) return;
+  const [from, to] = a <= b ? [a, b] : [b, a];
+  CURRENT_PROJECT.chapters.filter(c => c.n >= from && c.n <= to).forEach(c => SELECTION.add(c.n));
+  selectionAnchor = to;
+  paintSelection();
+};
+$('selClearBtn').onclick =() => { SELECTION.clear(); selectionAnchor = null; paintSelection(); };
 
 function mergeBlocker() {
   if (mergeES) return 'A merge is already running.';
@@ -3838,6 +4107,23 @@ function fillSettingsForm() {
   $('bgDim').value = Math.round(s.background.dim * 100);
   $('bgVideoHint').hidden = s.background.mode !== 'video';
 
+  const sh = s.shorts;
+  document.querySelector(`input[name=shLayout][value="${sh.layout}"]`).checked = true;
+  $('shCoverHint').hidden = sh.layout !== 'cover';
+  $('shOwnLook').checked = sh.own_look;
+  $('shLookBody').hidden = !sh.own_look;
+  $('shWmEnabled').checked = !!sh.watermark.enabled;
+  document.querySelector(`input[name=shWmType][value="${sh.watermark.type}"]`).checked = true;
+  $('shWmText').value = sh.watermark.text || '';
+  $('shWmFileName').textContent = sh.watermark.file ? sh.watermark.file.split('/').pop() : '';
+  $('shWmOpacity').value = Math.round(sh.watermark.opacity * 100);
+  $('shWmSize').value = Math.round(sh.watermark.size * 100);
+  $('shWmSpacing').value = Math.round(sh.watermark.spacing * 100);
+  $('shWmAngle').value = Math.round(sh.watermark.angle);
+  document.querySelector(`input[name=shBgMode][value="${sh.background.mode}"]`).checked = true;
+  $('shBgFileName').textContent = sh.background.file ? sh.background.file.split('/').pop() : '';
+  $('shBgDim').value = Math.round(sh.background.dim * 100);
+
   document.querySelector(`input[name=animStyle][value="${s.animation.style}"]`).checked = true;
   $('animDirection').value = s.animation.direction || 'left';
   $('animDuration').value = Math.round(s.animation.duration * 100);
@@ -3857,9 +4143,12 @@ function fillSettingsForm() {
   $('claudeMinFrame').value = cl.min_frame_s || 3;
   const bt = s.batch || {};
   $('videoQuality').value = (s.video || {}).quality || 'tiny';
+  document.querySelector(`input[name=vidLayout][value="${(s.video || {}).layout || 'frame'}"]`).checked = true;
   $('batchReview').checked = !!bt.review_before_audio;
   $('batchAutoWait').checked = bt.auto_wait_five_hour !== false;
   $('batchNotify').checked = bt.notifications !== false;
+  $('batchOffload').checked = !!bt.auto_offload;
+  $('batchOffloadGb').value = bt.offload_below_gb || 10;
   $('batchFiveHour').value = bt.five_hour_pct || 70;
   $('batchSevenDay').value = bt.seven_day_pct || 60;
   loadClaudeStatus();
@@ -3890,6 +4179,11 @@ function updateSliderLabels() {
   $('narrVolLbl').textContent = $('narrVol').value + '%';
   $('musicVolLbl').textContent = $('musicVol').value + '%';
   $('bgDimLbl').textContent = $('bgDim').value + '%';
+  $('shWmOpacityLbl').textContent = $('shWmOpacity').value + '%';
+  $('shWmSizeLbl').textContent = $('shWmSize').value + '%';
+  $('shWmSpacingLbl').textContent = $('shWmSpacing').value + '%';
+  $('shWmAngleLbl').textContent = $('shWmAngle').value + '\u00b0';
+  $('shBgDimLbl').textContent = $('shBgDim').value + '%';
   $('animDurationLbl').textContent = (+$('animDuration').value / 100).toFixed(2) + 's';
 }
 
@@ -3960,6 +4254,23 @@ function currentSettingsFromForm() {
       mode: document.querySelector('input[name=bgMode]:checked').value,
       dim: (+$('bgDim').value) / 100,
     },
+    shorts: {
+      layout: document.querySelector('input[name=shLayout]:checked').value,
+      own_look: $('shOwnLook').checked,
+      watermark: {
+        enabled: $('shWmEnabled').checked,
+        type: document.querySelector('input[name=shWmType]:checked').value,
+        text: $('shWmText').value,
+        opacity: (+$('shWmOpacity').value) / 100,
+        size: (+$('shWmSize').value) / 100,
+        spacing: (+$('shWmSpacing').value) / 100,
+        angle: +$('shWmAngle').value,
+      },
+      background: {
+        mode: document.querySelector('input[name=shBgMode]:checked').value,
+        dim: (+$('shBgDim').value) / 100,
+      },
+    },
     animation: {
       style: document.querySelector('input[name=animStyle]:checked').value,
       direction: $('animDirection').value,
@@ -3979,11 +4290,13 @@ function currentSettingsFromForm() {
       narration_model: $('claudeNarrationModel').value,
       min_frame_s: parseFloat($('claudeMinFrame').value) || 3,
     },
-    video: { quality: $('videoQuality').value },
+    video: { quality: $('videoQuality').value, layout: document.querySelector('input[name=vidLayout]:checked').value },
     batch: {
       review_before_audio: $('batchReview').checked,
       auto_wait_five_hour: $('batchAutoWait').checked,
       notifications: $('batchNotify').checked,
+      auto_offload: $('batchOffload').checked,
+      offload_below_gb: parseInt($('batchOffloadGb').value, 10) || 10,
       five_hour_pct: parseInt($('batchFiveHour').value, 10) || 70,
       seven_day_pct: parseInt($('batchSevenDay').value, 10) || 60,
     },
@@ -4071,6 +4384,8 @@ const ASSET_UI = {
   voice: { name: 'voiceName', browse: 'voiceBrowseBtn' },
   watermark: { name: 'wmFileName', browse: 'wmBrowseBtn' },
   background: { name: 'bgFileName', browse: 'bgBrowseBtn' },
+  shorts_watermark: { name: 'shWmFileName', browse: 'shWmBrowseBtn' },
+  shorts_background: { name: 'shBgFileName', browse: 'shBgBrowseBtn' },
 };
 let uploadsInFlight = 0;
 window.addEventListener('beforeunload', e => { if (uploadsInFlight) e.preventDefault(); });
@@ -4437,13 +4752,19 @@ $('mergeCancelBtn').onclick = cancelMerge;
 $('pjCrumbProjects').onclick = () => navTo({});
 $('pjSettingsBtn').onclick = () => navTo({ project: CURRENT_PROJECT.slug, view: 'settings' });
 $('pjChaptersNav').onclick = () => navTo({ project: CURRENT_PROJECT.slug });
-[['pj', 'Merged', 'merged'], ['pj', 'Library', 'library'], ['st', 'Merged', 'merged'], ['st', 'Library', 'library']]
+[['pj', 'Merged', 'merged'], ['pj', 'Library', 'library'], ['pj', 'Shorts', 'shorts'],
+ ['st', 'Merged', 'merged'], ['st', 'Library', 'library'], ['st', 'Shorts', 'shorts']]
   .forEach(([screen, name, view]) => $(`${screen}${name}Nav`).onclick = () => navTo({ project: CURRENT_PROJECT.slug, view }));
 $('hubAllProjectsBtn').onclick = $('hubCrumbProjects').onclick = () => navTo({});
 $('hubChaptersNav').onclick = $('hubCrumbProject').onclick = () => navTo({ project: CURRENT_PROJECT.slug });
 $('hubSettingsNav').onclick = () => navTo({ project: CURRENT_PROJECT.slug, view: 'settings' });
 $('hubMergedNav').onclick = () => navTo({ project: CURRENT_PROJECT.slug, view: 'merged' });
 $('hubLibraryNav').onclick = () => navTo({ project: CURRENT_PROJECT.slug, view: 'library' });
+$('hubShortsNav').onclick = () => navTo({ project: CURRENT_PROJECT.slug, view: 'shorts' });
+$('shortsBtn').onclick = makeShorts;
+$('shortsGoChapters').onclick = () => navTo({ project: CURRENT_PROJECT.slug });
+$('shortsPlayer').onclick = closeShortPlayer;
+$('shortsPlayer').querySelector('video').onclick = e => e.stopPropagation();
 $('hubRefreshBtn').onclick = () => openHubScreen(CURRENT_PROJECT.slug, HUB_VIEW);
 $('stAllProjectsBtn').onclick = () => navTo({});
 $('stCrumbProjects').onclick = () => navTo({});
@@ -4453,10 +4774,15 @@ document.querySelectorAll('input[name=voiceEngine]').forEach(el => el.onchange =
 $('kokoroVoice').onchange = saveSettingsDebounced;
 $('kokoroPreviewBtn').onclick = previewKokoro;
 loadKokoroVoices();
-['musicMode', 'voiceMode', 'wmType', 'bgMode', 'animStyle'].forEach(name => {
+['musicMode', 'voiceMode', 'wmType', 'bgMode', 'shWmType', 'shBgMode', 'shLayout', 'vidLayout', 'animStyle'].forEach(name => {
   document.querySelectorAll(`input[name=${name}]`).forEach(el => el.onchange = saveSettingsDebounced);
 });
 $('wmEnabled').onchange = saveSettingsDebounced;
+document.querySelectorAll('input[name=shLayout]').forEach(el =>
+  el.addEventListener('change', () => { $('shCoverHint').hidden = el.value !== 'cover' || !el.checked; }));
+$('shOwnLook').onchange = () => { $('shLookBody').hidden = !$('shOwnLook').checked; saveSettingsDebounced(); };
+$('shWmEnabled').onchange = saveSettingsDebounced;
+$('shWmText').oninput = saveSettingsDebounced;
 $('wmText').oninput = saveSettingsDebounced;
 $('animDirection').onchange = saveSettingsDebounced;
 $('animZoom').onchange = saveSettingsDebounced;
@@ -4465,7 +4791,8 @@ $('animZoomAmount').oninput = () => {
   saveSettingsDebounced();
 };
 $('framingBlur').onchange = saveSettingsDebounced;
-['wmOpacity', 'wmSize', 'wmSpacing', 'wmAngle', 'bgDim', 'animDuration', 'narrVol', 'musicVol'].forEach(id => { $(id).oninput = saveSettingsDebounced; });
+['wmOpacity', 'wmSize', 'wmSpacing', 'wmAngle', 'bgDim', 'shWmOpacity', 'shWmSize', 'shWmSpacing', 'shWmAngle', 'shBgDim',
+ 'animDuration', 'narrVol', 'musicVol'].forEach(id => { $(id).oninput = saveSettingsDebounced; });
 $('scriptTone').onchange = saveSettingsDebounced;
 $('scriptNarrationType').onchange = saveSettingsDebounced;
 $('scriptStyleRef').oninput = saveSettingsDebounced;
@@ -4477,16 +4804,22 @@ $('videoQuality').onchange = saveSettingsDebounced;
 $('batchReview').onchange = saveSettingsDebounced;
 $('batchAutoWait').onchange = saveSettingsDebounced;
 $('batchNotify').onchange = saveSettingsDebounced;
+$('batchOffload').onchange = saveSettingsDebounced;
+$('batchOffloadGb').oninput = saveSettingsDebounced;
 $('batchFiveHour').oninput = saveSettingsDebounced;
 $('batchSevenDay').oninput = saveSettingsDebounced;
 $('musicFile').onchange = e => uploadAsset('music', e.target.files[0]);
 $('voiceFile').onchange = e => uploadAsset('voice', e.target.files[0]);
 $('wmFile').onchange = e => uploadAsset('watermark', e.target.files[0]);
 $('bgFile').onchange = e => uploadAsset('background', e.target.files[0]);
+$('shWmFile').onchange = e => uploadAsset('shorts_watermark', e.target.files[0]);
+$('shBgFile').onchange = e => uploadAsset('shorts_background', e.target.files[0]);
 $('musicBrowseBtn').onclick = () => $('musicFile').click();
 $('voiceBrowseBtn').onclick = () => $('voiceFile').click();
 $('wmBrowseBtn').onclick = () => $('wmFile').click();
 $('bgBrowseBtn').onclick = () => $('bgFile').click();
+$('shWmBrowseBtn').onclick = () => $('shWmFile').click();
+$('shBgBrowseBtn').onclick = () => $('shBgFile').click();
 
 $('dlBtn').onclick = doDownload;
 $('loadPdfBtn').onclick = loadPdf;

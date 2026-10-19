@@ -5,7 +5,7 @@ import subprocess
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 import claude_engine
 import config
@@ -47,6 +47,12 @@ def _ensure_panels(chapter_id: str) -> list[Panel]:
 NARRATION_TYPES = {
     "first_person": 'first-person, as the hero living through these events ("I", "me")',
     "third_person": 'third-person recap narration ("he", "she", "they")',
+    "mixed": ('a blend of the two, chosen scene by scene. Use first person ("I", "me") for the hero’s own '
+              'moments: their thoughts, feelings, fights, decisions and anything only they would know. Use '
+              'third person ("he", "she", "they") for what happens away from the hero or around them: other '
+              'characters’ scenes, world and setting, backstory, big-picture context and scene transitions. '
+              'Switch only at a natural scene or beat boundary, never mid-sentence, and never flip back and '
+              'forth within one scene; the hero is "I" whenever the story is in their head'),
 }
 
 
@@ -59,6 +65,26 @@ def style_reference_directive(style_reference: str) -> str:
     return ("Match the LANGUAGE, TONE, and HUMOR of this example script as closely "
             "as you can - imitate its voice and style, not its plot or content:\n\n"
             + style_reference.strip())
+
+
+def wait_out_usage_limit(job: "Job", resume_at: datetime) -> None:
+    """Hold a Claude job until its usage limit resets, unless it is stopped meanwhile."""
+    job.resume_at = resume_at.isoformat(timespec="seconds")
+    job.message = f"Usage limit reached - resumes at {resume_at:%H:%M}"
+    job.note(job.message)
+    while datetime.now().astimezone() < resume_at:
+        if job.cancel_requested:
+            raise RuntimeError("Stopped by user.")
+        time.sleep(1)
+    job.resume_at = None
+    job.note("Usage limit reset - resuming.")
+
+
+def attach_proc(job: "Job") -> Callable[[subprocess.Popen], None]:
+    def attach(proc: subprocess.Popen) -> None:
+        job.proc = proc
+
+    return attach
 
 
 def run_script_job(job: "Job") -> None:
@@ -94,20 +120,6 @@ def run_script_job(job: "Job") -> None:
         stats["current"] = event.get("panel", stats["current"])
         job.emit(event)
 
-    def on_limit(resume_at: datetime) -> None:
-        job.resume_at = resume_at.isoformat(timespec="seconds")
-        job.message = f"Usage limit reached - resumes at {resume_at:%H:%M}"
-        job.note(job.message)
-        while datetime.now().astimezone() < resume_at:
-            if job.cancel_requested:
-                raise RuntimeError("Stopped by user.")
-            time.sleep(1)
-        job.resume_at = None
-        job.note("Usage limit reset - resuming.")
-
-    def on_proc(proc: subprocess.Popen) -> None:
-        job.proc = proc
-
     try:
         with config.chapter_scope(projects.chapter_work_dir(slug, ch_no), projects.chapter_output_dir(slug, ch_no)):
             settings = projects.load(slug)["settings"]
@@ -141,7 +153,7 @@ def run_script_job(job: "Job") -> None:
                         "narration": settings["claude"]["narration_model"]},
                 min_frame_s=settings["claude"]["min_frame_s"],
                 chars_per_sec=rate or claude_engine.DEFAULT_CHARS_PER_SEC,
-                on_event=on_event, on_limit=on_limit, on_proc=on_proc,
+                on_event=on_event, on_limit=lambda at: wait_out_usage_limit(job, at), on_proc=attach_proc(job),
                 before_call=job.before_claude_call)
             total = claude_engine.read_usage(state_path)["total"]
         job.claude["total"] = total

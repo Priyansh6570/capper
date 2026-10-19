@@ -27,6 +27,32 @@ def apply_model_cache_setting() -> None:
 
 apply_model_cache_setting()
 
+
+def apply_scratch_setting() -> None:
+    """Keep the heavy temporary and cache folders off the system drive. Torch, CUDA, Triton and Python's
+    tempfile write gigabytes to %TEMP% and %LOCALAPPDATA% while a voice model runs; when the model cache
+    (`hf_home`) is on another drive, their folders go next to it, under `scratch`. A variable already set
+    in the environment wins. Runs at import, before torch or CUDA is loaded."""
+    cache = os.environ.get("HF_HOME")
+    if not cache:
+        return
+    scratch = Path(cache).parent / "recapper_scratch"
+    folders = {"TEMP": "tmp", "TMP": "tmp", "TMPDIR": "tmp", "TORCH_HOME": "torch",
+               "XDG_CACHE_HOME": "xdg", "CUDA_CACHE_PATH": "cuda", "TRITON_CACHE_DIR": "triton",
+               "TORCHINDUCTOR_CACHE_DIR": "inductor", "NUMBA_CACHE_DIR": "numba"}
+    try:
+        for name, sub in folders.items():
+            if not os.environ.get(name) or name in ("TEMP", "TMP", "TMPDIR"):
+                (scratch / sub).mkdir(parents=True, exist_ok=True)
+                os.environ[name] = str(scratch / sub)
+        import tempfile
+        tempfile.tempdir = str(scratch / "tmp")
+    except OSError:
+        pass   # the drive is not there; carry on with the defaults
+
+
+apply_scratch_setting()
+
 # Extra subprocess.Popen/run kwargs that suppress the console window a
 # console-subsystem child (python/ffmpeg/git/...) would otherwise get on
 # Windows whenever the parent has none of its own - true for this whole app
@@ -36,6 +62,11 @@ NO_CONSOLE = {"creationflags": subprocess.CREATE_NO_WINDOW} if sys.platform == "
 WORK_DIR = ROOT / "work"         # per-chapter intermediate files
 OUTPUT_DIR = ROOT / "output"     # final artifacts (the video)
 PROJECTS_DIR = ROOT / "projects"  # framer project system (tools/framer/projects.py)
+
+# Where the Shorts add-on keeps its files, under a chapter's work/ and output/ folders (stages/s8_shorts.py).
+SHORTS_FOLDER = "shorts"
+SHORTS_PLAN = "plan.json"      # work/<ch>/shorts/: the segments picked for the chapter
+SHORTS_INDEX = "shorts.json"   # output/<ch>/shorts/: the rendered shorts with their titles and descriptions
 
 # --------------------------------------------------------------------------- #
 # Chapter-folder redirect for the framer's project system.

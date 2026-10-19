@@ -19,11 +19,13 @@ import claude_cli
 import config
 import library
 import projects
+import shorts
 from config import NO_CONSOLE, ROOT, chapter_output_dir, chapter_work_dir
 from manifest import Manifest
 from services.chapter_files import _strip_path, downloaded_pdf
 from services.common import Refused, now_iso
 from services.script_jobs import run_script_job
+from services.shorts_jobs import run_shorts_find_job
 
 
 # --------------------------------------------------------------------------- #
@@ -67,8 +69,8 @@ _RENDER_HISTORY_CAP = 20
 
 
 # Jobs whose length isn't per-beat: a branded join is a copy once the clips are
-# cached; a script is two Claude calls over a whole chapter (a rough guess).
-FIXED_ESTIMATE_S = {"brand": 15.0, "script": 600.0}
+# cached; a script is two Claude calls over a whole chapter and a shorts search one text call (rough guesses).
+FIXED_ESTIMATE_S = {"brand": 15.0, "script": 600.0, "shorts_find": 90.0, "shorts_render": 240.0}
 
 
 class Job:
@@ -79,12 +81,14 @@ class Job:
                  total_beats: int, target: str | None = None):
         self.id = uuid.uuid4().hex[:12]
         self.chapter_id = chapter_id
-        self.what = what                  # both|voice|video|brand|script
+        self.what = what                  # both|voice|video|brand|script|shorts_find|shorts_render
         self.slug = slug
         self.ch_no = ch_no
         self.target = target              # brand: the merged video being branded
         self.fraction = 0.0               # brand/script: progress reported by the job itself
         self.resume_at: str | None = None  # script: set while paused on Claude's usage limit
+        self.short_no = 0                 # shorts_render: the short being rendered and how many there are
+        self.short_count = 0
         self.status = "queued"            # queued|running|done|failed|cancelled
         self.total_beats = total_beats
         self.audio = 0
@@ -177,6 +181,7 @@ class Job:
                         (1.0 if self.status == "done" else 0.0),
             "message": self.message, "video_url": self.video_url, "ok": self.ok,
             "resume_at": self.resume_at, "claude": self.claude,
+            "short_no": self.short_no, "short_count": self.short_count,
             "downloading_model": self.downloading_model,
             "log": list(self.log), "created_at": self.created_at,
             "started_at": self.started_at, "finished_at": self.finished_at,
@@ -247,7 +252,8 @@ _HARDWARE = {name: threading.Lock() for name in ("claude", "audio", "video")}
 
 
 _HARDWARE_USED = {"script": ("claude",), "voice": ("audio",), "video": ("video",),
-                  "both": ("audio", "video"), "brand": ("video",)}
+                  "both": ("audio", "video"), "brand": ("video",), "shorts_find": ("claude",),
+                  "shorts_render": ("video",)}
 
 
 def _run_job(job: "Job") -> None:
@@ -257,7 +263,8 @@ def _run_job(job: "Job") -> None:
         job.status = "running"
         job.started_at = now_iso()
         try:
-            {"brand": _run_brand_job, "script": run_script_job}.get(job.what, _run_pipeline_job)(job)
+            {"brand": _run_brand_job, "script": run_script_job,
+             "shorts_find": run_shorts_find_job}.get(job.what, _run_pipeline_job)(job)
         finally:
             job.finished_at = now_iso()
             job.emit({"type": "end"})
@@ -361,13 +368,6 @@ def _run_pipeline_job(job: "Job") -> None:
         if slug and ch_no:
             projects.write_media_snapshot(slug, ch_no)   # a settings change must still land
 
-        if job.what == "video":
-            from_stage, to_stage = "video", None
-        elif job.what == "voice":
-            from_stage, to_stage = "audio", "audio"
-        else:
-            from_stage, to_stage = "audio", None
-
         # -u + PYTHONUNBUFFERED so each print streams immediately; utf-8 so
         # the child never dies on a unicode arrow. MANHWA_WORK_ROOT/OUTPUT_ROOT
         # hand the same scope to the orchestrator subprocess (config.py's
@@ -377,10 +377,7 @@ def _run_pipeline_job(job: "Job") -> None:
         if slug and ch_no:
             env["MANHWA_WORK_ROOT"] = str(work_dir)
             env["MANHWA_OUTPUT_ROOT"] = str(output_dir)
-        cmd = [sys.executable, "-u", str(ROOT / "orchestrator.py"),
-               "--chapter", chapter_id, "--from", from_stage]
-        if to_stage:
-            cmd += ["--to", to_stage]
+        cmd = _pipeline_command(job)
         job.append_log("$ " + " ".join(cmd))
 
         proc = None
@@ -402,6 +399,8 @@ def _run_pipeline_job(job: "Job") -> None:
                     elif re.match(r"^\s*line \d+:", line):
                         job.video += 1
                         job.downloading_model = False
+                    elif job.what == "shorts_render":
+                        _track_shorts_render(job, line)
                     elif (done := _render_fraction(line, output_dir)) is not None:
                         job.render = max(job.render, done)
                     elif "[voice-model]" in line:
@@ -427,6 +426,11 @@ def _run_pipeline_job(job: "Job") -> None:
                     # video" is run over the new audio.
                     job.ok = True
                     job.message = "Audio regenerated. Re-render video to hear it in the recap."
+                elif job.what == "shorts_render":
+                    made = shorts.rendered(output_dir)
+                    job.fraction = 1.0
+                    job.ok = bool(made)
+                    job.message = f"{len(made)} short(s) rendered." if made else "Finished, but no short was found."
                 else:
                     mp4 = output_dir / "recap.mp4"
                     if mp4.exists() and slug and ch_no:
@@ -449,6 +453,31 @@ def _run_pipeline_job(job: "Job") -> None:
                     proc.terminate()
                 except Exception:  # noqa: BLE001
                     pass
+
+
+_SHORT_START = re.compile(r"^shorts (\d+)/(\d+):")
+_RENDER_PERCENT = re.compile(r"^\s*render\s+(\d+)%")
+
+
+def _track_shorts_render(job: "Job", line: str) -> None:
+    """Progress of a shorts render from the stage's output: which short it is on (kept in the job's
+    message) and how far its ffmpeg run has got."""
+    if start := _SHORT_START.match(line):
+        job.short_no, job.short_count = int(start[1]), int(start[2])
+        job.message = f"Rendering short {start[1]} of {start[2]}: {line.partition(': ')[2]}"
+        job.fraction = (job.short_no - 1) / job.short_count
+    elif (percent := _RENDER_PERCENT.match(line)) and job.short_count:
+        job.fraction = (job.short_no - 1 + int(percent[1]) / 100) / job.short_count
+
+
+def _pipeline_command(job: "Job") -> list[str]:
+    """The subprocess a render job runs: the orchestrator for the chapter's narration and video, the
+    shorts stage for its shorts."""
+    if job.what == "shorts_render":
+        return [sys.executable, "-u", "-m", "stages.s8_shorts", "--chapter", job.chapter_id]
+    from_stage, to_stage = {"video": ("video", None), "voice": ("audio", "audio")}.get(job.what, ("audio", None))
+    cmd = [sys.executable, "-u", str(ROOT / "orchestrator.py"), "--chapter", job.chapter_id, "--from", from_stage]
+    return cmd + ["--to", to_stage] if to_stage else cmd
 
 
 def _enqueue(job: "Job") -> None:
@@ -504,6 +533,18 @@ def new_script_job(chapter_id: str, slug: str | None, ch_no: str | None) -> "Job
     _refuse_if_busy(chapter_id, "A job")
     job = Job(chapter_id, "script", slug, ch_no, 0)
     job.append_log(f"Queued Claude script for {chapter_id}…")
+    return job
+
+
+def new_shorts_job(chapter_id: str, what: str, slug: str, ch_no: str) -> "Job":
+    """A not-yet-started step of the Shorts pipeline (`shorts_find` or `shorts_render`) for a project chapter."""
+    if what == "shorts_find":
+        status = claude_cli.cli_status()
+        if not status["ready"]:
+            raise Refused(status["message"], 409)
+    _refuse_if_busy(chapter_id, "A job")
+    job = Job(chapter_id, what, slug, ch_no, 0)
+    job.append_log(f"Queued {what.replace('_', ' ')} for {chapter_id}…")
     return job
 
 

@@ -149,6 +149,7 @@
         <nav class="appnav">
           <a href="javascript:void(0)" id="pjChaptersNav" class="on" data-icon="film" data-ic-size="14"><span>Chapters</span><span class="navcount" id="pjChapNavCount"></span></a>
           <a href="javascript:void(0)" id="pjMergedNav" data-icon="play" data-ic-size="14"><span>Merged videos</span></a>
+          <a href="javascript:void(0)" id="pjShortsNav" data-icon="film" data-ic-size="14"><span>Shorts</span></a>
           <a href="javascript:void(0)" id="pjLibraryNav" data-icon="layers" data-ic-size="14"><span>Media library</span></a>
           <a href="javascript:void(0)" id="pjSettingsBtn" data-icon="settings" data-ic-size="14"><span>Project settings</span></a>
         </nav>
@@ -226,8 +227,15 @@
             <span class="selcount" id="selCount" aria-live="polite">0 selected</span>
             <button id="selAllBtn" class="small ghost" data-icon="checkbox" data-ic-size="13"><span>Select all</span></button>
             <button id="selCompleteBtn" class="small ghost" data-icon="checkbox" data-ic-size="13"><span>Select all complete</span></button>
+            <span class="selrange" title="Select every chapter from the first number to the last, inclusive">
+              <input id="selFrom" type="number" min="0" step="1" placeholder="From" aria-label="Range start chapter">
+              <span>to</span>
+              <input id="selTo" type="number" min="0" step="1" placeholder="To" aria-label="Range end chapter">
+              <button id="selRangeBtn" class="small ghost"><span>Select range</span></button>
+            </span>
             <button id="selClearBtn" class="small ghost"><span>Clear</span></button>
             <button id="backupBtn" class="small ghost" data-icon="upload" data-ic-size="13" title="Copy chapter files to this project's Drive folder"><span>Back up to Drive</span></button>
+            <button id="shortsBtn" class="small ghost" data-icon="film" data-ic-size="13" disabled><span>Make shorts</span></button>
             <span class="grow"></span>
             <span class="actionwhy" id="runWhy"></span>
             <button id="batchRunBtn" class="small primary" data-icon="play" data-ic-size="13" disabled><span>Run pipeline</span></button>
@@ -271,6 +279,7 @@
         <nav class="appnav">
           <a href="javascript:void(0)" id="hubChaptersNav" data-icon="film" data-ic-size="14"><span>Chapters</span><span class="navcount" id="hubChapNavCount"></span></a>
           <a href="javascript:void(0)" id="hubMergedNav" data-hubview="merged" data-icon="play" data-ic-size="14"><span>Merged videos</span></a>
+          <a href="javascript:void(0)" id="hubShortsNav" data-hubview="shorts" data-icon="film" data-ic-size="14"><span>Shorts</span></a>
           <a href="javascript:void(0)" id="hubLibraryNav" data-hubview="library" data-icon="layers" data-ic-size="14"><span>Media library</span></a>
           <a href="javascript:void(0)" id="hubSettingsNav" data-icon="settings" data-ic-size="14"><span>Project settings</span></a>
         </nav>
@@ -294,6 +303,24 @@
             <div><h2>Merged videos</h2><p class="hint">Merge complete chapters on the Chapters screen. Here you can add the intro and outro and render a branded copy - the raw merge is never changed, and chapter renders stay unbranded. Your intro/outro choices are remembered for the project.</p></div>
           </div>
           <div id="mergedList"></div>
+        </div>
+      </div>
+
+      <div class="screenbody shpage" id="hubShorts" hidden>
+        <div class="shhead">
+          <div class="shintro">
+            <h2>Shorts</h2>
+            <p>Vertical 9:16 clips cut from the strongest moments of finished chapters. Make them from the Chapters screen. Making them again replaces that chapter's shorts.</p>
+          </div>
+          <div class="shstats" id="shortsStats"></div>
+        </div>
+        <div id="shortsJob"></div>
+        <div id="shortsGroups"></div>
+        <div class="shempty" id="shortsEmpty" hidden>
+          <span class="shemptyicon"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 3h10v18H7z"></path><path d="M11 9.5l3 2.5-3 2.5z"></path></svg></span>
+          <b>No shorts yet</b>
+          <p>Select chapters with a finished video on the Chapters screen and press Make shorts. Each chapter gives a few vertical clips.</p>
+          <button class="primary" id="shortsGoChapters">Go to Chapters</button>
         </div>
       </div>
 
@@ -349,6 +376,7 @@
         <nav class="appnav">
           <a href="javascript:void(0)" id="stChaptersNav" data-icon="film" data-ic-size="14"><span>Chapters</span><span class="navcount" id="stChapNavCount"></span></a>
           <a href="javascript:void(0)" id="stMergedNav" data-icon="play" data-ic-size="14"><span>Merged videos</span></a>
+          <a href="javascript:void(0)" id="stShortsNav" data-icon="film" data-ic-size="14"><span>Shorts</span></a>
           <a href="javascript:void(0)" id="stLibraryNav" data-icon="layers" data-ic-size="14"><span>Media library</span></a>
           <a href="javascript:void(0)" class="on" data-icon="settings" data-ic-size="14"><span>Project settings</span></a>
         </nav>
@@ -377,6 +405,7 @@
           <span class="navlabel" style="margin-top:14px">Visuals</span>
           <a href="#s-bg">Video background</a>
           <a href="#s-anim">Frame animation</a>
+          <a href="#s-shorts">Shorts</a>
           <span class="navlabel" style="margin-top:14px">System</span>
           <a href="#s-gpu">GPU acceleration</a>
           <a href="#s-defaults">Default settings</a>
@@ -403,6 +432,7 @@
                   <select id="scriptNarrationType">
                     <option value="first_person">First-person hero POV</option>
                     <option value="third_person">Third-person recap</option>
+                    <option value="mixed">Mixed (hero POV + narrator, chosen scene by scene)</option>
                   </select>
                 </label>
               </div>
@@ -450,6 +480,11 @@
               <span class="hint">When the 5-hour limit below is reached, Claude work waits for the window to reset and then resumes by itself; chapters already past Claude keep going. The weekly limit always asks you first.</span>
               <label class="togglesw"><input type="checkbox" id="batchNotify" style="position:absolute;opacity:0;width:1px;height:1px" /><span class="tk"></span>Desktop notifications</label>
               <span class="hint">A Windows notification when a chapter finishes or fails, the pipeline finishes, or a usage limit holds it.</span>
+              <label class="togglesw"><input type="checkbox" id="batchOffload" style="position:absolute;opacity:0;width:1px;height:1px" /><span class="tk"></span>Free disk space automatically</label>
+              <span class="hint">When free space on this PC drops below the limit, each finished chapter is backed up to the project's Drive folder and its frames, audio, page images and video are cleared from this PC (they come back when needed). Only works for projects stored in a Drive folder; a chapter is cleared only once it is verified in Drive.</span>
+              <label class="field" style="margin:0"><span class="lbl" style="text-transform:none;letter-spacing:0;font-weight:400;color:var(--muted)">Start clearing when free space is under (GB)</span>
+                <input id="batchOffloadGb" type="number" min="1" max="5000" step="1" />
+              </label>
               <div class="setgridpair">
                 <label class="field" style="margin:0"><span class="lbl" style="text-transform:none;letter-spacing:0;font-weight:400;color:var(--muted)">Hold Claude work at 5-hour usage (%)</span>
                   <input id="batchFiveHour" type="number" min="1" max="100" step="1" />
@@ -470,6 +505,11 @@
                 <option value="standard">Standard - 1080p, about 190 MB per 22 minutes</option>
                 <option value="high">High - 1080p, large files (about 1 GB per 22 minutes)</option>
               </select>
+              <b style="display:block;margin-top:12px">Frame layout</b>
+              <div class="optionlist">
+                <label class="optbtn"><input type="radio" name="vidLayout" value="frame" /><span class="otexts"><b>Full frame</b><span>The whole frame, uncut, over the background and watermark</span></span></label>
+                <label class="optbtn"><input type="radio" name="vidLayout" value="cover" /><span class="otexts"><b>Full cover</b><span>The frame fills the screen (centre-cropped) with the watermark above it; the background is not visible</span></span></label>
+              </div>
               <div class="hint">Applies to the next render of each chapter. Merging keeps the chapters' size (no re-encode) when they all match.</div>
             </div>
           </div>
@@ -598,6 +638,58 @@
                   <span class="plbl">Live preview</span>
                 </div>
               </div>
+            </div>
+          </div>
+
+          <div class="setcard" id="s-shorts">
+            <div class="setlabel">
+              <b>Shorts</b><span>The vertical videos made from a chapter. They use the main video's music, volume, animation and video size.</span>
+              <label class="togglesw" style="margin-top:6px"><input type="checkbox" id="shOwnLook" style="position:absolute;opacity:0;width:1px;height:1px" /><span class="tk"></span>Own watermark and background</label>
+            </div>
+            <div class="setbody">
+              <b>Frame layout</b>
+              <div class="optionlist">
+                <label class="optbtn"><input type="radio" name="shLayout" value="frame" /><span class="otexts"><b>Full frame</b><span>The whole frame, uncut, over the background and watermark</span></span></label>
+                <label class="optbtn"><input type="radio" name="shLayout" value="cover" /><span class="otexts"><b>Full cover</b><span>The frame fills the screen (centre-cropped) with the watermark above it</span></span></label>
+              </div>
+              <div class="hint" id="shCoverHint" hidden>With full cover the background is not visible, and a line with several frames shows them one after another.</div>
+            </div>
+            <div class="setbody" id="shLookBody">
+              <b>Watermark</b>
+              <label class="togglesw"><input type="checkbox" id="shWmEnabled" style="position:absolute;opacity:0;width:1px;height:1px" /><span class="tk"></span>Enabled</label>
+              <div class="segctl">
+                <label class="segopt"><input type="radio" name="shWmType" value="text" /><span>Text</span></label>
+                <label class="segopt"><input type="radio" name="shWmType" value="image" /><span>Logo image</span></label>
+              </div>
+              <input id="shWmText" type="text" placeholder="watermark text" />
+              <div class="filerow">
+                <button type="button" id="shWmBrowseBtn" class="small ghost" data-icon="folder" data-ic-size="14"><span>Browse…</span></button>
+                <span class="swatch" id="shWmFileName"></span>
+                <input id="shWmFile" type="file" accept="image/*" class="filehidden" tabindex="-1" />
+              </div>
+              <div class="setgridpair">
+                <label class="slider"><div class="slbl"><span>Opacity</span><span id="shWmOpacityLbl"></span></div>
+                  <input id="shWmOpacity" type="range" min="2" max="50" value="12" /></label>
+                <label class="slider"><div class="slbl"><span>Size</span><span id="shWmSizeLbl"></span></div>
+                  <input id="shWmSize" type="range" min="4" max="40" value="12" /></label>
+                <label class="slider"><div class="slbl"><span>Spacing</span><span id="shWmSpacingLbl"></span></div>
+                  <input id="shWmSpacing" type="range" min="20" max="300" value="100" /></label>
+                <label class="slider"><div class="slbl"><span>Angle</span><span id="shWmAngleLbl"></span></div>
+                  <input id="shWmAngle" type="range" min="-90" max="90" value="-30" /></label>
+              </div>
+              <b>Background</b>
+              <div class="optionlist">
+                <label class="optbtn"><input type="radio" name="shBgMode" value="blur" /><span class="otexts"><b>Blurred crop</b><span>Default</span></span></label>
+                <label class="optbtn"><input type="radio" name="shBgMode" value="image" /><span class="otexts"><b>Custom image</b><span>Upload a still image</span></span></label>
+                <label class="optbtn"><input type="radio" name="shBgMode" value="video" /><span class="otexts"><b>Custom video</b><span>Looped, full-screen</span></span></label>
+              </div>
+              <div class="filerow">
+                <button type="button" id="shBgBrowseBtn" class="small ghost" data-icon="folder" data-ic-size="14"><span>Browse…</span></button>
+                <span class="swatch" id="shBgFileName"></span>
+                <input id="shBgFile" type="file" accept="image/*,video/*" class="filehidden" tabindex="-1" />
+              </div>
+              <label class="slider"><div class="slbl"><span>Dim background</span><span id="shBgDimLbl"></span></div>
+                <input id="shBgDim" type="range" min="10" max="100" value="85" /></label>
             </div>
           </div>
 
@@ -871,6 +963,16 @@
   </div>
 </div>
 </section>
+
+<div class="shplayer" id="shortsPlayer" hidden>
+  <video controls playsinline></video>
+  <div class="shplayerinfo">
+    <span id="shortsPlayerCode"></span>
+    <b id="shortsPlayerTitle"></b>
+    <p id="shortsPlayerDesc"></p>
+    <em>Click anywhere to close</em>
+  </div>
+</div>
 
 <div id="toast"></div>
 

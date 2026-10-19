@@ -74,6 +74,12 @@ def _apply_chapter_scope():
         config.clear_chapter_scope()
 
 
+@app.errorhandler(chapter_backup.BackupUnavailable)
+def _backup_unavailable(e):
+    """A chapter cleared to Drive that can't be read back: say so, instead of a bare server error."""
+    return jsonify(error=str(e)), 503
+
+
 @app.teardown_request
 def _clear_chapter_scope(exc=None):
     config.clear_chapter_scope()

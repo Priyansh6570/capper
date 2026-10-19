@@ -70,5 +70,39 @@ class StageSpanTest(unittest.TestCase):
             self.assertLessEqual(start, end)
 
 
+class LowDiskSpaceTest(unittest.TestCase):
+    def test_the_started_chapter_finishes_then_space_is_freed_before_the_next_one_starts(self):
+        events, low = [], {"on": False}
+
+        def runner(stage):
+            def run(b, n):
+                events.append(f"{stage}{n}")
+                if stage == "download" and n == 1:
+                    low["on"] = True          # the disk fills up while chapter 1 is under way
+            return run
+
+        def offload(active):
+            events.append("offload")
+            low["on"] = False
+            return 5
+
+        env = batch.BatchEnv(
+            runners={stage: runner(stage) for stage in batch.LANE_STAGES},
+            scope=lambda n: contextlib.nullcontext(), done_stages=lambda n: [], review_enabled=lambda: False,
+            thresholds=lambda: {"five_hour": 100, "seven_day": 100}, auto_wait=lambda: False,
+            cancel_job=lambda job: None, notify=lambda title, message: None, claude_total=lambda n: None,
+            usage=lambda: {}, space_low=lambda: low["on"], offload=offload)
+        with tempfile.TemporaryDirectory() as tmp:
+            run = batch.Batch.create(Path(tmp) / "batch.json", env, {1: ["download", "video"], 2: ["download", "video"]})
+            for _ in range(200):
+                if run.status == "finished":
+                    break
+                threading.Event().wait(0.05)
+            run.close()
+        self.assertEqual(run.status, "finished")
+        self.assertLess(events.index("video1"), events.index("offload"))
+        self.assertLess(events.index("offload"), events.index("download2"))
+
+
 if __name__ == "__main__":
     unittest.main()

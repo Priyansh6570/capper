@@ -54,6 +54,7 @@ import shutil
 import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from pathlib import Path
 
 from config import ROOT, chapter_output_dir, chapter_work_dir, NO_CONSOLE
@@ -63,6 +64,22 @@ from gpu import ffmpeg_path, record_usage
 
 # --- frame + template constants ------------------------------------------- #
 W, H = 1920, 1080
+
+
+@dataclass(frozen=True)
+class Canvas:
+    """The frame every still is composed on. A quality preset names the short side of the
+    output, `output_size` scales the canvas to it."""
+    w: int
+    h: int
+
+    def output_size(self, short_side: int) -> tuple[int, int]:
+        scale = short_side / min(self.w, self.h)
+        return round(self.w * scale / 2) * 2, round(self.h * scale / 2) * 2
+
+
+LANDSCAPE = Canvas(W, H)
+PORTRAIT = Canvas(H, W)
 FPS = 24
 MIN_BEAT = 2.5         # floor on a beat's on-screen audio time (seconds)
 NO_AUDIO_HOLD = 3.0    # a beat with no audio holds this long
@@ -104,7 +121,7 @@ MUSIC_EXTS = {".mp3", ".wav", ".m4a", ".ogg", ".oga", ".aac", ".flac"}
 # A project's music/watermark/background are resolved by the framer (see
 # tools/framer/projects.py: media_settings_snapshot()) into an ABSOLUTE-path
 # snapshot written to <chapter work>/media_settings.json - the same pattern
-# _load_mapping() below already uses for framer/mapping.json. Missing/garbled
+# load_mapping() below already uses for framer/mapping.json. Missing/garbled
 # file -> every one of these falls back to today's behavior untouched.
 _FONT_CANDIDATES = ["arialbd.ttf", "segoeuib.ttf", "arial.ttf", "segoeui.ttf"]
 _FONTS_DIR = Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts"
@@ -121,7 +138,7 @@ def _audio_len(p: Panel) -> float:
     return NO_AUDIO_HOLD
 
 
-def _load_mapping(chapter_id: str) -> dict[int, dict]:
+def load_mapping(chapter_id: str) -> dict[int, dict]:
     """Read the framer's mapping.json (the authoritative per-line plan with
     multiple frames + play mode), keyed by line `order`. Returns {} when there is
     no mapping (legacy manifests) so the render falls back to one frame per line.
@@ -141,10 +158,10 @@ def _load_mapping(chapter_id: str) -> dict[int, dict]:
     return {ln["order"]: ln for ln in data.get("lines", []) if "order" in ln}
 
 
-def _load_media_settings(chapter_id: str) -> dict:
+def load_media_settings(chapter_id: str) -> dict:
     """Read the framer's project media settings snapshot (music/watermark/
     background, absolute paths), written by tools/framer/projects.py. Mirrors
-    _load_mapping() above: returns {} on any absence/failure, so run() falls
+    load_mapping() above: returns {} on any absence/failure, so run() falls
     back to today's global assets/music + blurred-crop behavior."""
     path = chapter_work_dir(chapter_id) / "media_settings.json"
     if not path.exists():
@@ -356,7 +373,7 @@ def _resolve_video_background(settings: dict) -> Path | None:
     return p if p.exists() else None
 
 
-def _load_background(settings: dict):
+def _load_background(settings: dict, canvas: Canvas = LANDSCAPE):
     """The project's custom background IMAGE, cover-cropped to 1920x1080 and
     dimmed (NOT blurred - a user-chosen background is deliberate art). Returns
     None when no custom background is set (including when it's a VIDEO
@@ -374,15 +391,15 @@ def _load_background(settings: dict):
         img = Image.open(p).convert("RGB")
     except Exception:  # noqa: BLE001 - a bad background must not sink the render
         return None
-    img = _cover_crop(img, W, H)
+    img = _cover_crop(img, canvas.w, canvas.h)
     return ImageEnhance.Brightness(img).enhance(float(bg_cfg.get("dim", 0.85)))
 
 
-def _blurred_self_cover(img):
+def _blurred_self_cover(img, canvas: Canvas = LANDSCAPE):
     """Today's default background: a blurred + darkened cover-crop of the frame
     itself. Extracted unchanged from the old _compose_still."""
     from PIL import ImageEnhance, ImageFilter
-    bg = _cover_crop(img, W, H).filter(ImageFilter.GaussianBlur(BG_BLUR))
+    bg = _cover_crop(img, canvas.w, canvas.h).filter(ImageFilter.GaussianBlur(BG_BLUR))
     return ImageEnhance.Brightness(bg).enhance(BG_BRIGHTNESS)
 
 
@@ -454,32 +471,48 @@ def _arrange(aspects: list[float], fit_w: float, fit_h: float, gap: float) -> li
     return boxes
 
 
+def _overlay_watermark(base, wm):
+    """`wm` (an RGBA layer, or None) composited on top of `base`, keeping its mode."""
+    if wm is None:
+        return base
+    from PIL import Image
+    top = Image.alpha_composite(base.convert("RGBA"), wm)
+    return top if base.mode == "RGBA" else top.convert("RGB")
+
+
 def _compose_still(frame_paths: list[str | None], bg=None, wm=None, transparent: bool = False,
-                   fill: float = FILL):
+                   fill: float = FILL, canvas: Canvas = LANDSCAPE, cover: bool = False):
     """Build the full 1920x1080 still for a beat: its frames (one, or several shown
     together) packed as large as `fill` of the canvas allows, over `bg` (a project's custom
     background) if given, else a blurred + darkened cover of the first frame - UNLESS
     `transparent` is set (a video background - see _paste_background), in which case the
     background area is left transparent instead (an RGBA image is returned, not RGB). `wm`
     (a watermark RGBA layer), if given, is composited onto the background/transparent area
-    ONLY, before the frames go on top - see _paste_background."""
+    ONLY, before the frames go on top - see _paste_background. `canvas` is the size of the still.
+    With `cover` the first frame is scaled to cover the whole canvas (centre-cropped), so there is no
+    background to show, and `wm` goes on top of the frame instead."""
     from PIL import Image
 
-    base = (Image.new("RGBA", (W, H), (0, 0, 0, 0)) if transparent
-            else Image.new("RGB", (W, H), (12, 12, 12)))
+    base = (Image.new("RGBA", (canvas.w, canvas.h), (0, 0, 0, 0)) if transparent
+            else Image.new("RGB", (canvas.w, canvas.h), (12, 12, 12)))
     imgs = [img for img in (_open_rgb(path) for path in frame_paths) if img is not None]
     if not imgs:
         return base
 
+    if cover:
+        base.paste(_cover_crop(imgs[0], canvas.w, canvas.h), (0, 0))
+        return _overlay_watermark(base, wm)
+
     if bg is None and not transparent:
-        bg = _blurred_self_cover(imgs[0])
+        bg = _blurred_self_cover(imgs[0], canvas)
     base = _paste_background(base, bg, wm, transparent)
 
-    fit_w, fit_h = W * fill, H * fill
-    boxes = _arrange([img.width / img.height for img in imgs], fit_w, fit_h, GROUP_GAP * W)
+    fit_w, fit_h = canvas.w * fill, canvas.h * fill
+    boxes = _arrange([img.width / img.height for img in imgs], fit_w, fit_h, GROUP_GAP * canvas.w)
     for img, (x, y, w, h) in zip(imgs, boxes):
         size = (max(1, round(w)), max(1, round(h)))
-        base.paste(img.resize(size, Image.LANCZOS), (round((W - fit_w) / 2 + x), round((H - fit_h) / 2 + y)))
+        base.paste(img.resize(size, Image.LANCZOS),
+                   (round((canvas.w - fit_w) / 2 + x), round((canvas.h - fit_h) / 2 + y)))
     return base
 
 
@@ -504,12 +537,12 @@ def _find_font(px: int):
         return ImageFont.load_default()
 
 
-def _make_stamp(cfg: dict):
-    """One watermark sprite (RGBA) scaled so its width is cfg['size'] * W - a
+def _make_stamp(cfg: dict, canvas: Canvas = LANDSCAPE):
+    """One watermark sprite (RGBA) scaled so its width is cfg['size'] * the canvas width - a
     logo image, or rendered text solved to that same target width."""
     from PIL import Image, ImageDraw
 
-    target_w = max(16, round(float(cfg.get("size", 0.12)) * W))
+    target_w = max(16, round(float(cfg.get("size", 0.12)) * canvas.w))
 
     if cfg.get("type") == "image" and cfg.get("file"):
         p = Path(cfg["file"])
@@ -544,15 +577,15 @@ def _make_stamp(cfg: dict):
     return stamp
 
 
-def _build_watermark_layer(settings: dict):
-    """One 1920x1080 RGBA layer, tiled with the project's stamp at low opacity,
+def _build_watermark_layer(settings: dict, canvas: Canvas = LANDSCAPE):
+    """One canvas-sized RGBA layer, tiled with the project's stamp at low opacity,
     built once per render. None when the project has no watermark enabled."""
     from PIL import Image
 
     cfg = settings.get("watermark")
     if not cfg:
         return None
-    stamp = _make_stamp(cfg)
+    stamp = _make_stamp(cfg, canvas)
     if stamp is None:
         return None
 
@@ -566,53 +599,54 @@ def _build_watermark_layer(settings: dict):
 
     # Tile onto an oversized canvas so a rotation never leaves a bare corner,
     # then rotate and center-crop back to the frame size.
-    big_w, big_h = W * 2, H * 2
-    canvas = Image.new("RGBA", (big_w, big_h), (0, 0, 0, 0))
+    big_w, big_h = canvas.w * 2, canvas.h * 2
+    tiled = Image.new("RGBA", (big_w, big_h), (0, 0, 0, 0))
     row = 0
     for y in range(-step_y, big_h + step_y, step_y):
         x0 = -step_x + (step_x // 2 if row % 2 else 0)
         for x in range(x0, big_w + step_x, step_x):
-            canvas.alpha_composite(stamp, (x, y))
+            tiled.alpha_composite(stamp, (x, y))
         row += 1
 
     angle = max(-90, min(90, float(cfg.get("angle", 0))))
     if angle:
-        canvas = canvas.rotate(angle, expand=False, resample=Image.BICUBIC)
-    left, top = (big_w - W) // 2, (big_h - H) // 2
-    return canvas.crop((left, top, left + W, top + H))
+        tiled = tiled.rotate(angle, expand=False, resample=Image.BICUBIC)
+    left, top = (big_w - canvas.w) // 2, (big_h - canvas.h) // 2
+    return tiled.crop((left, top, left + canvas.w, top + canvas.h))
 
 
-def _compose_backdrop(frame_path: str | None, bg=None, wm=None):
+def _compose_backdrop(frame_path: str | None, bg=None, wm=None, canvas: Canvas = LANDSCAPE):
     """The still background of a beat: the project's `bg`, else a blurred cover of the beat's first
     frame, with the watermark `wm` (if any) on it."""
     from PIL import Image
 
-    base = Image.new("RGB", (W, H), (12, 12, 12))
+    base = Image.new("RGB", (canvas.w, canvas.h), (12, 12, 12))
     if bg is None:
         first = _open_rgb(frame_path)
         if first is None:
             return base
-        bg = _blurred_self_cover(first)
+        bg = _blurred_self_cover(first, canvas)
     return _paste_background(base, bg, wm)
 
 
-def _to_output_size(img, out_height: int):
-    if out_height == H:
+def _to_output_size(img, out_size: tuple[int, int]):
+    if img.size == out_size:
         return img
     from PIL import Image
-    return img.resize((round(out_height * W / H / 2) * 2, out_height), Image.LANCZOS)
+    return img.resize(out_size, Image.LANCZOS)
 
 
-def _save_watermark_layer(wm, stills_dir: Path, out_height: int) -> Path:
+def _save_watermark_layer(wm, stills_dir: Path, out_size: tuple[int, int]) -> Path:
     """The watermark as the one static image ffmpeg overlays on a video background."""
     stills_dir.mkdir(parents=True, exist_ok=True)
     path = stills_dir / "watermark.png"
-    _to_output_size(wm, out_height).save(path)
+    _to_output_size(wm, out_size).save(path)
     return path
 
 
 def _precompose(items: list[dict], stills_dir: Path, wm=None, bg=None, transparent: bool = False,
-                fill: float = FILL, out_height: int = H, layered: bool = False) -> None:
+                fill: float = FILL, out_size: tuple[int, int] = (W, H), layered: bool = False,
+                canvas: Canvas = LANDSCAPE, cover: bool = False) -> None:
     """Render every item's still PNG into stills_dir and record its path on the
     item (key "still"). All the per-frame compositing work happens here, once.
     A "grid" item shows its frames together; everything else is one frame. `fill` is the
@@ -635,14 +669,15 @@ def _precompose(items: list[dict], stills_dir: Path, wm=None, bg=None, transpare
         i, it = entry
         out = stills_dir / f"beat_{i:04d}.png"
         if layered:
-            still = _compose_still(it["frames"], transparent=True, fill=fill)
-            if not transparent:
+            still = _compose_still(it["frames"], wm=wm if cover else None, transparent=True, fill=fill,
+                                   canvas=canvas, cover=cover)
+            if not transparent and not cover:
                 back = stills_dir / f"back_{i:04d}.png"
-                _to_output_size(_compose_backdrop(it["frames"][0], bg, wm), out_height).save(back)
+                _to_output_size(_compose_backdrop(it["frames"][0], bg, wm, canvas), out_size).save(back)
                 it["back"] = str(back)
         else:
-            still = _compose_still(it["frames"], bg, wm, transparent, fill)
-        _to_output_size(still, out_height).save(out)
+            still = _compose_still(it["frames"], bg, wm, transparent, fill, canvas, cover)
+        _to_output_size(still, out_size).save(out)
         it["still"] = str(out)
 
     with ThreadPoolExecutor(max_workers=min(8, os.cpu_count() or 1)) as pool:
@@ -655,7 +690,7 @@ def _precompose(items: list[dict], stills_dir: Path, wm=None, bg=None, transpare
 def _build_filtergraph(items: list[dict], music_in: int | None, total: float,
                        transition: str = "fade", crossfade: float = CROSSFADE,
                        zoom: float | None = None, bg_in: int | None = None,
-                       bg_dim: float = 0.85, out_height: int = H, blur_bg: bool = False,
+                       bg_dim: float = 0.85, out_size: tuple[int, int] = (W, H), blur_bg: bool = False,
                        back_in: int | None = None, wm_in: int | None = None,
                        narration_vol: float = NARRATION_VOL, music_vol: float = MUSIC_VOL
                        ) -> tuple[list[str], str, str | None]:
@@ -687,10 +722,10 @@ def _build_filtergraph(items: list[dict], music_in: int | None, total: float,
     (see _precompose(..., transparent=True)) - the transition chain's output
     is then `overlay`'d onto the looped/dimmed background video as this
     function's last step, and THAT combined result becomes `vlabel`. `blur_bg` renders that
-    background blurred (cheap to encode); `out_height` is the size the whole video chain runs at
+    background blurred (cheap to encode); `out_size` is the pixel size the whole video chain runs at
     (stills are scaled down first, so a 720p render does well under half the work of 1080p)."""
     n = len(items)
-    out_w = round(out_height * W / H / 2) * 2
+    out_w, out_height = out_size
     video: list[str] = []
     rest: list[str] = []
     fg_pix_fmt = "yuva420p" if bg_in is not None or back_in is not None else "yuv420p"
@@ -804,7 +839,7 @@ def _build_filtergraph(items: list[dict], music_in: int | None, total: float,
 
 
 def _build_cmd(ffmpeg: str, items: list[dict], music_path: Path | None,
-               total: float, out: Path, quality: dict,
+               total: float, out: Path, quality: dict, out_size: tuple[int, int],
                transition: str = "fade", crossfade: float = CROSSFADE,
                zoom: float | None = None, video_bg: Path | None = None,
                bg_dim: float = 0.85, wm_layer: Path | None = None,
@@ -842,7 +877,7 @@ def _build_cmd(ffmpeg: str, items: list[dict], music_path: Path | None,
         cmd += ["-stream_loop", "-1", "-i", str(music_path)]
 
     graphs, vlabel, alabel = _build_filtergraph(items, music_in, total, transition, crossfade,
-                                                zoom, bg_in, bg_dim, quality["height"], quality["blur_bg"],
+                                                zoom, bg_in, bg_dim, out_size, quality["blur_bg"],
                                                 back_in, wm_in, narration_vol, music_vol)
     # the graphs go through files: inline, a long chapter overflows Windows' command-line limit
     for k, graph in enumerate(graphs):
@@ -921,7 +956,7 @@ def _ffmpeg_version(ffmpeg: str) -> str:
 
 
 def _assemble_ffmpeg(items: list[dict], music_path: Path | None, total: float, out: Path,
-                     quality: dict, transition: str = "fade", crossfade: float = CROSSFADE,
+                     quality: dict, out_size: tuple[int, int], transition: str = "fade", crossfade: float = CROSSFADE,
                      zoom: float | None = None, video_bg: Path | None = None,
                      bg_dim: float = 0.85, wm_layer: Path | None = None,
                      narration_vol: float = NARRATION_VOL, music_vol: float = MUSIC_VOL) -> str:
@@ -929,13 +964,13 @@ def _assemble_ffmpeg(items: list[dict], music_path: Path | None, total: float, o
     raises if ffmpeg fails (there is no fallback renderer)."""
     ffmpeg = _require_ffmpeg()
     total_frames = int(round(total * FPS))
-    cmd = _build_cmd(ffmpeg, items, music_path, total, out, quality, transition, crossfade,
+    cmd = _build_cmd(ffmpeg, items, music_path, total, out, quality, out_size, transition, crossfade,
                      zoom, video_bg, bg_dim, wm_layer, narration_vol, music_vol)
     print(f"  ffmpeg: {ffmpeg}", flush=True)
     print(f"          {_ffmpeg_version(ffmpeg)}", flush=True)
     print(f"  encoder: libx264 (CPU), preset {X264_PRESET}, crf {quality['crf']}, "
           f"audio aac {quality['audio_kbps']}k x{quality['audio_channels']}", flush=True)
-    print(f"  output: {round(quality['height'] * W / H / 2) * 2}x{quality['height']} @ {FPS}fps, "
+    print(f"  output: {out_size[0]}x{out_size[1]} @ {FPS}fps, "
           f"{total_frames} frames, {total:.1f}s -> {out}", flush=True)
     print(f"  filters: {len(items)} stills, transition={transition} @ {crossfade:.2f}s, "
           f"zoom={f'alternating, peak {zoom:g}x' if zoom else 'off'}, "
@@ -961,13 +996,41 @@ def _resolve_quality(settings: dict) -> tuple[str, dict]:
 
 
 # --------------------------------------------------------------------------- #
-def run(m: Manifest) -> Manifest:
-    out_dir = chapter_output_dir(m.chapter_id)
-    out_dir.mkdir(parents=True, exist_ok=True)
+@dataclass
+class RenderPlan:
+    """Everything a render needs, resolved from the beats and the project's media settings."""
+    items: list[dict]
+    total: float
+    lines: list[dict]
+    canvas: Canvas
+    out_size: tuple[int, int]
+    quality_name: str
+    quality: dict
+    transition: str
+    crossfade: float
+    zoom: float | None
+    music_path: Path | None
+    narration_vol: float
+    music_vol: float
+    watermark: object | None
+    video_bg: Path | None
+    bg_dim: float
+    background: object | None
+    cover: bool
 
-    beats = m.kept_panels()  # the matched narration beats (STAGE B)
-    mapping = _load_mapping(m.chapter_id)  # framer's multi-frame + mode plan
-    settings = _load_media_settings(m.chapter_id)  # framer's per-project media settings
+
+def beats_duration(chapter_id: str, beats: list[Panel]) -> float:
+    """How long a render of just these beats of the chapter would run."""
+    _, crossfade, _ = _resolve_animation(load_media_settings(chapter_id))
+    return _plan(beats, load_mapping(chapter_id), crossfade)[1]
+
+
+def prepare_render(beats: list[Panel], mapping: dict[int, dict], settings: dict,
+                   canvas: Canvas = LANDSCAPE, cover: bool = False) -> RenderPlan:
+    """With `cover` every frame fills the whole canvas, one at a time, with the watermark above it; the
+    background is never visible, so it is not loaded."""
+    if cover:
+        mapping = {order: {**info, "mode": "sequence"} for order, info in mapping.items()}
     transition, crossfade, zoom = _resolve_animation(settings)
     quality_name, quality = _resolve_quality(settings)
     items, total, lines = _plan(beats, mapping, crossfade)
@@ -975,7 +1038,7 @@ def run(m: Manifest) -> Manifest:
     narration_vol, music_vol = _resolve_volumes(settings)
     wm_cfg = settings.get("watermark")
     print(f"  [debug] media_settings.json watermark cfg: {wm_cfg!r}")
-    watermark = _build_watermark_layer(settings)
+    watermark = _build_watermark_layer(settings, canvas)
     print(f"  [debug] watermark: enabled={bool(wm_cfg and wm_cfg.get('enabled'))}, "
           f"layer_built={watermark is not None}, compositing onto {len(items)} still(s)")
     # A video background (see _resolve_video_background) and a static image/
@@ -984,9 +1047,9 @@ def run(m: Manifest) -> Manifest:
     # "blur". When it's video, stills are precomposed TRANSPARENT instead
     # (see _precompose(transparent=...)) and the video is `overlay`'d under
     # them in the ffmpeg filtergraph - never both at once.
-    video_bg = _resolve_video_background(settings)
+    video_bg = None if cover else _resolve_video_background(settings)
     bg_dim = float((settings.get("background") or {}).get("dim", 0.85))
-    background = None if video_bg is not None else _load_background(settings)
+    background = None if cover or video_bg is not None else _load_background(settings, canvas)
 
     # Per-line report so multi-frame handling can be verified at a glance.
     for ln in lines:
@@ -998,55 +1061,73 @@ def run(m: Manifest) -> Manifest:
             extra = " -> 1 still"
         print(f"  line {ln['order']}: {ln['n_frames']} frame(s), mode={ln['mode']}{extra}")
 
-    for old in ("recap.mp4", "video_plan.json"):
-        (out_dir / old).unlink(missing_ok=True)
-    (out_dir / "video_plan.json").write_text(
-        json.dumps({
-            "chapter_id": m.chapter_id, "size": [W, H], "fps": FPS,
-            "music": music_path.name if music_path else None,
-            "watermark": bool(watermark), "background": bool(background),
-            "video_background": bool(video_bg), "zoom": zoom,
-            "animation": {"transition": transition, "crossfade_s": crossfade},
-            "total_s": total, "beats": items,
-        }, indent=2, ensure_ascii=False),
-        encoding="utf-8",
-    )
+    return RenderPlan(items, total, lines, canvas, canvas.output_size(quality["height"]), quality_name, quality,
+                      transition, crossfade, zoom, music_path, narration_vol, music_vol, watermark, video_bg,
+                      bg_dim, background, cover)
 
-    if not items:
-        print("  no panels to render; wrote video_plan.json only")
-        m.stage = "video"
-        return m
 
-    out = out_dir / "recap.mp4"
-    stills_dir = out_dir / "_stills"
+def execute_render(plan: RenderPlan, out: Path) -> None:
+    """Render the planned stills and narration to `out`."""
+    stills_dir = out.parent / f"_stills_{out.stem}"
     t0 = time.perf_counter()
     try:
         wm_layer = None
-        if zoom and video_bg is not None and watermark is not None:
-            wm_layer = _save_watermark_layer(watermark, stills_dir, quality["height"])
-        _precompose(items, stills_dir, None if wm_layer else watermark, background,
-                    transparent=(video_bg is not None), fill=FILL / zoom if zoom else FILL,
-                    out_height=quality["height"], layered=bool(zoom))
-        anim_desc = "cut (no transition)" if transition == "cut" else f"{transition} @ {crossfade:.2f}s"
-        if zoom:
+        if plan.zoom and plan.video_bg is not None and plan.watermark is not None:
+            wm_layer = _save_watermark_layer(plan.watermark, stills_dir, plan.out_size)
+        _precompose(plan.items, stills_dir, None if wm_layer else plan.watermark, plan.background,
+                    transparent=(plan.video_bg is not None), fill=FILL / plan.zoom if plan.zoom else FILL,
+                    out_size=plan.out_size, layered=bool(plan.zoom), canvas=plan.canvas, cover=plan.cover)
+        anim_desc = ("cut (no transition)" if plan.transition == "cut"
+                     else f"{plan.transition} @ {plan.crossfade:.2f}s")
+        if plan.zoom:
             anim_desc += " + alternating zoom"
-        print(f"  precomposed {len(items)} stills ({total:.1f}s timeline), transition={anim_desc}"
-              f"{' + watermark' if watermark else ''}{' + custom background' if background else ''}"
-              f"{' + video background' if video_bg else ''}")
+        print(f"  precomposed {len(plan.items)} stills ({plan.total:.1f}s timeline), transition={anim_desc}"
+              f"{' + watermark' if plan.watermark else ''}{' + custom background' if plan.background else ''}"
+              f"{' + video background' if plan.video_bg else ''}")
         t_pre = time.perf_counter() - t0
-        print(f"  precompose took {t_pre:.1f}s ({len(items) / max(t_pre, 0.001):.1f} stills/s)", flush=True)
-        codec = _assemble_ffmpeg(items, music_path, total, out, quality, transition, crossfade,
-                                 zoom, video_bg, bg_dim, wm_layer, narration_vol, music_vol)
-        path = "ffmpeg"
+        print(f"  precompose took {t_pre:.1f}s ({len(plan.items) / max(t_pre, 0.001):.1f} stills/s)", flush=True)
+        codec = _assemble_ffmpeg(plan.items, plan.music_path, plan.total, out, plan.quality, plan.out_size,
+                                 plan.transition, plan.crossfade, plan.zoom, plan.video_bg, plan.bg_dim, wm_layer,
+                                 plan.narration_vol, plan.music_vol)
     finally:
         shutil.rmtree(stills_dir, ignore_errors=True)
 
     dt = time.perf_counter() - t0
     record_usage("video", codec, False)
-    if music_path:
-        print(f"  music bed: {music_path.name} @ vol {music_vol} (ducked)")
-    print(f"  rendered {len(lines)} lines / {len(items)} stills ({total:.1f}s, "
-          f"{FPS}fps, {quality_name} {quality['height']}p, {codec} via {path}, "
+    if plan.music_path:
+        print(f"  music bed: {plan.music_path.name} @ vol {plan.music_vol} (ducked)")
+    print(f"  rendered {len(plan.lines)} lines / {len(plan.items)} stills ({plan.total:.1f}s, "
+          f"{FPS}fps, {plan.quality_name} {plan.out_size[0]}x{plan.out_size[1]}, {codec} via ffmpeg, "
           f"{out.stat().st_size / 1e6:.1f} MB) in {dt:.1f}s -> {out}")
+
+
+def run(m: Manifest) -> Manifest:
+    out_dir = chapter_output_dir(m.chapter_id)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    settings = load_media_settings(m.chapter_id)
+    plan = prepare_render(m.kept_panels(), load_mapping(m.chapter_id), settings,
+                          cover=settings.get("layout") == "cover")
+
+    for old in ("recap.mp4", "video_plan.json"):
+        (out_dir / old).unlink(missing_ok=True)
+    (out_dir / "video_plan.json").write_text(
+        json.dumps({
+            "chapter_id": m.chapter_id, "size": [W, H], "fps": FPS,
+            "music": plan.music_path.name if plan.music_path else None,
+            "watermark": bool(plan.watermark), "background": bool(plan.background),
+            "video_background": bool(plan.video_bg), "zoom": plan.zoom,
+            "animation": {"transition": plan.transition, "crossfade_s": plan.crossfade},
+            "total_s": plan.total, "beats": plan.items,
+        }, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    if not plan.items:
+        print("  no panels to render; wrote video_plan.json only")
+        m.stage = "video"
+        return m
+
+    execute_render(plan, out_dir / "recap.mp4")
     m.stage = "video"
     return m

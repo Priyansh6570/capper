@@ -35,6 +35,10 @@ def _video(chapter: Path) -> list[Path]:
     return [p for p in (out / "recap.mp4", out / "video_plan.json") if p.is_file()]
 
 
+def _shorts(chapter: Path) -> list[Path]:
+    return _files(chapter / "output" / "shorts")
+
+
 def _strips(chapter: Path) -> list[Path]:
     framer = chapter / "work" / "framer"
     return _files(chapter / "work" / "pages") + _files(framer / "tiles") + \
@@ -60,6 +64,9 @@ KINDS: dict[str, Kind] = {k.key: k for k in (
     Kind("video", "Rendered video",
          "Re-render video (fast) from the kept audio, frames and mapping.",
          _video),
+    Kind("shorts", "Shorts",
+         "Make the shorts again from the Shorts screen; they reuse the chapter's script, frames and audio.",
+         _shorts),
     Kind("audio", "Narration audio",
          "Generate audio + video again; the narration is synthesized from the script.",
          _audio),

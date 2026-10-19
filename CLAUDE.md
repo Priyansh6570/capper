@@ -47,7 +47,7 @@ exports are arbitrary slices, so they are glued back together.
 download (a site adapter makes the PDF) -> stitch (s1) -> script (the Claude engine) -> export
 (frames cut and the manifest written at `frames`) -> audio (s6) -> video (s7). The app runs the
 first four itself; it starts `orchestrator.py` as a subprocess for audio and video
-(`--from audio`, `--from video`, `--to audio`).
+(`--from audio`, `--from video`, `--to audio`). The Shorts add-on (below) runs after the video.
 
 ## Stages
 
@@ -56,6 +56,7 @@ first four itself; it starts `orchestrator.py` as a subprocess for audio and vid
 | 1 | s1_pdf_to_pages.py | PyMuPDF; the editor calls it directly to stitch | laptop |
 | 6 | s6_tts.py | Chatterbox TTS (Turbo, GPU with CPU fallback) or Kokoro; engine chosen per project | laptop (RTX 3050, CPU fallback) |
 | 7 | s7_assemble.py | ffmpeg: timed stills joined with xfade, libx264 | laptop |
+| 8 | s8_shorts.py | add-on, outside `STAGE_ORDER`: vertical shorts rendered with s7's renderer | laptop |
 
 ## Environments
 
@@ -131,8 +132,8 @@ Chatterbox voice reference, a tiled watermark, a custom video background) in
 `<chapter work>/media_settings.json` by `tools/framer/projects.py`. Stage 6
 (`s6_tts.py`, the `voice` field) and stage 7 (`s7_assemble.py`, the rest) each
 read that file the same defensive way s7 already reads the framer's
-`framer/mapping.json` (`_load_mapping`) - both stages' own
-`_load_media_settings()` returns `{}` on any absence/failure, so a chapter
+`framer/mapping.json` (`load_mapping`) - both stages' own
+media-settings loader returns `{}` on any absence/failure, so a chapter
 with no settings file runs exactly as before this feature existed. Do not
 move these fields into the `Manifest` schema - they are project-level config,
 not stage output, and this file-based snapshot keeps s6/s7 independently
@@ -184,6 +185,18 @@ panels, sends them as images to the local `claude` CLI in batches (pass 1) and w
 the narration from the resulting text-only breakdown (pass 2), then pre-fills the framer
 with narration boxed to full panels, bubble blur boxes included. It touches no pipeline stage; TTS/render still read
 the framer's export.
+
+The framer's **Shorts pipeline** (`shorts.py`, `routes/shorts.py`, `stages/s8_shorts.py`) is an add-on for chapters
+that already have a script and a video, in a batch of its own (`batch.SHORTS_STAGES`, `shorts_batch.json`; each step
+runs one chapter at a time, like the main batch). `shorts_find` has the local `claude` CLI read the script and
+write `work/<ch>/shorts/plan.json` (segments under a minute, each with title and description; saving a plan deletes
+the chapter's old shorts). `shorts_render` runs `python -m stages.s8_shorts`, which reads that plan and the chapter's
+existing frames and audio and writes `output/<ch>/shorts/short_NN.mp4` + `shorts.json`. It is not in
+`manifest.STAGE_ORDER` or the orchestrator and leaves `m.stage` alone, so a normal run never makes shorts. It calls
+s7's `prepare_render` / `execute_render` (not `run`) with `s7.PORTRAIT`, so the media settings apply as in the main
+video; a project's `settings.shorts` (`layout` frame|cover, `own_look`, `watermark`, `background`) is resolved into the
+snapshot's `shorts` key (`layout`, and `look` that overrides the main watermark and background); `cover` is passed to
+`prepare_render`; the stages stay connected only through those files.
 
 ## Conventions
 

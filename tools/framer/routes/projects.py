@@ -16,7 +16,7 @@ import projects
 import series_meta
 import sites
 import totals
-from services.batching import BATCHES, chapter_thumb
+from services.batching import BATCHES, SHORTS_BATCHES, chapter_thumb, has_active_batch
 from services.downloads import _download_chapter
 from services.jobs import JOBS
 from services.project_ops import add_chapter_details, placeholder_frame, png_response, stream_task
@@ -200,8 +200,7 @@ def api_set_project_folder(slug):
     folder); `move` (default true) moves the existing files there, else the folder must already hold it."""
     if not projects.exists(slug):
         return jsonify(error=f"No such project: {slug}"), 404
-    running = BATCHES.get(slug)
-    if (running and running.active) or any(j.slug == slug and j.status in ("queued", "running") for j in JOBS.values()):
+    if has_active_batch(slug) or any(j.slug == slug and j.status in ("queued", "running") for j in JOBS.values()):
         return jsonify(error="This project is busy - cancel its pipeline and jobs first."), 409
     data = request.get_json(silent=True) or {}
     try:
@@ -259,14 +258,14 @@ def api_delete_project(slug):
         return jsonify(error=f"No such project: {slug}"), 404
     if (request.get_json(silent=True) or {}).get("confirm") != projects.load(slug)["name"]:
         return jsonify(error="Type the project's exact name to confirm."), 400
-    running = BATCHES.get(slug)
-    if (running and running.active) or any(j.slug == slug and j.status in ("queued", "running") for j in JOBS.values()):
+    if has_active_batch(slug) or any(j.slug == slug and j.status in ("queued", "running") for j in JOBS.values()):
         return jsonify(error="This project is busy - cancel its pipeline and jobs first."), 409
     try:
         projects.delete(slug)
     except OSError as e:
         return jsonify(error=str(e)), 500
     BATCHES.pop(slug, None)
+    SHORTS_BATCHES.pop(slug, None)
     return jsonify(ok=True)
 
 
@@ -443,6 +442,8 @@ def api_upload_asset(slug):
         project["settings"]["watermark"]["file"] = rel_path
     elif kind == "background":
         project["settings"]["background"]["file"] = rel_path
+    elif kind.startswith("shorts_"):
+        project["settings"]["shorts"][kind.removeprefix("shorts_")]["file"] = rel_path
     else:
         project["settings"]["branding"][kind]["file"] = rel_path
     projects.save(project)
@@ -467,6 +468,10 @@ def api_delete_asset(slug, kind):
         project["settings"]["watermark"]["file"] = None
     elif kind == "background":
         project["settings"]["background"] = {"mode": "blur", "file": None, "dim": 0.85}
+    elif kind == "shorts_background":
+        project["settings"]["shorts"]["background"] = {"mode": "blur", "file": None, "dim": 0.85}
+    elif kind == "shorts_watermark":
+        project["settings"]["shorts"]["watermark"]["file"] = None
     else:
         project["settings"]["branding"][kind]["file"] = None
     projects.save(project)

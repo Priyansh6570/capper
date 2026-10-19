@@ -88,6 +88,33 @@ any pipeline stage needed to change.
   it actually has a `recap.mp4` on disk — both are re-checked at merge time,
   not just trusted from a stale page load.
 
+## Shorts
+
+The **Shorts** pipeline makes vertical (9:16) short videos from chapters that already have a script and a
+finished video. Select chapters on the Chapters screen and press **Make shorts**; chapters without a finished
+video are skipped. It is a batch of its own (`shorts_batch.json` next to `batch.json`), with the same rule as the
+main pipeline: each step works on one chapter at a time.
+
+1. **Choosing segments** (`shorts_find`, `shorts.py`) — the local `claude` CLI reads the chapter's script (each line
+   with its pace and playing time) and returns only the runs of lines that would make a good short: interesting or
+   mysterious moments that build curiosity, violent, epic or fighting scenes, anger or other strong emotion. The
+   count is decided by relevance alone (one, five or none), each segment gets a title and a description, and its
+   real render length is checked locally: it must be under a minute (a segment over the limit loses its last lines;
+   overlapping and too short ones are dropped). The plan is saved to `work/<ch>/shorts/plan.json`; saving it first
+   deletes the chapter's old shorts.
+2. **Rendering** (`shorts_render`, `stages/s8_shorts.py`) — every planned segment is rendered with stage 7's
+   renderer on a 1080x1920 canvas (720x1280 for the tiny/small quality presets) from the chapter's existing frames
+   and narration audio, with the project's watermark, music, background and zoom. Nothing is voiced again. The
+   videos and `shorts.json` (titles, descriptions, durations) go to `output/<ch>/shorts/`.
+
+In **Project settings -> Shorts**, *Frame layout* is **Full frame** (each frame whole over the background, the watermark behind
+it) or **Full cover** (the frame fills the 9:16 screen, centre-cropped, with the watermark above it; the background is not
+shown and a line's frames appear one after another). A project can also give its shorts their own watermark and background (same options as the
+main video's); otherwise they use the main video's. Music, volume, animation and video size are always the main video's.
+
+The **Shorts** screen lists each chapter's shorts with a player, the title and description (each with a Copy
+button) and a download link. Shorts are also a file type in the media library, so they can be deleted from there.
+
 ## Project settings (music / voice / watermark / background)
 
 Open **Settings** on a project screen. Saved into that project's

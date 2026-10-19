@@ -43,8 +43,11 @@ is voiced by `tts_kokoro.run`; everything above applies to the Chatterbox engine
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
+import tempfile
+import time
 from pathlib import Path
 
 import numpy as np
@@ -265,7 +268,7 @@ def _build_engine():
     raise RuntimeError(f"Chatterbox-Turbo could not be loaded: {last_err}")
 
 
-def _generate(model, device: str, text: str, autocast: bool):
+def _generate(model, device: str, text: str, autocast: bool, temperature: float = 0.8):
     """One synth under inference_mode, freeing CUDA cache afterwards.
 
     The reference conditioning was computed once up front (`_Engine.prepare_ref`), in
@@ -278,9 +281,7 @@ def _generate(model, device: str, text: str, autocast: bool):
     region = (torch.autocast("cuda", dtype=torch.float16)
               if autocast else contextlib.nullcontext())
     with torch.inference_mode(), region:
-        wav = model.generate(text)
-    if device == "cuda":
-        torch.cuda.empty_cache()
+        wav = model.generate(text, temperature=temperature)
     return wav
 
 
@@ -319,18 +320,19 @@ class _Engine:
                     self._condition(self._cpu)
         return self._cpu
 
-    def synth(self, text):
+    def synth(self, text, temperature: float = 0.8):
         """Returns (wav_tensor, sample_rate, device_used)."""
         import torch
 
         try:
-            wav = _generate(self.model, self.device, text, autocast=self.device == "cuda" and not self._ref)
+            wav = _generate(self.model, self.device, text, autocast=self.device == "cuda" and not self._ref,
+                            temperature=temperature)
             return wav, self.sr, self.device
         except torch.cuda.OutOfMemoryError:
             print("    CUDA OOM on this line; retrying it on CPU")
             torch.cuda.empty_cache()
             cpu = self._cpu_model()
-            wav = _generate(cpu, "cpu", text, autocast=False)
+            wav = _generate(cpu, "cpu", text, autocast=False, temperature=temperature)
             return wav, cpu.sr, "cpu(oom-fallback)"
 
 
@@ -407,6 +409,14 @@ def run(m: Manifest) -> Manifest:
     engine.prepare_ref(ref, m.chapter_id)
     panels = m.kept_panels()
     spoken = 0
+    # Voiced sentences are kept for a few days outside the project (in the scratch folder), so a run that
+    # crashes or is repeated does not voice the same sentences again.
+    cache_dir = Path(tempfile.gettempdir()) / "recapper_voice_cache" / m.chapter_id
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    for old in cache_dir.glob("*.npy"):
+        if time.time() - old.stat().st_mtime > 3 * 86400:
+            old.unlink(missing_ok=True)
+    ref_id = f"{Path(ref).name}:{Path(ref).stat().st_mtime_ns}" if ref else "default"
     for panel in panels:
         line = (panel.script_line or "").strip()
         if not line:
@@ -414,12 +424,22 @@ def run(m: Manifest) -> Manifest:
             continue
 
         mood = pacing.pace_of(panel.emotion, line)
+        pace = pacing.PACES[mood]
         used = engine.device
 
         def speak(sentence: str, speed: float) -> np.ndarray:
             nonlocal used
-            wav, _, used = engine.synth(sentence)
-            return pacing.stretch(wav.detach().to("cpu").numpy().reshape(-1), engine.sr, speed)
+            key = cache_dir / (hashlib.sha1(f"{sentence}|{speed:.3f}|{pace.pitch}|{pace.temperature}|{ref_id}"
+                                            .encode("utf-8")).hexdigest() + ".npy")
+            if key.exists():
+                try:
+                    return np.load(key)
+                except (OSError, ValueError):
+                    key.unlink(missing_ok=True)
+            wav, _, used = engine.synth(sentence, pace.temperature)
+            wav = pacing.stretch(wav.detach().to("cpu").numpy().reshape(-1), engine.sr, speed, pace.pitch)
+            np.save(key, wav.astype(np.float32))
+            return wav
 
         wav = pacing.voice_line(line, mood, speak, engine.sr, tones.delivery(settings.get("tone")).speed)
         out = audio_dir / f"{panel.id}.wav"
@@ -428,6 +448,9 @@ def run(m: Manifest) -> Manifest:
         panel.audio = str(out)
         panel.duration_s = round(dur, 2)
         spoken += 1
+        if engine.device == "cuda":
+            import torch
+            torch.cuda.empty_cache()
         print(f"    [{panel.order:03d}] ({mood}) {dur:5.2f}s on {used}")
 
     total = sum(p.duration_s or 0 for p in panels)

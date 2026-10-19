@@ -56,7 +56,7 @@ def _claude() -> dict:
 
 
 def _source(project: dict, numbers: list[int]) -> dict:
-    missing = [n for n in numbers if not any((projects.chapter_work_dir(project["slug"], n) / "download").glob("*.pdf"))]
+    missing = [n for n in numbers if not any((projects.chapter_work_path(project["slug"], n) / "download").glob("*.pdf"))]
     if not missing:
         return _result("Chapter source", "ok", "Every selected chapter is already downloaded.")
     if sites.detect(project["url"] or "") is None:

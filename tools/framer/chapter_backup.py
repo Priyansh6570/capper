@@ -258,6 +258,20 @@ def clear_kind(slug: str, n, kind_key: str) -> int:
     return freed
 
 
+def offload(slug: str, n) -> int:
+    """Back up a finished chapter to the drive folder and clear everything clearable from this PC.
+    Each kind is cleared only once verified there. Returns the bytes freed."""
+    freed = 0
+    cleared = set(cleared_kinds(slug, n))
+    for key in KINDS:
+        if key not in cleared:          # a cleared kind has no local files to copy; backing it up would erase its record
+            backup_kind(slug, n, key)
+    for key, kind in KINDS.items():
+        if kind.clearable:
+            freed += clear_kind(slug, n, key)
+    return freed
+
+
 def _lock(slug: str, n) -> threading.Lock:
     with _LOCKS_GUARD:
         return _LOCKS.setdefault((slug, str(n)), threading.Lock())
