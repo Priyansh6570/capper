@@ -35,6 +35,7 @@ GROUP_LABELS = {
     "background": "Video background", "animation": "Frame animation", "video": "Video size",
     "branding": "Intro / outro", "script": "Script tone and style",
     "claude": "Claude script settings", "batch": "Batch automation", "framing": "Frame text blur",
+    "shorts": "Shorts",
 }
 
 
@@ -151,22 +152,26 @@ def background_option(option_id: str) -> Path | None:
     return next((ASSETS_DIR / o["id"] for o in background_options() if o["id"] == option_id), None)
 
 
-def current_background_option(slug: str) -> str | None:
-    mine = projects.resolve_asset_path(slug, projects.load(slug)["settings"]["background"].get("file"))
+def current_background_option(slug: str, shorts: bool = False) -> str | None:
+    settings = projects.load(slug)["settings"]
+    mine = projects.resolve_asset_path(slug, (settings["shorts"] if shorts else settings)["background"].get("file"))
     return next((o["id"] for o in background_options()
                  if mine and filecmp.cmp(mine, ASSETS_DIR / o["id"], shallow=False)), None)
 
 
-def select_background(slug: str, option_id: str) -> None:
-    """Use a ready-made video as the project's background (replacing its own background file)."""
+def select_background(slug: str, option_id: str, shorts: bool = False) -> None:
+    """Use a ready-made video as the project's background (replacing its own background file), or as
+    the shorts' own background."""
     source = background_option(option_id)
     if source is None:
         raise ValueError(f"No such background video: {option_id}")
-    name = f"background{source.suffix.lower()}"
-    for old in projects.assets_dir(slug).glob("background.*"):
+    kind = "shorts_background" if shorts else "background"
+    name = f"{kind}{source.suffix.lower()}"
+    for old in projects.assets_dir(slug).glob(f"{kind}.*"):
         old.unlink(missing_ok=True)
     shutil.copy2(source, projects.assets_dir(slug) / name)
-    projects.update_settings(slug, {"background": {"mode": "video", "file": f"assets/{name}"}})
+    background = {"mode": "video", "file": f"assets/{name}"}
+    projects.update_settings(slug, {"shorts": {"background": background}} if shorts else {"background": background})
 
 
 def create_project(name: str, url: str) -> dict:

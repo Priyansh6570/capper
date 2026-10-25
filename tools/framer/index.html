@@ -310,16 +310,26 @@
         <div class="shhead">
           <div class="shintro">
             <h2>Shorts</h2>
-            <p>Vertical 9:16 clips cut from the strongest moments of finished chapters. Make them from the Chapters screen. Making them again replaces that chapter's shorts.</p>
+            <p>Vertical 9:16 clips cut from the moments that would catch viewers: the ones that hit an emotion, feel epic or are mysterious. Pick a range of chapters and Claude studies them together; only chapters with a strong moment get shorts, and the others get none. Picking a chapter's moments again replaces that chapter's shorts.</p>
           </div>
           <div class="shstats" id="shortsStats"></div>
+        </div>
+        <div class="shfind" id="shortsFind">
+          <div class="shfindtext"><b>Find shorts in a range of chapters</b>
+            <span>Only chapters with a finished video are studied. Leave the limit empty to keep every strong moment.</span></div>
+          <div class="shfindform">
+            <label>From<select id="shortsFrom"></select></label>
+            <label>To<select id="shortsTo"></select></label>
+            <label>Most shorts<input id="shortsMax" type="number" min="1" max="50" placeholder="no limit" /></label>
+            <button class="primary" id="shortsFindBtn">Find and make shorts</button>
+          </div>
         </div>
         <div id="shortsJob"></div>
         <div id="shortsGroups"></div>
         <div class="shempty" id="shortsEmpty" hidden>
           <span class="shemptyicon"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 3h10v18H7z"></path><path d="M11 9.5l3 2.5-3 2.5z"></path></svg></span>
           <b>No shorts yet</b>
-          <p>Select chapters with a finished video on the Chapters screen and press Make shorts. Each chapter gives a few vertical clips.</p>
+          <p>Pick a range of chapters with a finished video above, or select chapters on the Chapters screen and press Make shorts. Claude keeps only the moments worth uploading.</p>
           <button class="primary" id="shortsGoChapters">Go to Chapters</button>
         </div>
       </div>
@@ -389,7 +399,8 @@
           <a href="javascript:void(0)" id="stCrumbProject">Project</a><span class="sep">/</span>
           <span class="cur">Settings</span>
         </div>
-        <span class="savebadge" id="pjSettingsSaved">Autosaved</span>
+        <span class="savebadge" id="pjSettingsSaved">Saved</span>
+        <button type="button" class="small primary" id="settingsSaveBtn" data-icon="check" data-ic-size="14"><span>Save</span></button>
       </div>
       <div class="settingsbody">
         <nav class="settingsnav">
@@ -643,19 +654,24 @@
 
           <div class="setcard" id="s-shorts">
             <div class="setlabel">
-              <b>Shorts</b><span>The vertical videos made from a chapter. They use the main video's music, volume, animation and video size.</span>
+              <b>Shorts</b><span>The vertical videos made from the best moments of your chapters. They use the main video's animation and video size; the look and the sound can be their own.</span>
               <label class="togglesw" style="margin-top:6px"><input type="checkbox" id="shOwnLook" style="position:absolute;opacity:0;width:1px;height:1px" /><span class="tk"></span>Own watermark and background</label>
+              <label class="togglesw" style="margin-top:6px"><input type="checkbox" id="shOwnAudio" style="position:absolute;opacity:0;width:1px;height:1px" /><span class="tk"></span>Own music and volume</label>
             </div>
-            <div class="setbody">
-              <b>Frame layout</b>
-              <div class="optionlist">
+            <div class="shsections">
+            <section class="shsec">
+              <h4 class="shsechead">Frame layout</h4>
+              <div class="optionlist shopts">
                 <label class="optbtn"><input type="radio" name="shLayout" value="frame" /><span class="otexts"><b>Full frame</b><span>The whole frame, uncut, over the background and watermark</span></span></label>
                 <label class="optbtn"><input type="radio" name="shLayout" value="cover" /><span class="otexts"><b>Full cover</b><span>The frame fills the screen (centre-cropped) with the watermark above it</span></span></label>
               </div>
               <div class="hint" id="shCoverHint" hidden>With full cover the background is not visible, and a line with several frames shows them one after another.</div>
-            </div>
-            <div class="setbody" id="shLookBody">
-              <b>Watermark</b>
+            </section>
+            <div id="shLookBody">
+            <section class="shsec">
+              <h4 class="shsechead">Watermark</h4>
+              <div class="setmedia">
+              <div class="setbody">
               <label class="togglesw"><input type="checkbox" id="shWmEnabled" style="position:absolute;opacity:0;width:1px;height:1px" /><span class="tk"></span>Enabled</label>
               <div class="segctl">
                 <label class="segopt"><input type="radio" name="shWmType" value="text" /><span>Text</span></label>
@@ -677,7 +693,17 @@
                 <label class="slider"><div class="slbl"><span>Angle</span><span id="shWmAngleLbl"></span></div>
                   <input id="shWmAngle" type="range" min="-90" max="90" value="-30" /></label>
               </div>
-              <b>Background</b>
+              </div>
+              <div class="previewcol">
+                <div class="previewbox shprev" id="shWmPreviewBox"><span class="phmsg">Preview</span></div>
+                <span class="plbl">Live preview</span>
+              </div>
+              </div>
+            </section>
+            <section class="shsec">
+              <h4 class="shsechead">Background</h4>
+              <div class="setmedia">
+              <div class="setbody">
               <div class="optionlist">
                 <label class="optbtn"><input type="radio" name="shBgMode" value="blur" /><span class="otexts"><b>Blurred crop</b><span>Default</span></span></label>
                 <label class="optbtn"><input type="radio" name="shBgMode" value="image" /><span class="otexts"><b>Custom image</b><span>Upload a still image</span></span></label>
@@ -690,6 +716,51 @@
               </div>
               <label class="slider"><div class="slbl"><span>Dim background</span><span id="shBgDimLbl"></span></div>
                 <input id="shBgDim" type="range" min="10" max="100" value="85" /></label>
+              <div class="hint" id="shBgVideoHint" hidden>The video plays looped, full-screen behind the frames, for the whole render.</div>
+              </div>
+              <div class="previewcol">
+                <div class="previewbox shprev" id="shBgPreviewBox"><span class="phmsg">Preview</span></div>
+                <span class="plbl">Live preview</span>
+              </div>
+              </div>
+              <div id="shBgOptionsBlock" hidden>
+                <span class="lbl">Ready-made videos</span>
+                <div class="bgopts" id="shBgOptions"></div>
+                <div class="hint">Hover a video to preview it, then use it as the shorts' background.</div>
+              </div>
+            </section>
+            </div>
+            <div id="shSoundBody">
+            <section class="shsec">
+              <h4 class="shsechead">Music</h4>
+              <div class="optionlist">
+                <label class="optbtn"><input type="radio" name="shMusicMode" value="default" /><span class="otexts"><b>Default track</b><span>assets/music</span></span></label>
+                <label class="optbtn"><input type="radio" name="shMusicMode" value="file" /><span class="otexts"><b>Custom file</b><span>Upload music for the shorts</span></span></label>
+                <label class="optbtn"><input type="radio" name="shMusicMode" value="none" /><span class="otexts"><b>No background audio</b><span>Narration only</span></span></label>
+              </div>
+              <div class="filerow">
+                <button type="button" id="shMusicBrowseBtn" class="small ghost" data-icon="folder" data-ic-size="14"><span>Browse…</span></button>
+                <span class="swatch" id="shMusicFileName"></span>
+                <input id="shMusicFile" type="file" accept="audio/*" class="filehidden" tabindex="-1" />
+              </div>
+            </section>
+            <section class="shsec">
+              <h4 class="shsechead">Volume</h4>
+              <label class="slider"><div class="slbl"><span>Narration volume</span><span id="shNarrVolLbl"></span></div>
+                <input id="shNarrVol" type="range" min="50" max="600" step="10" value="250" /></label>
+              <label class="slider"><div class="slbl"><span>Music volume</span><span id="shMusicVolLbl"></span></div>
+                <input id="shMusicVol" type="range" min="0" max="30" step="1" value="3" /></label>
+            </section>
+            </div>
+            <section class="shsec">
+              <h4 class="shsechead">Hear it</h4>
+              <div class="filerow">
+                <button type="button" id="shSampleBtn" class="small ghost" data-icon="play" data-ic-size="14"><span>Play sample</span></button>
+                <span class="hint" id="shSampleHint"></span>
+              </div>
+              <audio id="shSampleAudio" controls hidden></audio>
+              <div class="hint">A few lines of your narration over the music, mixed the way the shorts will be. Once it is playing, moving a slider or changing the music updates it on the spot, so there is no need to render a short to hear a change.</div>
+            </section>
             </div>
           </div>
 

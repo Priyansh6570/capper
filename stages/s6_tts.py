@@ -386,7 +386,13 @@ def run(m: Manifest) -> Manifest:
     audio_dir = chapter_work_dir(m.chapter_id) / "audio"
     clear_directory(audio_dir)   # the voice of the previous run, including lines that no longer exist
     (chapter_work_dir(m.chapter_id) / "_voice_ref_f32.wav").unlink(missing_ok=True)
+    return voice(m, audio_dir)
 
+
+def voice(m: Manifest, audio_dir: Path) -> Manifest:
+    """Voice the beats of `m` into `audio_dir` (left as it is) with the chapter's engine and voice. The
+    shorts stage voices its own scripts through this, apart from the chapter's narration."""
+    audio_dir.mkdir(parents=True, exist_ok=True)
     settings = _load_media_settings(m.chapter_id)
     tts = settings.get("tts") or {}
     if tts.get("engine") == "kokoro":

@@ -1,6 +1,7 @@
 """Routes for projects: listing, chapters, settings, assets, defaults, previews."""
 from __future__ import annotations
 
+import io
 import os
 import tempfile
 from pathlib import Path
@@ -9,6 +10,7 @@ from PIL import Image
 from flask import Blueprint, Response, jsonify, request, send_file, send_from_directory
 
 import app_settings
+import audio_sample
 import bulk_download
 import config
 import project_defaults
@@ -394,8 +396,9 @@ def api_apply_defaults():
 def api_background_options():
     """The ready-made background videos; `?project=<slug>` also says which one that project uses."""
     slug = request.args.get("project")
+    shorts = request.args.get("target") == "shorts"
     return jsonify(options=project_defaults.background_options(),
-                   current=project_defaults.current_background_option(slug) if slug and projects.exists(slug) else None)
+                   current=project_defaults.current_background_option(slug, shorts) if slug and projects.exists(slug) else None)
 
 
 @bp.get("/api/background_options/<option_id>")
@@ -406,11 +409,13 @@ def api_background_option_video(option_id):
 
 @bp.post("/api/projects/<slug>/background")
 def api_select_background(slug):
-    """Body: JSON {option}. Use that ready-made video as the project's background."""
+    """Body: JSON {option, target?}. Use that ready-made video as the project's background
+    (`target: "shorts"`: the shorts' own background)."""
     if not projects.exists(slug):
         return jsonify(error=f"No such project: {slug}"), 404
+    body = request.get_json(silent=True) or {}
     try:
-        project_defaults.select_background(slug, (request.get_json(silent=True) or {}).get("option") or "")
+        project_defaults.select_background(slug, body.get("option") or "", body.get("target") == "shorts")
     except ValueError as e:
         return jsonify(error=str(e)), 400
     return jsonify(ok=True)
@@ -472,6 +477,8 @@ def api_delete_asset(slug, kind):
         project["settings"]["shorts"]["background"] = {"mode": "blur", "file": None, "dim": 0.85}
     elif kind == "shorts_watermark":
         project["settings"]["shorts"]["watermark"]["file"] = None
+    elif kind == "shorts_music":
+        project["settings"]["shorts"]["music"] = {"mode": "default", "file": None}
     else:
         project["settings"]["branding"][kind]["file"] = None
     projects.save(project)
@@ -490,7 +497,8 @@ def api_get_asset(slug, kind):
 @bp.get("/api/projects/<slug>/preview/watermark.png")
 def api_preview_watermark(slug):
     """Query: enabled, type, text, opacity, size, spacing, angle. An image-type
-    watermark uses the already-saved asset (see /asset).
+    watermark uses the already-saved asset (see /asset). `shorts=1` previews the shorts' watermark on
+    the vertical canvas (`layout=cover` puts it over a full-cover frame).
 
     BUG FIX: this used to build a non-empty `cfg` dict regardless of the
     "Enabled" checkbox and never looked at it, so the preview always showed
@@ -500,6 +508,8 @@ def api_preview_watermark(slug):
     matching the "preview shows it, video doesn't" symptom. The preview now
     mirrors the real gate: no watermark in the preview when disabled."""
     enabled = (request.args.get("enabled", "1")).strip().lower() not in ("0", "false", "")
+    shorts = request.args.get("shorts") == "1"
+    canvas = s7.PORTRAIT if shorts else s7.LANDSCAPE
     sample = placeholder_frame(slug)
 
     wm = None
@@ -512,24 +522,52 @@ def api_preview_watermark(slug):
             "spacing": request.args.get("spacing", 1.0),
             "angle": request.args.get("angle", -30),
         }
-        watermark_asset = projects.find_asset(slug, "watermark")
+        watermark_asset = projects.find_asset(slug, "shorts_watermark" if shorts else "watermark")
         cfg["file"] = str(watermark_asset) if watermark_asset else None
-        wm = s7._build_watermark_layer({"watermark": cfg})
+        wm = s7._build_watermark_layer({"watermark": cfg}, canvas)
 
     # wm goes to the BACKGROUND layer only (see _compose_still), matching the
     # real render - so this preview accurately shows the watermark hidden
     # under the sample frame and visible only around/behind it.
-    still = s7._compose_still([str(sample)], wm=wm)
-    return png_response(still.resize((960, 540), Image.LANCZOS))
+    still = s7._compose_still([str(sample)], wm=wm, canvas=canvas,
+                              cover=shorts and request.args.get("layout") == "cover")
+    return png_response(still.resize((540, 960) if shorts else (960, 540), Image.LANCZOS))
+
+
+@bp.get("/api/projects/<slug>/preview/audio.wav")
+def api_preview_audio(slug):
+    """Query: own (1: the shorts' own music file, else the main one), mode (default|file|none), narration_vol,
+    music_vol. A few narration lines over the music at those volumes, mixed as a render mixes them."""
+    if not projects.exists(slug):
+        return jsonify(error=f"No such project: {slug}"), 404
+    try:
+        wav = audio_sample.render(
+            slug, mode=request.args.get("mode") if request.args.get("mode") in ("default", "file", "none") else "default",
+            own=request.args.get("own") == "1",
+            narration_vol=max(0.5, min(6.0, float(request.args.get("narration_vol", 2.5)))),
+            music_vol=max(0.0, min(0.3, float(request.args.get("music_vol", 0.03)))))
+    except ValueError:
+        return jsonify(error="Volumes must be numbers."), 400
+    except audio_sample.NoSample as e:
+        return jsonify(error=str(e)), 404
+    except RuntimeError as e:
+        return jsonify(error=str(e)), 500
+    response = send_file(io.BytesIO(wav), mimetype="audio/wav")
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @bp.get("/api/projects/<slug>/preview/background.png")
 def api_preview_background(slug):
-    """Query: dim. Uses the already-saved background asset (see /asset)."""
-    bg_asset = projects.find_asset(slug, "background")
+    """Query: dim, shorts (1: the shorts' background on the vertical canvas), mode (blur shows no custom
+    image). Uses the already-saved background asset (see /asset)."""
+    shorts = request.args.get("shorts") == "1"
+    canvas = s7.PORTRAIT if shorts else s7.LANDSCAPE
+    bg_asset = None if request.args.get("mode") == "blur" else \
+        projects.find_asset(slug, "shorts_background" if shorts else "background")
     dim = request.args.get("dim", 0.85)
     bg = s7._load_background({"background": {"file": str(bg_asset) if bg_asset else None,
-                                              "dim": dim}})
+                                              "dim": dim}}, canvas)
     sample = placeholder_frame(slug)
-    still = s7._compose_still([str(sample)], bg)
-    return png_response(still.resize((960, 540), Image.LANCZOS))
+    still = s7._compose_still([str(sample)], bg, canvas=canvas)
+    return png_response(still.resize((540, 960) if shorts else (960, 540), Image.LANCZOS))

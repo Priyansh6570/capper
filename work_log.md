@@ -1,14 +1,15 @@
-# Work log
+# Work log - Shorts: pick by merit across the range
 
-Voice, script and layout round (all tests pass: 218).
+- `tools/framer/shorts.py`: the find prompt (`_count_rule`) now asks for the best moments of the WHOLE range
+  by score (skip weak chapters, several from one chapter allowed, none if nothing scores >= 6). `select()`
+  ranks by score first; a chapter's best-before-second only breaks ties. Before, it forced one pick per
+  chapter, which is why early chapters always won.
+- `tools/framer/static/js/app.js`: while Claude chooses, the progress row reads "RANGE / Studying N chapters"
+  instead of "CH <lowest>", and no chapter group is shown for it. After the find, only chapters it picked
+  get rows, so a skipped first chapter no longer shows as if it got a short.
+- `tests/test_shorts.py`: spread test replaced by merit tests (59 pass).
 
-- **Mixed narration** (`script_jobs.py`, `projects.py`, `index.html`): third option that uses "I" for the hero's own moments and "he/she" for everything else, switching only at scene boundaries.
-- **Main video layout** (`projects.py`, `s7_assemble.py`, `index.html`, `app.js`): Project settings -> Video size -> Frame layout, Full frame or Full cover (`settings.video.layout`, passed to s7 as `cover`).
-- **Emotion** (`pacing.py`, `claude_engine.py`, `app.js`): new `excited` and `angry` paces; each pace now also sets pitch, loudness and Chatterbox temperature. The Claude engine is told to pick the pace by feeling.
-- **Gaps**: all pauses roughly halved (longest about 0.5s).
-- **Speed / crash recovery** (`s6_tts.py`): voiced sentences are cached outside the project, so a re-run or crash retry skips them; no more CUDA cache flush per sentence.
-- **C drive** (`config.py`): when `hf_home` is set, TEMP, torch, CUDA, Triton and other caches go to `<hf_home parent>\recapper_scratch` (here `D:\recapper_scratch`).
-- **Comedic tone** (`tones.py`): rewritten to demand puns, masked swearing (spoken minced oaths), quick asides, never in serious scenes.
-- `tests/test_tts_engine.py` updated for the temperature argument.
+Cost note: the find is one `claude` call per ~150k chars of scripts (thinking already off, effort low),
+then one small call per picked short. Fewer shorts requested = fewer calls.
 
-Next: restart the app, set the options in Project settings, re-run "script" for a chapter to see the new tone/POV, then re-render the voice.
+Run: `.venv\Scripts\python.exe -m unittest discover -s tests -t .`

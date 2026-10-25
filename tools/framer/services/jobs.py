@@ -89,6 +89,10 @@ class Job:
         self.resume_at: str | None = None  # script: set while paused on Claude's usage limit
         self.short_no = 0                 # shorts_render: the short being rendered and how many there are
         self.short_count = 0
+        self.chapters: list[int] = []     # shorts_find: the chapters it studies, and at most how many shorts to keep
+        self.max_shorts: int | None = None
+        self.picked: dict[int, int] = {}  # shorts_find: shorts planned per chapter, once it is done
+        self.analyzed: list[int] = []     # shorts_find: the chapters it actually read
         self.status = "queued"            # queued|running|done|failed|cancelled
         self.total_beats = total_beats
         self.audio = 0
@@ -537,7 +541,8 @@ def new_script_job(chapter_id: str, slug: str | None, ch_no: str | None) -> "Job
 
 
 def new_shorts_job(chapter_id: str, what: str, slug: str, ch_no: str) -> "Job":
-    """A not-yet-started step of the Shorts pipeline (`shorts_find` or `shorts_render`) for a project chapter."""
+    """A not-yet-started step of the Shorts pipeline (`shorts_find`, over a range of chapters, or
+    `shorts_render`, for one) for a project chapter."""
     if what == "shorts_find":
         status = claude_cli.cli_status()
         if not status["ready"]:

@@ -15,13 +15,14 @@ from unittest import mock
 
 from PIL import Image
 
+import audio_sample
 import batch
 import config
 import library
 import projects
 import shorts
 from manifest import Manifest, Panel
-from services import jobs
+from services import batching, jobs
 from stages import s7_assemble, s8_shorts
 from tests.support import ApiProjects, touch
 
@@ -122,6 +123,12 @@ class PortraitRenderTest(unittest.TestCase):
 
 
 class IncrementalIndexTest(unittest.TestCase):
+    def setUp(self):
+        super().setUp()
+        patcher = mock.patch.object(s8_shorts, "add_logo")   # the logo is burned in with ffmpeg
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_a_finished_short_is_listed_before_the_next_one_is_rendered(self):
         with tempfile.TemporaryDirectory() as tmp:
             work, output = Path(tmp) / "work", Path(tmp) / "output"
@@ -181,6 +188,12 @@ class ShortsProgressTest(unittest.TestCase):
 
 
 class RenderStageTest(unittest.TestCase):
+    def setUp(self):
+        super().setUp()
+        patcher = mock.patch.object(s8_shorts, "add_logo")   # the logo is burned in with ffmpeg
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_each_planned_segment_is_rendered_from_its_own_lines(self):
         with tempfile.TemporaryDirectory() as tmp:
             work, output = Path(tmp) / "work", Path(tmp) / "output"
@@ -240,7 +253,8 @@ class RenderStageTest(unittest.TestCase):
 
 class ShortsSettingsTest(ApiProjects):
     def test_the_shorts_look_is_off_until_chosen_and_its_sliders_are_clamped(self):
-        self.assertEqual(projects.media_settings_snapshot(self.slug, 1)["shorts"], {"layout": "frame", "look": None})
+        self.assertEqual(projects.media_settings_snapshot(self.slug, 1)["shorts"],
+                         {"layout": "frame", "look": None, "sound": None})
         projects.update_settings(self.slug, {"shorts": {"own_look": True, "layout": "bogus", "watermark": {"enabled": True, "text": "S", "opacity": 9},
                                                          "background": {"mode": "bogus", "dim": 0}}})
         shorts_look = projects.media_settings_snapshot(self.slug, 1)["shorts"]["look"]
@@ -355,5 +369,306 @@ class ShortsLibraryTest(ApiProjects):
         self.assertFalse(short.exists())
 
 
+def scored(chapter: int, first: int, last: int, score: int, title: str = "A title") -> dict:
+    return {**proposal(first, last, title), "chapter": chapter, "score": score}
+
+
+class SelectTest(unittest.TestCase):
+    def entry(self, number: int, score: int) -> dict:
+        return {"id": number, "first_line": number, "last_line": number, "score": score}
+
+    def test_every_segment_is_kept_without_a_limit(self):
+        chosen = shorts.select({3: [self.entry(1, 8)], 6: [self.entry(1, 7), self.entry(2, 9)]}, None)
+        self.assertEqual({n: [s["id"] for s in plan] for n, plan in chosen.items()}, {3: [1], 6: [1, 2]})
+
+    def test_a_limit_keeps_the_best_scoring_and_numbers_them_again_in_story_order(self):
+        chosen = shorts.select({3: [self.entry(1, 8)], 6: [self.entry(1, 7), self.entry(2, 9)]}, 2)
+        self.assertEqual([(n, s["first_line"], s["id"]) for n, plan in chosen.items() for s in plan],
+                         [(3, 1, 1), (6, 2, 1)])
+
+    def test_a_chapter_with_nothing_left_is_not_listed(self):
+        self.assertEqual(list(shorts.select({3: [self.entry(1, 7)], 6: [self.entry(1, 9)]}, 1)), [6])
+
+
+class FindRangeTest(unittest.TestCase):
+    def find(self, scripts: dict, answer: dict, max_shorts: int | None = None):
+        prompts = []
+
+        def call(content, schema, model, cwd, **kwargs):
+            prompts.append(content[0]["text"])
+            return answer
+
+        with mock.patch.object(shorts.claude_cli, "call", call), \
+                mock.patch.object(shorts.claude_cli, "empty_usage", return_value={}):
+            found = shorts.find_range(
+                scripts=scripts, brief="", model="opus", work=Path(tempfile.gettempdir()), max_shorts=max_shorts,
+                seconds_of=lambda n, run: length(run), on_event=print, on_limit=print, on_proc=print, before_call=None)
+        return found, prompts
+
+    def test_the_whole_range_is_studied_in_one_call_and_only_strong_moments_in_known_chapters_are_kept(self):
+        scripts = {3: beats(10, 10, 10), 4: beats(10, 10), 6: beats(10, 10, 10)}
+        answer = {"shorts": [scored(3, 1, 2, 9), scored(4, 1, 2, 5), scored(6, 2, 3, 7), scored(9, 1, 2, 10)]}
+        found, prompts = self.find(scripts, answer)
+        self.assertEqual(len(prompts), 1)
+        self.assertTrue(all(f"=== CHAPTER {n} ===" in prompts[0] for n in scripts))
+        self.assertEqual({n: [(s["first_line"], s["last_line"], s["score"]) for s in plan]
+                          for n, plan in found["shorts"].items()}, {3: [(1, 2, 9)], 6: [(2, 3, 7)]})
+
+    def test_a_range_with_nothing_strong_gives_no_shorts(self):
+        found, _ = self.find({1: beats(10, 10)}, {"shorts": []})
+        self.assertEqual(found["shorts"], {})
+
+    def test_the_limit_applies_across_chapters(self):
+        scripts = {1: beats(10, 10), 2: beats(10, 10)}
+        found, _ = self.find(scripts, {"shorts": [scored(1, 1, 2, 8), scored(2, 1, 2, 10)]}, max_shorts=1)
+        self.assertEqual(list(found["shorts"]), [2])
+
+    def test_a_long_range_is_read_in_several_calls(self):
+        scripts = {n: beats(10, 10) for n in (1, 2, 3)}
+        with mock.patch.object(shorts, "GROUP_CHARS", len(shorts.script_lines(scripts[1])) + 1):
+            self.assertEqual(shorts.chapter_groups(scripts), [[1], [2], [3]])
+            found, prompts = self.find(scripts, {"shorts": [scored(2, 1, 2, 9)]})
+        self.assertEqual(len(prompts), 3)
+        self.assertEqual(list(found["shorts"]), [2])
+
+
+class ShortsSoundTest(ApiProjects):
+    def setUp(self):
+        super().setUp()
+        patcher = mock.patch.object(s8_shorts, "add_logo")   # the logo is burned in with ffmpeg
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_the_shorts_use_the_main_sound_until_they_have_their_own(self):
+        self.assertIsNone(projects.media_settings_snapshot(self.slug, 1)["shorts"]["sound"])
+        projects.update_settings(self.slug, {"shorts": {"own_audio": True, "music": {"mode": "none"},
+                                                         "audio": {"narration_vol": 99, "music_vol": 0.1}}})
+        snapshot = projects.media_settings_snapshot(self.slug, 1)
+        self.assertEqual(snapshot["shorts"]["sound"], {"music": None, "music_off": True,
+                                                       "audio": {"narration_vol": 6.0, "music_vol": 0.1}})
+        self.assertEqual(snapshot["audio"], {"narration_vol": 2.5, "music_vol": 0.03})
+
+    def test_an_uploaded_track_lands_in_the_shorts_settings_and_can_be_removed(self):
+        response = self.client.post(f"/api/projects/{self.slug}/asset", data={
+            "kind": "shorts_music", "file": (io.BytesIO(b"mp3"), "theme.mp3")}, content_type="multipart/form-data")
+        self.assertEqual(response.status_code, 200)
+        settings = projects.load(self.slug)["settings"]
+        self.assertEqual((settings["shorts"]["music"]["file"], settings["music"]["file"]),
+                         ("assets/shorts_music.mp3", None))
+        self.client.delete(f"/api/projects/{self.slug}/asset/shorts_music")
+        self.assertEqual(projects.load(self.slug)["settings"]["shorts"]["music"], {"mode": "default", "file": None})
+        self.assertIsNone(projects.find_asset(self.slug, "shorts_music"))
+
+    def test_the_render_stage_uses_the_shorts_own_sound(self):
+        settings = {"music": "main.mp3", "audio": {"narration_vol": 2.5, "music_vol": 0.03},
+                    "shorts": {"layout": "frame", "sound": {"music": "own.mp3", "music_off": False,
+                                                            "audio": {"narration_vol": 1.0, "music_vol": 0.1}}}}
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp) / "work"
+            (work / "shorts").mkdir(parents=True)
+            (work / "shorts" / "plan.json").write_text(json.dumps({"shorts": [
+                {"id": 1, "first_line": 1, "last_line": 1, "title": "t", "description": "d", "reason": "r"}]}),
+                encoding="utf-8")
+            seen = []
+            with config.chapter_scope(work, Path(tmp) / "output"), \
+                    mock.patch.object(s7_assemble, "prepare_render", lambda *args: seen.append(args[2]) or SimpleNamespace(total=12.0)), \
+                    mock.patch.object(s7_assemble, "execute_render", lambda render, out: out.write_bytes(b"mp4")), \
+                    mock.patch.object(s7_assemble, "load_mapping", return_value={}), \
+                    mock.patch.object(s7_assemble, "load_media_settings", return_value=settings):
+                s8_shorts.run(Manifest(chapter_id="c", source_pdf="", work_dir=str(work), beats=beats(12)))
+        self.assertEqual((seen[0]["music"], seen[0]["audio"]["music_vol"]), ("own.mp3", 0.1))
+
+
+class AudioSampleTest(ApiProjects):
+    def test_the_mix_is_the_one_a_render_uses(self):
+        filters, label = s7_assemble._audio_filters([(0, 0), (1, 2500)], 2, 2.0, 0.05)
+        joined = ";".join(filters)
+        self.assertEqual(label, "[aout]")
+        self.assertIn("volume=2.0", joined)
+        self.assertIn("adelay=2500:all=1", joined)
+        self.assertIn("volume=0.05[music]", joined)
+        self.assertIn("sidechaincompress", joined)
+        self.assertEqual(s7_assemble._audio_filters([], None, 2.0, 0.05), ([], None))
+
+    def test_music_follows_the_mode_and_whose_file_it_is(self):
+        projects.assets_dir(self.slug).joinpath("shorts_music.mp3").write_bytes(b"x")
+        with mock.patch.object(s7_assemble, "_music_file", return_value=Path("default.mp3")):
+            self.assertEqual(audio_sample.music_track(self.slug, "file", True).name, "shorts_music.mp3")
+            self.assertEqual(audio_sample.music_track(self.slug, "file", False), Path("default.mp3"))
+            self.assertEqual(audio_sample.music_track(self.slug, "default", True), Path("default.mp3"))
+            self.assertIsNone(audio_sample.music_track(self.slug, "none", True))
+
+    def test_without_rendered_narration_the_voice_sample_is_played(self):
+        voice = Path(tempfile.mkdtemp()) / "voice_ref.wav"
+        voice.write_bytes(b"x")
+        self.addCleanup(shutil.rmtree, voice.parent, True)
+        with mock.patch.object(audio_sample, "DEFAULT_VOICE", voice):
+            self.assertEqual(audio_sample.narration_lines(self.slug), [(voice, audio_sample.SAMPLE_S)])
+
+    def test_there_is_nothing_to_play_without_narration_or_a_voice_sample(self):
+        with mock.patch.object(audio_sample, "DEFAULT_VOICE", Path("missing.wav")):
+            response = self.client.get(f"/api/projects/{self.slug}/preview/audio.wav?own=1&mode=none")
+        self.assertEqual(response.status_code, 404)
+        self.assertIn("narration", response.get_json()["error"])
+
+
+class RangeBatchTest(unittest.TestCase):
+    def env(self, steps: list):
+        return batch.BatchEnv(
+            runners={"shorts_find": steps[0], "shorts_render": steps[1]}, stages=batch.SHORTS_STAGES,
+            scope=lambda n: contextlib.nullcontext(), done_stages=lambda n: [], review_enabled=lambda: False,
+            thresholds=lambda: {"five_hour": 100, "seven_day": 100}, auto_wait=lambda: False,
+            cancel_job=lambda job: None, notify=lambda title, message: None, claude_total=lambda n: None,
+            usage=lambda: {})
+
+    def test_chapters_picked_by_the_range_join_the_batch_and_are_rendered(self):
+        rendered = []
+
+        def find(b, n):
+            b.set_meta(found={"picked": {"3": 1, "6": 2}})
+            b.join({3: ["shorts_render"], 6: ["shorts_render"]})
+
+        with tempfile.TemporaryDirectory() as tmp:
+            run = batch.Batch.create(Path(tmp) / "b.json", self.env([find, lambda b, n: rendered.append(n)]),
+                                     {1: list(batch.SHORTS_STAGES)}, meta={"find": {"chapters": [1, 3, 6]}})
+            for _ in range(200):
+                if run.status == "finished":
+                    break
+                threading.Event().wait(0.05)
+            run.close()
+            saved = json.loads((Path(tmp) / "b.json").read_text(encoding="utf-8"))
+        self.assertEqual(run.status, "finished")
+        self.assertEqual(sorted(rendered), [1, 3, 6])
+        self.assertEqual(saved["meta"]["find"], {"chapters": [1, 3, 6]})
+        self.assertEqual([c["n"] for c in saved["chapters"]], [1, 3, 6])
+
+
+class RangeApiTest(ApiProjects):
+    def start(self, body: dict):
+        with mock.patch("routes.shorts.shorts_blocker", lambda slug, n: "it has no finished video yet" if n == 2 else None), \
+                mock.patch.object(batch.Batch, "create") as create:
+            response = self.client.post(f"/api/projects/{self.slug}/shorts/batch", json=body)
+        batching.SHORTS_BATCHES.pop(self.slug, None)   # the mock stands in for a batch that never ran
+        return response, create
+
+    def test_a_range_starts_one_batch_at_its_first_chapter_that_can_have_shorts(self):
+        response, create = self.start({"first": 1, "last": 3, "max_shorts": 4})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["started"], [1, 3])
+        self.assertEqual(response.get_json()["skipped"][0]["n"], 2)
+        _, env, plans = create.call_args.args
+        self.assertEqual(plans, {1: ["shorts_find", "shorts_render"]})
+        self.assertEqual(create.call_args.kwargs["meta"], {"find": {"chapters": [1, 3], "max_shorts": 4,
+                                                                "skipped": response.get_json()["skipped"]}})
+
+    def test_a_limit_below_one_is_refused(self):
+        self.assertEqual(self.start({"first": 1, "last": 3, "max_shorts": 0})[0].status_code, 400)
+
+
 if __name__ == "__main__":
     unittest.main()
+
+
+class ScriptedShortTest(unittest.TestCase):
+    def test_a_script_line_shows_the_panels_of_its_source_lines(self):
+        beat = {n: Panel(id=f"p{n}", bbox=[0, 0, 0, 0], order=n, crop=f"crop{n}.png") for n in (1, 2, 3, 4)}
+        mapping = {2: {"frames": [{"image": "a.png"}, {"image": "b.png"}]}}
+        short = {"id": 3, "script": [{"text": "Hook.", "pace": "action", "source_lines": [2, 3]},
+                                     {"text": "Watch on.", "pace": "tense", "source_lines": [4, 4, 1, 2], "closing": True}]}
+        panels, new_mapping = s8_shorts.script_beats(short, beat, mapping)
+        self.assertEqual([(p.id, p.order, p.script_line, p.emotion) for p in panels],
+                         [("short03_01", 1, "Hook.", "action"), ("short03_02", 2, "Watch on.", "tense")])
+        self.assertEqual([f["image"] for f in new_mapping[1]["frames"]], ["a.png", "crop3.png"])
+        self.assertEqual([f["image"] for f in new_mapping[2]["frames"]], ["crop4.png", "crop1.png", "a.png"])
+
+    def test_the_logo_has_curved_corners_and_a_border(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = s8_shorts.rounded_logo(200, Path(tmp) / "logo.png")
+            logo = Image.open(out)
+            self.assertEqual(logo.width, 200)
+            self.assertEqual(logo.getpixel((0, 0))[3], 0)               # the corner is cut away
+            self.assertEqual(logo.getpixel((100, 3))[:3], (255, 255, 255))   # the border runs along the edge
+
+
+class WriteScriptTest(unittest.TestCase):
+    def write(self, answer: dict):
+        scene = beats(10, 10, 10)
+        with mock.patch.object(shorts.claude_cli, "call", return_value=answer):
+            return shorts.write_script({"title": "T", "description": "D"}, scene, [], brief="", model="m",
+                                       work=Path(tempfile.gettempdir()), usage={})
+
+    def test_the_closing_comes_last_and_unknown_source_lines_are_replaced(self):
+        script = self.write({"lines": [{"text": "One.", "pace": "action", "source_lines": [2, 99]},
+                                       {"text": "Two.", "pace": "tense", "source_lines": [99]}],
+                             "closing": {"text": "Watch on.", "pace": "reveal", "source_lines": [3]}})
+        self.assertEqual([(e["text"], e["source_lines"], e.get("closing")) for e in script],
+                         [("One.", [2], None), ("Two.", [3], None), ("Watch on.", [3], True)])
+
+    def test_a_script_too_long_for_a_minute_loses_its_last_lines_but_keeps_the_closing(self):
+        long = " ".join(["word"] * 60)
+        script = self.write({"lines": [{"text": long, "pace": "calm", "source_lines": [1]} for _ in range(3)],
+                             "closing": {"text": "Watch on.", "pace": "reveal", "source_lines": [3]}})
+        self.assertEqual(len(script), 3)
+        self.assertTrue(script[-1]["closing"])
+
+    def test_an_answer_without_a_closing_is_refused(self):
+        with self.assertRaises(ValueError):
+            self.write({"lines": [{"text": "One.", "pace": "calm", "source_lines": [1]}],
+                        "closing": {"text": "", "pace": "calm", "source_lines": []}})
+
+
+class SpreadTest(unittest.TestCase):
+    def entry(self, number: int, score: int) -> dict:
+        return {"id": number, "first_line": number, "last_line": number, "score": score}
+
+    def test_a_limit_goes_by_score_so_a_strong_chapter_can_take_several_and_weak_ones_none(self):
+        chosen = shorts.select({1: [self.entry(1, 9), self.entry(2, 9)], 2: [self.entry(1, 6)], 3: [self.entry(1, 7)]}, 3)
+        self.assertEqual({n: len(plan) for n, plan in chosen.items()}, {1: 2, 3: 1})
+
+    def test_equal_scores_prefer_a_chapter_best_over_its_second(self):
+        chosen = shorts.select({1: [self.entry(1, 8), self.entry(2, 8)], 2: [self.entry(1, 8)]}, 2)
+        self.assertEqual({n: len(plan) for n, plan in chosen.items()}, {1: 1, 2: 1})
+
+
+class ShortsDeleteTest(ApiProjects):
+    def make(self, n: int, ids=(1, 2), rendered=(1,)):
+        work, output = projects.chapter_work_path(self.slug, n), projects.chapter_output_path(self.slug, n)
+        plan = [{"id": i, "first_line": i, "last_line": i, "title": f"T{i}", "description": "D", "reason": "R",
+                 "duration_s": 20} for i in ids]
+        shorts.save_plan(work, output, f"c{n}", plan)
+        made = []
+        for i in rendered:
+            touch(output / "shorts" / f"short_{i:02d}.mp4", b"video")
+            made.append({"id": i, "file": f"short_{i:02d}.mp4", "title": f"T{i}", "description": "D", "duration_s": 20})
+        if made:
+            (output / "shorts" / "shorts.json").write_text(json.dumps({"shorts": made}), encoding="utf-8")
+        return work, output
+
+    def test_a_planned_short_without_a_video_is_listed_with_the_plan(self):
+        self.make(3)
+        chapter = self.client.get(f"/api/projects/{self.slug}/shorts").get_json()["chapters"][0]
+        self.assertEqual([s["id"] for s in chapter["shorts"]], [1])
+        self.assertEqual([s["id"] for s in chapter["plan"]], [1, 2])
+
+    def test_one_short_goes_with_its_video_and_its_place_in_the_plan(self):
+        work, output = self.make(3)
+        self.assertEqual(self.client.delete(f"/api/projects/{self.slug}/shorts/3/1").status_code, 200)
+        self.assertEqual([s["id"] for s in shorts.read_plan(work)], [2])
+        self.assertEqual(shorts.rendered(output), [])
+        self.assertEqual(self.client.delete(f"/api/projects/{self.slug}/shorts/3/9").status_code, 404)
+
+    def test_the_last_short_takes_the_folders_with_it(self):
+        work, output = self.make(3, ids=(1,))
+        self.client.delete(f"/api/projects/{self.slug}/shorts/3/1")
+        self.assertFalse((work / "shorts").exists() or (output / "shorts").exists())
+
+    def test_all_of_a_chapters_shorts_are_deleted_at_once(self):
+        work, output = self.make(3)
+        self.assertEqual(self.client.delete(f"/api/projects/{self.slug}/shorts/3").status_code, 200)
+        self.assertEqual((shorts.read_plan(work), shorts.rendered(output)), ([], []))
+
+    def test_nothing_is_deleted_while_shorts_are_being_made(self):
+        self.make(3)
+        with mock.patch.dict(batching.SHORTS_BATCHES, {self.slug: SimpleNamespace(active=True)}):
+            self.assertEqual(self.client.delete(f"/api/projects/{self.slug}/shorts/3").status_code, 409)
+        self.assertEqual(len(shorts.read_plan(projects.chapter_work_path(self.slug, 3))), 2)

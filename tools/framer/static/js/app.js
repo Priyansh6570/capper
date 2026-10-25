@@ -1610,6 +1610,7 @@ let SCREEN = 'projects';
 let CURRENT_PROJECT = null;   // the project object backing the open Project screen
 
 function showScreen(name) {
+  if (SCREEN === 'settings' && name !== 'settings') saveSettingsNow();   // leaving the settings: save what is pending
   SCREEN = name;
   ['projects', 'project', 'hub', 'settings', 'editor'].forEach(n => {
     const el = $('scr-' + n);
@@ -1694,32 +1695,41 @@ function timeAgo(iso) {
 }
 
 // --- project export / import (see api_export_project / api_import_project in app.py) ---
+// The ready-made videos, for the main background (`bgOptions`) and the shorts' own one (`shBgOptions`).
+const BG_OPTION_UI = { main: { block: 'bgOptionsBlock', list: 'bgOptions' }, shorts: { block: 'shBgOptionsBlock', list: 'shBgOptions' } };
+
 async function loadBackgroundOptions() {
-  const { ok, data } = await apiJson(`/api/background_options?project=${enc(CURRENT_PROJECT.slug)}`, 'GET');
-  const options = ok ? data.options : [];
-  $('bgOptionsBlock').hidden = !options.length;
-  $('bgOptions').innerHTML = options.map(o => `<div class="bgopt ${o.id === data.current ? 'on' : ''}">` +
-    `<video muted loop playsinline preload="metadata" src="/api/background_options/${enc(o.id)}#t=0.1"></video>` +
-    `<div class="bgoptfoot"><span>${escHtml(o.label)}</span>` +
-    `<button type="button" class="small ${o.id === data.current ? '' : 'ghost'}" data-bgopt="${escHtml(o.id)}" ${o.id === data.current ? 'disabled' : ''}>${o.id === data.current ? 'In use' : 'Use'}</button></div></div>`).join('');
+  for (const [target, ui] of Object.entries(BG_OPTION_UI)) {
+    const { ok, data } = await apiJson(`/api/background_options?project=${enc(CURRENT_PROJECT.slug)}&target=${target}`, 'GET');
+    const options = ok ? data.options : [];
+    $(ui.block).hidden = !options.length;
+    $(ui.list).innerHTML = options.map(o => `<div class="bgopt ${o.id === data.current ? 'on' : ''}">` +
+      `<video muted loop playsinline preload="metadata" src="/api/background_options/${enc(o.id)}#t=0.1"></video>` +
+      `<div class="bgoptfoot"><span>${escHtml(o.label)}</span>` +
+      `<button type="button" class="small ${o.id === data.current ? '' : 'ghost'}" data-bgopt="${escHtml(o.id)}" ${o.id === data.current ? 'disabled' : ''}>${o.id === data.current ? 'In use' : 'Use'}</button></div></div>`).join('');
+  }
 }
 
-$('bgOptions').addEventListener('mouseover', e => { const v = e.target.closest('video'); if (v) v.play(); });
-$('bgOptions').addEventListener('mouseout', e => { const v = e.target.closest('video'); if (v) v.pause(); });
-$('bgOptions').addEventListener('click', async e => {
-  const video = e.target.closest('video'), use = e.target.closest('[data-bgopt]');
-  if (video) { video.paused ? video.play() : video.pause(); return; }
-  if (!use) return;
-  const { ok, data } = await apiJson(projectApi('/background'), 'POST', { option: use.dataset.bgopt });
-  if (!ok) { showToast(data.error || 'Could not use that video.', null, null, 'warn'); return; }
-  await loadCurrentProject(CURRENT_PROJECT.slug);
-  fillSettingsForm();
-  loadBackgroundOptions();
-  showToast('Background video changed.', null, null, 'ok');
+Object.entries(BG_OPTION_UI).forEach(([target, ui]) => {
+  $(ui.list).addEventListener('mouseover', e => { const v = e.target.closest('video'); if (v) v.play(); });
+  $(ui.list).addEventListener('mouseout', e => { const v = e.target.closest('video'); if (v) v.pause(); });
+  $(ui.list).addEventListener('click', async e => {
+    const video = e.target.closest('video'), use = e.target.closest('[data-bgopt]');
+    if (video) { video.paused ? video.play() : video.pause(); return; }
+    if (!use) return;
+    await saveSettingsNow();   // the form is repainted from the server below
+    const { ok, data } = await apiJson(projectApi('/background'), 'POST', { option: use.dataset.bgopt, target });
+    if (!ok) { showToast(data.error || 'Could not use that video.', null, null, 'warn'); return; }
+    await loadCurrentProject(CURRENT_PROJECT.slug);
+    fillSettingsForm();
+    loadBackgroundOptions();
+    showToast('Background video changed.', null, null, 'ok');
+  });
 });
 
 async function saveDefaults() {
-  if ($('pjSettingsSaved').classList.contains('saving')) { showToast('Wait until the settings finish saving.', null, null, 'warn'); return; }
+  await saveSettingsNow();
+  if (settingsDirty || settingsSaving) { showToast('The settings could not be saved yet.', null, null, 'warn'); return; }
   const body = "New projects will start with this project's settings and the custom files they use. The series brief is not included. " +
     "The defaults are saved in the app's defaults folder; commit and push it to share them through Check for updates.";
   if (!await askConfirm({ title: 'Make these your default settings?', body, confirmLabel: 'Save as defaults' })) return;
@@ -2751,17 +2761,51 @@ const shortsActive = () => !!SHORTS.batch && ['running', 'paused'].includes(SHOR
 const fmtShortTime = s => `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, '0')}`;
 const shortUrl = (n, short) => projectApi(`/library/${n}/file?path=${enc('output/shorts/' + short.file)}`);
 
-async function makeShorts() {
-  const chapters = [...SELECTION];
+// Claude studies the chapters as one range and only those with a strong moment get shorts.
+async function startShorts(body, chapters) {
   shortsStarting = chapters;
-  navTo({ project: CURRENT_PROJECT.slug, view: 'shorts' });
-  const { ok, data } = await apiJson(projectApi('/shorts/batch'), 'POST', { chapters });
+  const { ok, data } = await apiJson(projectApi('/shorts/batch'), 'POST', body);
   shortsStarting = null;
   if (!ok) showToast(data.error || 'Could not start the shorts.', null, null, 'err');
   else if (data.skipped.length) {
     showToast('Skipped ' + data.skipped.map(s => `chapter ${s.n} (${s.reason})`).join(', ') + '.', null, null, 'warn');
   }
   await loadShorts();
+}
+
+function makeShorts() {
+  const chapters = [...SELECTION].sort((a, b) => a - b);
+  navTo({ project: CURRENT_PROJECT.slug, view: 'shorts' });
+  return startShorts({ chapters }, chapters);
+}
+
+function findShorts() {
+  const first = +$('shortsFrom').value, last = +$('shortsTo').value;
+  if (first > last) { showToast('Choose a first chapter that comes before the last one.', null, null, 'err'); return; }
+  const max = $('shortsMax').value.trim();
+  return startShorts({ first, last, max_shorts: max ? +max : null },
+    CURRENT_PROJECT.chapters.map(c => c.n).filter(n => n >= first && n <= last));
+}
+
+// The range menus keep the user's choice across the page's refreshes; they are only filled once per project.
+let shortsRangeFor = null;
+function fillShortsRange() {
+  const chapters = CURRENT_PROJECT.chapters;
+  if (shortsRangeFor === CURRENT_PROJECT.slug || !chapters.length) return;
+  shortsRangeFor = CURRENT_PROJECT.slug;
+  const hasVideo = c => ['rendered', 'complete'].includes(c.status);   // shorts are only made from chapters with a video
+  const options = chapters.map(c => `<option value="${c.n}">${escHtml(`${c.n} · ${c.title || 'Chapter ' + c.n}${hasVideo(c) ? '' : ' (no video)'}`)}</option>`).join('');
+  $('shortsFrom').innerHTML = $('shortsTo').innerHTML = options;
+  const ready = chapters.filter(c => ['rendered', 'complete'].includes(c.status));
+  $('shortsFrom').value = (ready[0] || chapters[0]).n;
+  $('shortsTo').value = (ready[ready.length - 1] || chapters[chapters.length - 1]).n;
+}
+
+// "chapters 1-10" for the range the running (or last) batch studies
+function shortsRangeText() {
+  const find = SHORTS.batch && SHORTS.batch.meta && SHORTS.batch.meta.find;
+  const n = find ? find.chapters : [];
+  return n.length > 1 ? `${n.length} chapters (${n[0]}\u2013${n[n.length - 1]})` : n.length ? `chapter ${n[0]}` : 'the chapters';
 }
 
 async function stopShorts() {
@@ -2775,6 +2819,7 @@ async function loadShorts() {
   const res = await fetch(projectApi('/shorts'), { cache: 'no-store' });
   SHORTS = await res.json();
   if (!res.ok) throw new Error(SHORTS.error || 'shorts unavailable');
+  fillShortsRange();
   renderShorts();
   if (shortsActive()) shortsTimer = setTimeout(() => {
     if (SCREEN === 'hub' && HUB_VIEW === 'shorts') loadShorts().catch(() => {});
@@ -2804,7 +2849,11 @@ const SHORT_PHASE = {
   wait: 'Waiting', choose: 'Choosing segments', render: 'Rendering', done: 'Done', failed: 'Failed', stopped: 'Stopped' };
 
 function renderShorts() {
-  const runs = SHORTS.batch ? SHORTS.batch.chapters.map(shortRun) : [];
+  let runs = SHORTS.batch ? SHORTS.batch.chapters.map(shortRun) : [];
+  // Once Claude has chosen, only the chapters it picked are shown; the one that carried the study is not a pick
+  const picked = SHORTS.batch && SHORTS.batch.meta && SHORTS.batch.meta.found && SHORTS.batch.meta.found.picked;
+  if (picked) runs = runs.filter(r => String(r.c.n) in picked);
+  $('shortsFindBtn').disabled = shortsActive() || !!shortsStarting;
   renderShortsHead();
   renderShortsJob(runs);
   const sig = JSON.stringify([SHORTS.chapters, runs.map(r => [r.c.n, r.phase, r.current, r.planned])]);
@@ -2830,7 +2879,7 @@ function renderShortsJob(runs) {
   let icon, tone, title, sub, overall = '', action = '', rows = '', total = 0;
   if (starting) {
     icon = '<span class="shspin"></span>'; tone = 'run'; title = 'Making shorts';
-    sub = `Starting the shorts for chapter(s) ${shortsStarting.join(', ')}...`;
+    sub = `Starting: Claude will study ${shortsStarting.length} chapter(s) for the moments worth a short...`;
   } else {
     total = runs.length ? runs.reduce((a, r) => a + r.pct, 0) / runs.length : 0;
     const done = runs.filter(r => r.phase === 'done').length;
@@ -2838,25 +2887,33 @@ function renderShortsJob(runs) {
       const live = runs.find(r => r.phase === 'render') || runs.find(r => r.phase === 'choose');
       icon = '<span class="shspin"></span>'; tone = 'run'; title = b.status === 'paused' ? 'Shorts paused' : 'Making shorts';
       sub = !live ? 'Waiting for the next step'
-        : live.phase === 'choose' ? 'Claude is picking the strongest segments of each chapter'
+        : live.phase === 'choose' ? `Claude is studying ${shortsRangeText()} for the moments that would catch viewers`
         : `Chapter ${live.c.n} · rendering short ${live.current || 1} of ${live.count || '?'}${live.planned[live.current - 1] ? ': ' + live.planned[live.current - 1].title : ''}`;
       overall = `${done} of ${runs.length} chapters · ${Math.round(total)}%`;
       action = '<button class="shbtn shstop" id="shortsStopBtn">■ Stop</button>';
     } else {
       const made = runs.reduce((a, r) => a + r.planned.length, 0);
       const stopped = b.status === 'cancelled';
+      const picked = Object.keys(((b.meta || {}).found || {}).picked || {}).length;
       icon = ic(stopped ? 'stop' : 'check', 15); tone = stopped ? 'warn' : 'ok';
-      title = stopped ? 'Shorts stopped' : 'Shorts ready';
-      sub = `${done} of ${runs.length} chapters finished · ${made} shorts made`;
+      title = stopped ? 'Shorts stopped' : made ? 'Shorts ready' : 'Nothing worth a short';
+      sub = stopped ? `${made} shorts planned before it stopped`
+        : made ? `Studied ${shortsRangeText()}: ${made} shorts from ${picked} chapter(s); the rest had no strong enough moment`
+        : `Nothing in ${shortsRangeText()} was strong enough for a short`;
       action = '<button class="shbtn" id="shortsDismissBtn">Dismiss</button>';
     }
     if (shortsActive()) rows = runs.map(shortRowHtml).join('');
   }
+  // chapters of the range that could not be used stay on screen with the job, not only in a toast
+  const left = (((b || {}).meta || {}).find || {}).skipped || [];
+  const note = left.length && !starting
+    ? `<div class="shjobnote">${ic('alert', 14)}<span>Left out of this run: ${left.map(s => `chapter ${s.n} (${escHtml(s.reason)})`).join(', ')}. ` +
+      'Shorts are made from chapters that have a finished video on this PC.</span></div>' : '';
   box.innerHTML = `<div class="shjob ${tone}">
     <div class="shjobhead"><span class="shjobicon">${icon}</span>
       <div class="shjobtext"><b>${escHtml(title)}</b><span>${escHtml(sub)}</span></div>
       <span class="shjobtotal">${overall}</span>${action}</div>
-    ${shortsActive() ? `<div class="shbar"><span id="shortsTotalBar" style="width:${total}%"></span></div>` : ''}${rows}</div>`;
+    ${note}${shortsActive() ? `<div class="shbar"><span id="shortsTotalBar" style="width:${total}%"></span></div>` : ''}${rows}</div>`;
   if ($('shortsStopBtn')) $('shortsStopBtn').onclick = stopShorts;
   if ($('shortsDismissBtn')) $('shortsDismissBtn').onclick = () => { shortsDismissed = b.created_at; renderShortsJob(runs); };
 }
@@ -2873,9 +2930,14 @@ function shortRowHtml(r) {
   const step = (key, label, value, on) => `<div class="shstep"><div class="shtrack"><span data-row="${c.n}" data-bar="${key}"
     class="${value >= 1 ? 'ok' : 'run'}" style="width:${value * 100}%"></span></div>
     <span class="${on ? 'on' : value >= 1 ? 'done' : ''}">${escHtml(label)}</span></div>`;
+  // while choosing, the row is the whole range's study, not the chapter that happens to carry it
+  const choosing = phase === 'choose';
+  const code = choosing ? 'RANGE' : `CH ${c.n}`;
+  const name = choosing ? `Studying ${shortsRangeText()}` : c.title || 'Chapter ' + c.n;
+  const rowSub = choosing ? 'Picking the best moments across all of them' : sub;
   return `<div class="shrow" data-row="${c.n}">
-    <span class="shcode">CH ${c.n}</span>
-    <div class="shrowname"><b>${escHtml(c.title || 'Chapter ' + c.n)}</b><span title="${escAttr(sub)}">${escHtml(sub)}</span></div>
+    <span class="shcode">${code}</span>
+    <div class="shrowname"><b>${escHtml(name)}</b><span title="${escAttr(rowSub)}">${escHtml(rowSub)}</span></div>
     <div class="shsteps">${step('find', 'Choose segments', r.cp, phase === 'choose')}${step('render', renderLabel, r.rp, phase === 'render')}</div>
     <span class="shstatus ${tone}">${escHtml(status)}<em>${phase === 'done' ? '' : r.pct + '%'}</em></span></div>`;
 }
@@ -2900,27 +2962,37 @@ function paintShortsProgress(runs) {
 
 function renderShortsGroups(runs) {
   const byChapter = new Map(runs.map(r => [r.c.n, r]));
-  const chapters = new Map(SHORTS.chapters.filter(c => c.shorts.length).map(c => [c.n, c]));
-  const numbers = [...new Set([...chapters.keys(), ...runs.filter(r => ['wait', 'choose', 'render'].includes(r.phase)).map(r => r.c.n)])]
+  const chapters = new Map(SHORTS.chapters.filter(c => c.shorts.length || c.plan.length).map(c => [c.n, c]));
+  const numbers = [...new Set([...chapters.keys(), ...runs.filter(r => ['wait', 'render'].includes(r.phase)).map(r => r.c.n)])]
     .sort((a, b) => a - b);
   $('shortsEmpty').hidden = numbers.length > 0 || shortsActive() || !!shortsStarting;
   const box = $('shortsGroups');
   box.innerHTML = '';
   numbers.forEach(n => {
     const run = byChapter.get(n);
-    const live = run && ['wait', 'choose', 'render'].includes(run.phase);
+    const live = run && ['wait', 'render'].includes(run.phase);
     const made = chapters.has(n) ? chapters.get(n).shorts : [];
     const title = chapters.has(n) ? chapters.get(n).title : run.c.title;
-    const sub = !live ? `${made.length} shorts` : run.phase === 'choose' ? 'choosing segments…'
-      : run.phase === 'wait' ? 'waiting to render' : 'rendering…';
+    // planned shorts that were never rendered (or whose video is gone) are listed too, so they can be deleted
+    const madeIds = new Set(made.map(s => s.id));
+    const unrendered = chapters.has(n) ? chapters.get(n).plan.filter(p => !madeIds.has(p.id)) : [];
+    const count = made.length + unrendered.length;
+    const sub = !live ? `${count} short${count === 1 ? '' : 's'}${unrendered.length ? ` · ${unrendered.length} not rendered` : ''}`
+      : run.phase === 'choose' ? 'choosing segments…' : run.phase === 'wait' ? 'waiting to render' : 'rendering…';
     const section = document.createElement('section');
     section.className = 'shgroup';
     section.innerHTML = `<div class="shgrouphead"><span class="shcode">CH ${n}</span><b>${escHtml(title || 'Chapter ' + n)}</b>
       <span class="${live ? 'run' : ''}">${sub}</span><i></i>
-      ${!live && made.length ? `<a class="shbtn ghost" href="${projectApi(`/shorts/${n}/zip`)}" download>${ic('download', 14)}Download all</a>` : ''}</div>
+      ${!live && made.length ? `<a class="shbtn ghost" href="${projectApi(`/shorts/${n}/zip`)}" download>${ic('download', 14)}Download all</a>` : ''}
+      ${!live && count ? `<button class="shbtn ghost shdelall" title="Delete all of this chapter's shorts">${ic('trash', 14)}Delete all</button>` : ''}</div>
       <div class="shgrid"></div>`;
     const grid = section.querySelector('.shgrid');
-    if (!live) made.forEach((s, i) => grid.appendChild(shortCardEl(n, s, i + 1)));
+    const delAll = section.querySelector('.shdelall');
+    if (delAll) delAll.onclick = () => deleteShorts(n, null, `all ${count} short${count === 1 ? '' : 's'} of chapter ${n}`);
+    if (!live) {
+      made.forEach(s => grid.appendChild(shortCardEl(n, s, s.id)));
+      unrendered.forEach(p => grid.appendChild(shortPlannedEl(n, p)));
+    }
     else if (run.planned.length) run.planned.forEach((p, i) =>
       grid.appendChild(made[i] && run.phase === 'render' ? shortCardEl(n, made[i], i + 1) : shortSkeletonEl(run, p, i + 1)));
     else grid.appendChild(shortSkeletonEl(run, null, 1));
@@ -2939,7 +3011,8 @@ function shortCardEl(n, short, number) {
       <span class="shmeta">lines ${short.first_line}–${short.last_line} · ${fmtSize(short.size)}</span>
       <div class="shactions"><button class="shdetails">${ic('chevdown', 13)}Details</button>
         <button class="shicon shcopytitle" title="Copy title">${ic('copy', 13)}</button>
-        <a class="shicon" href="${url}" download="${escAttr(short.file)}" title="Download">${ic('download', 14)}</a></div>
+        <a class="shicon" href="${url}" download="${escAttr(short.file)}" title="Download">${ic('download', 14)}</a>
+        <button class="shicon shdel" title="Delete this short">${ic('trash', 13)}</button></div>
       <div class="shdetailbody">
         <div class="shfield"><div><span>DESCRIPTION</span><button class="shcopy shcopydesc">${ic('copy', 13)}Copy</button></div><p>${escHtml(short.description)}</p></div>
         <div class="shfield why"><span>WHY THIS CLIP</span><p>${escHtml(short.reason)}</p></div></div></div>`;
@@ -2948,9 +3021,33 @@ function shortCardEl(n, short, number) {
     card.classList.toggle('open');
     card.classList.contains('open') ? shortsOpen.add(key) : shortsOpen.delete(key);
   };
+  card.querySelector('.shdel').onclick = () => deleteShorts(n, short.id, `"${short.title}"`);
   card.querySelector('.shcopytitle').onclick = e => copyShortText(short.title, e.currentTarget);
   card.querySelector('.shcopydesc').onclick = e => copyShortText(short.description, e.currentTarget);
   return card;
+}
+
+// A short that is in the chapter's plan but has no video (not rendered yet, or its video was deleted).
+function shortPlannedEl(n, plan) {
+  const card = document.createElement('article');
+  card.className = 'shcard shskel';
+  card.innerHTML = `<div class="shthumb skeleton"><span class="shsklabel">Not rendered</span>
+      <span class="shnum">#${plan.id}</span></div>
+    <div class="shinfo"><span class="shname" title="${escAttr(plan.title)}">${escHtml(plan.title)}</span>
+      <span class="shmeta">lines ${plan.first_line}–${plan.last_line}</span>
+      <div class="shactions"><button class="shicon shdel" title="Delete this short">${ic('trash', 13)}</button></div></div>`;
+  card.querySelector('.shdel').onclick = () => deleteShorts(n, plan.id, `"${plan.title}"`);
+  return card;
+}
+
+// Delete one short (`id`) or all of a chapter's shorts (`id` null), after asking.
+async function deleteShorts(n, id, what) {
+  if (!await askConfirm({ title: `Delete ${what}?`, body: 'The video and its place in the plan are removed. This cannot be undone.',
+                          confirmLabel: 'Delete' })) return;
+  const { ok, data } = await apiJson(projectApi(`/shorts/${n}${id == null ? '' : '/' + id}`), 'DELETE');
+  if (!ok) { showToast(data.error || 'Could not delete.', null, null, 'warn'); return; }
+  showToast('Deleted.', null, null, 'ok');
+  await loadShorts();
 }
 
 function shortSkeletonEl(run, planned, number) {
@@ -3647,7 +3744,7 @@ function paintActionStates() {
   $('runWhy').textContent = blocker;
   $('batchRunBtn').querySelector('span').textContent = SELECTION.size ? `Run pipeline for ${SELECTION.size}` : 'Run pipeline';
   $('shortsBtn').disabled = !SELECTION.size;
-  $('shortsBtn').title = SELECTION.size ? 'Pick the strongest segments of the selected chapters and render them as vertical shorts'
+  $('shortsBtn').title = SELECTION.size ? 'Study the selected chapters for the moments that would catch viewers and render only those as vertical shorts'
     : 'Select chapters with a finished video to make shorts from';
   $('shortsBtn').querySelector('span').textContent = SELECTION.size ? `Make shorts for ${SELECTION.size}` : 'Make shorts';
   paintTrackers();
@@ -4123,6 +4220,12 @@ function fillSettingsForm() {
   document.querySelector(`input[name=shBgMode][value="${sh.background.mode}"]`).checked = true;
   $('shBgFileName').textContent = sh.background.file ? sh.background.file.split('/').pop() : '';
   $('shBgDim').value = Math.round(sh.background.dim * 100);
+  $('shOwnAudio').checked = sh.own_audio;
+  $('shSoundBody').hidden = !sh.own_audio;
+  document.querySelector(`input[name=shMusicMode][value="${sh.music.mode}"]`).checked = true;
+  $('shMusicFileName').textContent = sh.music.file ? sh.music.file.split('/').pop() : '';
+  $('shNarrVol').value = Math.round(sh.audio.narration_vol * 100);
+  $('shMusicVol').value = Math.round(sh.audio.music_vol * 100);
 
   document.querySelector(`input[name=animStyle][value="${s.animation.style}"]`).checked = true;
   $('animDirection').value = s.animation.direction || 'left';
@@ -4156,18 +4259,18 @@ function fillSettingsForm() {
   updateSliderLabels();
   refreshWatermarkPreview();
   refreshBackgroundPreview();
-  setSettingsSaveState('ok', 'Autosaved');
+  refreshShortsLookPreview();
+  settingsDirty = false;
+  setSettingsSaveState('ok', 'Saved');
 }
 
-// settings save indicator - these fields autosave (debounced) on every change,
-// there is no explicit Save button; this badge is the only feedback that a
-// change actually persisted, so it always reflects the current state
-// (idle/saving/saved/failed), not just a transient message.
+// settings save indicator - this badge always reflects the current state
+// (unsaved/saving/saved/failed), not just a transient message.
 function setSettingsSaveState(kind, text) {
   const el = $('pjSettingsSaved');
   if (!el) return;
   el.textContent = text;
-  el.classList.remove('saving', 'ok', 'err');
+  el.classList.remove('saving', 'ok', 'err', 'dirty');
   el.classList.add(kind);
 }
 
@@ -4184,6 +4287,8 @@ function updateSliderLabels() {
   $('shWmSpacingLbl').textContent = $('shWmSpacing').value + '%';
   $('shWmAngleLbl').textContent = $('shWmAngle').value + '\u00b0';
   $('shBgDimLbl').textContent = $('shBgDim').value + '%';
+  $('shNarrVolLbl').textContent = $('shNarrVol').value + '%';
+  $('shMusicVolLbl').textContent = $('shMusicVol').value + '%';
   $('animDurationLbl').textContent = (+$('animDuration').value / 100).toFixed(2) + 's';
 }
 
@@ -4270,6 +4375,9 @@ function currentSettingsFromForm() {
         mode: document.querySelector('input[name=shBgMode]:checked').value,
         dim: (+$('shBgDim').value) / 100,
       },
+      own_audio: $('shOwnAudio').checked,
+      music: { mode: document.querySelector('input[name=shMusicMode]:checked').value },
+      audio: { narration_vol: (+$('shNarrVol').value) / 100, music_vol: (+$('shMusicVol').value) / 100 },
     },
     animation: {
       style: document.querySelector('input[name=animStyle]:checked').value,
@@ -4303,26 +4411,50 @@ function currentSettingsFromForm() {
   };
 }
 
-let settingsSaveTimer = null;
-function saveSettingsDebounced() {
+// Settings are saved on a timer (every SETTINGS_AUTOSAVE_MS, only when something changed) and by the Save button.
+// A change only marks the form dirty and refreshes the live previews, which are built from the form's own values,
+// so they never wait on a save.
+const SETTINGS_AUTOSAVE_MS = 15000;
+let settingsDirty = false, settingsSaving = false, settingsAgain = false;
+
+function saveSettingsDebounced() {   // name kept: it is every settings control's change handler
   updateSliderLabels();
   refreshVoiceActive();
+  refreshShortsSample();
   refreshWatermarkPreview();
   refreshBackgroundPreview();
-  setSettingsSaveState('saving', 'Saving…');
-  clearTimeout(settingsSaveTimer);
-  settingsSaveTimer = setTimeout(async () => {
-    try {
-      const res = await fetch(`/api/projects/${encodeURIComponent(CURRENT_PROJECT.slug)}/settings`,
-        { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(currentSettingsFromForm()) });
-      const d = await res.json();
-      if (!res.ok) throw new Error(d.error || 'save failed');
-      CURRENT_PROJECT.settings = d.settings;
-      paintBlurTool();
-      setSettingsSaveState('ok', 'Autosaved ' + new Date().toLocaleTimeString());
-    } catch (e) { setSettingsSaveState('err', 'Save failed'); }
-  }, 400);
+  refreshShortsLookPreview();
+  settingsDirty = true;
+  if (!settingsSaving) setSettingsSaveState('dirty', 'Unsaved changes');
 }
+
+async function saveSettingsNow() {
+  if (!CURRENT_PROJECT) return;
+  if (settingsSaving) { settingsAgain = true; return; }   // changed during a save: saved again right after it
+  if (!settingsDirty) return;
+  settingsSaving = true; settingsDirty = false;
+  setSettingsSaveState('saving', 'Saving…');
+  btnBusy($('settingsSaveBtn'), true);
+  try {
+    const res = await fetch(`/api/projects/${encodeURIComponent(CURRENT_PROJECT.slug)}/settings`,
+      { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(currentSettingsFromForm()) });
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.error || 'save failed');
+    CURRENT_PROJECT.settings = d.settings;
+    paintBlurTool();
+    setSettingsSaveState('ok', 'Saved ' + new Date().toLocaleTimeString());
+  } catch (e) {
+    settingsDirty = true;
+    setSettingsSaveState('err', 'Save failed');
+  } finally {
+    settingsSaving = false;
+    btnBusy($('settingsSaveBtn'), false);
+  }
+  if (settingsAgain) { settingsAgain = false; saveSettingsNow(); }
+}
+
+setInterval(() => { if (SCREEN === 'settings') saveSettingsNow(); }, SETTINGS_AUTOSAVE_MS);
+window.addEventListener('beforeunload', e => { if (settingsDirty || settingsSaving) e.preventDefault(); });
 
 let wmPreviewTimer = null;
 function refreshWatermarkPreview() {
@@ -4371,6 +4503,40 @@ function refreshBackgroundPreview() {
     setPreviewImage('bgPreviewBox', `/api/projects/${encodeURIComponent(CURRENT_PROJECT.slug)}/preview/background.png?${q}`);
   }, 250);
 }
+// The shorts' own watermark and background on a vertical 9:16 canvas, over the chosen frame layout.
+// Hidden (and not fetched) while the shorts use the main video's look.
+let shLookPreviewTimer = null;
+function refreshShortsLookPreview() {
+  clearTimeout(shLookPreviewTimer);
+  const bgMode = document.querySelector('input[name=shBgMode]:checked').value;
+  $('shBgVideoHint').hidden = bgMode !== 'video';
+  shLookPreviewTimer = setTimeout(() => {
+    if (!CURRENT_PROJECT || !$('shOwnLook').checked) return;
+    const slug = encodeURIComponent(CURRENT_PROJECT.slug);
+    const layout = document.querySelector('input[name=shLayout]:checked').value;
+    setPreviewImage('shWmPreviewBox', `/api/projects/${slug}/preview/watermark.png?` + new URLSearchParams({
+      shorts: 1, layout, enabled: $('shWmEnabled').checked ? '1' : '0',
+      type: document.querySelector('input[name=shWmType]:checked').value, text: $('shWmText').value,
+      opacity: (+$('shWmOpacity').value) / 100, size: (+$('shWmSize').value) / 100,
+      spacing: (+$('shWmSpacing').value) / 100, angle: $('shWmAngle').value, t: Date.now() }));
+    const dim = (+$('shBgDim').value) / 100;
+    if (bgMode === 'video') {
+      // a real looped <video>, as in the main background preview
+      const box = $('shBgPreviewBox');
+      box.innerHTML = '';
+      const video = document.createElement('video');
+      video.autoplay = true; video.loop = true; video.muted = true; video.playsInline = true;
+      video.style.cssText = 'width:100%;height:100%;object-fit:cover;display:block';
+      video.style.filter = `brightness(${dim})`;
+      video.onerror = () => { box.innerHTML = '<span class="phmsg">No video chosen yet</span>'; };
+      video.src = `/api/projects/${slug}/asset/shorts_background?t=${Date.now()}`;
+      box.appendChild(video);
+    } else {
+      setPreviewImage('shBgPreviewBox', `/api/projects/${slug}/preview/background.png?` +
+        new URLSearchParams({ shorts: 1, mode: bgMode, dim, t: Date.now() }));
+    }
+  }, 250);
+}
 function setPreviewImage(boxId, url) {
   const box = $(boxId);
   const img = new Image();
@@ -4379,8 +4545,61 @@ function setPreviewImage(boxId, url) {
   img.src = url;
 }
 
+// --- the sample of the shorts' sound ------------------------------------------------
+// The server mixes a few of the project's narration lines over the music with the render's own audio graph
+// (routes/projects.py, audio_sample.py) at the volumes on screen, which are those of the shorts when they have
+// their own and the main video's otherwise. Once a sample has been played, every change re-mixes it and carries on
+// from the same place.
+let shSampleTimer = null, shSampleSeq = 0, shSampleLive = false;
+
+function shortsSoundQuery() {
+  const own = $('shOwnAudio').checked;
+  const [mode, narr, music] = own ? ['shMusicMode', 'shNarrVol', 'shMusicVol'] : ['musicMode', 'narrVol', 'musicVol'];
+  return new URLSearchParams({
+    own: own ? 1 : 0, mode: document.querySelector(`input[name=${mode}]:checked`).value,
+    narration_vol: (+$(narr).value) / 100, music_vol: (+$(music).value) / 100 });
+}
+
+function refreshShortsSample() {
+  if (!shSampleLive) return;
+  clearTimeout(shSampleTimer);
+  shSampleTimer = setTimeout(() => mixShortsSample(true), 350);
+}
+
+async function mixShortsSample(keepPlace) {
+  if (!CURRENT_PROJECT) return;
+  const seq = ++shSampleSeq, audio = $('shSampleAudio'), hint = $('shSampleHint');
+  hint.textContent = 'Mixing\u2026';
+  try {
+    const res = await fetch(`/api/projects/${encodeURIComponent(CURRENT_PROJECT.slug)}/preview/audio.wav?${shortsSoundQuery()}`);
+    if (!res.ok) throw new Error((await res.json()).error || 'Could not mix the sample.');
+    const blob = await res.blob();
+    if (seq !== shSampleSeq) return;   // a newer mix is already on its way
+    const resume = keepPlace && !audio.hidden && !audio.ended;
+    const at = resume ? audio.currentTime : 0, playing = !resume || !audio.paused;
+    const previous = audio.src;
+    audio.onloadedmetadata = () => {
+      audio.currentTime = Math.min(at, Math.max(0, audio.duration - 0.2));
+      if (playing) audio.play().catch(() => {});
+    };
+    audio.src = URL.createObjectURL(blob);
+    audio.hidden = false;
+    if (previous.startsWith('blob:')) URL.revokeObjectURL(previous);
+    shSampleLive = true;
+    hint.textContent = $('shOwnAudio').checked ? 'Playing the shorts\' own sound.' : 'Playing the main video\'s sound (the shorts have none of their own).';
+  } catch (e) {
+    if (seq === shSampleSeq) hint.textContent = e.message;
+  }
+}
+
+async function playShortsSample() {
+  btnBusy($('shSampleBtn'), true);
+  try { await mixShortsSample(false); } finally { btnBusy($('shSampleBtn'), false); }
+}
+
 const ASSET_UI = {
   music: { name: 'musicName', browse: 'musicBrowseBtn' },
+  shorts_music: { name: 'shMusicFileName', browse: 'shMusicBrowseBtn' },
   voice: { name: 'voiceName', browse: 'voiceBrowseBtn' },
   watermark: { name: 'wmFileName', browse: 'wmBrowseBtn' },
   background: { name: 'bgFileName', browse: 'bgBrowseBtn' },
@@ -4451,6 +4670,8 @@ async function uploadAsset(kind, file) {
     if (kind === 'voice') { CURRENT_PROJECT.settings.voice.file = d.path; refreshVoiceActive(); }
     if (kind === 'watermark') refreshWatermarkPreview();
     if (kind === 'background') refreshBackgroundPreview();
+    if (kind === 'shorts_watermark' || kind === 'shorts_background') refreshShortsLookPreview();
+    if (kind === 'music' || kind === 'shorts_music') refreshShortsSample();
   } catch (e) {
     setSettingsSaveState('err', 'Upload failed');
     setStatus('Upload error: ' + e.message, true);
@@ -4774,13 +4995,15 @@ document.querySelectorAll('input[name=voiceEngine]').forEach(el => el.onchange =
 $('kokoroVoice').onchange = saveSettingsDebounced;
 $('kokoroPreviewBtn').onclick = previewKokoro;
 loadKokoroVoices();
-['musicMode', 'voiceMode', 'wmType', 'bgMode', 'shWmType', 'shBgMode', 'shLayout', 'vidLayout', 'animStyle'].forEach(name => {
+['musicMode', 'voiceMode', 'wmType', 'bgMode', 'shWmType', 'shBgMode', 'shLayout', 'shMusicMode', 'vidLayout', 'animStyle'].forEach(name => {
   document.querySelectorAll(`input[name=${name}]`).forEach(el => el.onchange = saveSettingsDebounced);
 });
 $('wmEnabled').onchange = saveSettingsDebounced;
 document.querySelectorAll('input[name=shLayout]').forEach(el =>
   el.addEventListener('change', () => { $('shCoverHint').hidden = el.value !== 'cover' || !el.checked; }));
 $('shOwnLook').onchange = () => { $('shLookBody').hidden = !$('shOwnLook').checked; saveSettingsDebounced(); };
+$('shOwnAudio').onchange = () => { $('shSoundBody').hidden = !$('shOwnAudio').checked; saveSettingsDebounced(); };
+$('shSampleBtn').onclick = playShortsSample;
 $('shWmEnabled').onchange = saveSettingsDebounced;
 $('shWmText').oninput = saveSettingsDebounced;
 $('wmText').oninput = saveSettingsDebounced;
@@ -4792,7 +5015,7 @@ $('animZoomAmount').oninput = () => {
 };
 $('framingBlur').onchange = saveSettingsDebounced;
 ['wmOpacity', 'wmSize', 'wmSpacing', 'wmAngle', 'bgDim', 'shWmOpacity', 'shWmSize', 'shWmSpacing', 'shWmAngle', 'shBgDim',
- 'animDuration', 'narrVol', 'musicVol'].forEach(id => { $(id).oninput = saveSettingsDebounced; });
+ 'animDuration', 'narrVol', 'musicVol', 'shNarrVol', 'shMusicVol'].forEach(id => { $(id).oninput = saveSettingsDebounced; });
 $('scriptTone').onchange = saveSettingsDebounced;
 $('scriptNarrationType').onchange = saveSettingsDebounced;
 $('scriptStyleRef').oninput = saveSettingsDebounced;
@@ -4814,12 +5037,16 @@ $('wmFile').onchange = e => uploadAsset('watermark', e.target.files[0]);
 $('bgFile').onchange = e => uploadAsset('background', e.target.files[0]);
 $('shWmFile').onchange = e => uploadAsset('shorts_watermark', e.target.files[0]);
 $('shBgFile').onchange = e => uploadAsset('shorts_background', e.target.files[0]);
+$('shMusicFile').onchange = e => uploadAsset('shorts_music', e.target.files[0]);
 $('musicBrowseBtn').onclick = () => $('musicFile').click();
 $('voiceBrowseBtn').onclick = () => $('voiceFile').click();
 $('wmBrowseBtn').onclick = () => $('wmFile').click();
 $('bgBrowseBtn').onclick = () => $('bgFile').click();
 $('shWmBrowseBtn').onclick = () => $('shWmFile').click();
 $('shBgBrowseBtn').onclick = () => $('shBgFile').click();
+$('shMusicBrowseBtn').onclick = () => $('shMusicFile').click();
+$('shortsFindBtn').onclick = findShorts;
+$('settingsSaveBtn').onclick = saveSettingsNow;
 
 $('dlBtn').onclick = doDownload;
 $('loadPdfBtn').onclick = loadPdf;

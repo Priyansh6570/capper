@@ -222,18 +222,28 @@ def batch_env(slug: str) -> batch.BatchEnv:
 
 
 def shorts_env(slug: str) -> batch.BatchEnv:
-    """The Shorts pipeline: find the strongest segments of a finished chapter with Claude, then render
-    them as vertical videos. Everything but the steps is the project's batch environment."""
+    """The Shorts pipeline: Claude studies a range of finished chapters for the moments that would catch
+    viewers, then those moments are rendered as vertical videos. The range is the batch's `meta["find"]`
+    ({chapters, max_shorts}) and is studied once, as the first chapter's find step; the chapters it picked
+    from join the batch there to be rendered. Everything but the steps is the project's batch environment."""
     def chapter_id(n: int) -> str:
         return f"{slug}_ch{n}"
 
     def find(b: batch.Batch, n: int) -> None:
         b.gate()
+        wanted = b.meta.get("find") or {"chapters": [n]}   # a batch saved before ranges: its own chapter
         job = new_shorts_job(chapter_id(n), "shorts_find", slug, str(n))
+        job.chapters, job.max_shorts = wanted["chapters"], wanted.get("max_shorts")
         job.before_claude_call = b.gate
         _run_in_batch(b, n, job)
+        b.set_meta(found={"analyzed": job.analyzed, "picked": {str(c): count for c, count in job.picked.items()}})
+        b.join({c: ["shorts_render"] for c in job.picked if c != n})
 
     def render(b: batch.Batch, n: int) -> None:
+        found = b.meta.get("found")
+        if found is not None and str(n) not in found["picked"]:
+            b.log(n, "No moment of this chapter was picked, so nothing to render.")
+            return
         if not shorts.read_plan(projects.chapter_work_path(slug, n)):
             b.log(n, "No segment was strong enough for a short, so nothing to render.")
             return

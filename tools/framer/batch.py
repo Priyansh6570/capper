@@ -77,6 +77,7 @@ class Batch:
         self.finished_at = data.get("finished_at")
         self.ignore = data["ignore"]                  # thresholds the user chose to continue past
         self.chapters = data["chapters"]
+        self.meta: dict = data.get("meta") or {}      # what the creator of the batch wants kept with it (shorts: the range)
         self.hold: dict | None = None                 # a reached threshold awaiting the user's choice
         self._live: dict[int, dict] = {}              # per chapter: message, job_id (not persisted)
         self._logs: dict[int, list[str]] = {}         # per chapter: everything its steps reported
@@ -104,12 +105,13 @@ class Batch:
             threading.Thread(target=self._lane, args=(stage, self._generation), daemon=True).start()
 
     @classmethod
-    def create(cls, path: Path, env: BatchEnv, plans: dict[int, list[str]]) -> "Batch":
+    def create(cls, path: Path, env: BatchEnv, plans: dict[int, list[str]], meta: dict | None = None) -> "Batch":
         """`plans` maps each chapter to the steps to run, in pipeline order; every other step the
-        chapter already has on disk counts as done."""
+        chapter already has on disk counts as done. `meta` is kept with the batch (see `set_meta`)."""
         chapters = [_new_chapter(env, n, plan) for n, plan in sorted(plans.items())]
         batch = cls(path, env, {"status": "running", "created_at": _now(), "finished_at": None,
-                                "ignore": {w: False for w in claude_usage.WINDOWS}, "chapters": chapters})
+                                "ignore": {w: False for w in claude_usage.WINDOWS}, "chapters": chapters,
+                                "meta": meta or {}})
         batch._save()
         return batch
 
@@ -128,7 +130,7 @@ class Batch:
     def _save(self) -> None:
         atomic_write_json(self.path, {"status": self.status, "created_at": self.created_at,
                                       "finished_at": self.finished_at, "ignore": self.ignore,
-                                      "chapters": self.chapters}, backup=False)
+                                      "chapters": self.chapters, "meta": self.meta}, backup=False)
 
     def _load_times(self) -> dict[str, list[float]]:
         try:
@@ -331,6 +333,23 @@ class Batch:
             self._closed = True
             self._cond.notify_all()
 
+    def set_meta(self, **values) -> None:
+        """Keep `values` with the batch (saved with it, shown in its view)."""
+        with self._cond:
+            self.meta.update(values)
+            self._save()
+
+    def join(self, plans: dict[int, list[str]]) -> None:
+        """Add chapters to this batch from inside one of its own steps, which is still running: like
+        `enqueue`, but the chapter running the step is left as it is."""
+        with self._cond:
+            for n, plan in plans.items():
+                if not any(c["n"] == n for c in self.chapters):
+                    self.chapters = sorted([*self.chapters, _new_chapter(self.env, n, plan)], key=lambda c: c["n"])
+                    self.log(n, f"== queued to run {' + '.join(plan)} ==")
+            self._save()
+            self._cond.notify_all()
+
     def enqueue(self, plans: dict[int, list[str]]) -> None:
         """Add `plans` (chapter -> steps to run) to this running batch: chapters it already holds start
         over with their new plan, others join. A chapter still working on a step can't be changed."""
@@ -458,7 +477,7 @@ class Batch:
                                  "job": job, "warnings": warnings, "claude": self.env.claude_total(n),
                                  "finish_at": finish.get(n)})
             return {"status": self.status, "created_at": self.created_at, "finished_at": self.finished_at,
-                    "hold": self.hold, "disk_hold": None if self._pinned is None else
+                    "hold": self.hold, "meta": self.meta, "disk_hold": None if self._pinned is None else
                     {"finishing": sorted(self._pinned), "offloading": self._offloading}, "ignore": dict(self.ignore), "chapters": chapters,
                     "finish_at": max(finish.values(), default=None)}
 

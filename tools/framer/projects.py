@@ -234,8 +234,12 @@ def default_settings() -> dict:
         # and a background of their own, with the same fields as the main ones.
         # `layout`: "frame" shows each frame whole over the background, "cover" fills the screen with it and puts
         # the watermark above.
+        # `own_audio` gives them a music track and narration / music volumes of their own too (`music`, `audio`,
+        # the same fields as the main ones).
         "shorts": {"layout": "frame", "own_look": False, "watermark": _default_watermark(),
-                   "background": _default_background()},
+                   "background": _default_background(),
+                   "own_audio": False, "music": {"mode": "default", "file": None},
+                   "audio": {"narration_vol": 2.5, "music_vol": 0.03}},
         # Frame entry/exit animation for stage 7's render. "fade"/0.35s matches the crossfade
         # s7_assemble.py has always hardcoded. `zoom` alternates a slow zoom in / out per still
         # (peak scale `zoom_amount`), independent of the transition style; see s7_assemble.
@@ -659,7 +663,7 @@ def derive_all(slug: str) -> dict:
 # settings + media snapshot for stage 7 (see stages/s7_assemble.py)
 # --------------------------------------------------------------------------- #
 VALID_ASSET_KINDS = ("music", "voice", "watermark", "background", "intro", "outro",
-                     "shorts_watermark", "shorts_background")
+                     "shorts_watermark", "shorts_background", "shorts_music")
 _ASSET_EXTS = {
     "music": {".mp3", ".wav", ".m4a", ".ogg", ".oga", ".aac", ".flac"},
     "voice": {".wav"},          # Chatterbox reference clip - wav only
@@ -673,6 +677,7 @@ _ASSET_EXTS = {
 }
 _ASSET_EXTS["shorts_watermark"] = _ASSET_EXTS["watermark"]
 _ASSET_EXTS["shorts_background"] = _ASSET_EXTS["background"]
+_ASSET_EXTS["shorts_music"] = _ASSET_EXTS["music"]
 
 
 def update_settings(slug: str, settings: dict) -> dict:
@@ -694,12 +699,13 @@ def update_settings(slug: str, settings: dict) -> dict:
             voice["engine"] = "chatterbox"
         if voice.get("kokoro_voice") not in tts_kokoro.VOICES:
             voice["kokoro_voice"] = tts_kokoro.DEFAULT_VOICE
-        music = project["settings"]["music"]
-        if music.get("mode") not in ("default", "file", "none"):
-            music["mode"] = "default"
-        audio = project["settings"]["audio"]
-        audio["narration_vol"] = max(0.5, min(6.0, float(audio.get("narration_vol", 2.5))))
-        audio["music_vol"] = max(0.0, min(0.3, float(audio.get("music_vol", 0.03))))
+        shorts["own_audio"] = bool(shorts.get("own_audio"))
+        for music, audio in ((project["settings"]["music"], project["settings"]["audio"]),
+                             (shorts["music"], shorts["audio"])):
+            if music.get("mode") not in ("default", "file", "none"):
+                music["mode"] = "default"
+            audio["narration_vol"] = max(0.5, min(6.0, float(audio.get("narration_vol", 2.5))))
+            audio["music_vol"] = max(0.0, min(0.3, float(audio.get("music_vol", 0.03))))
         for bg in (project["settings"]["background"], shorts["background"]):
             bg["dim"] = max(0.1, min(1.0, float(bg.get("dim", 0.85))))
             if bg.get("mode") not in ("blur", "image", "video"):
@@ -806,27 +812,34 @@ def _background_snapshot(slug: str, background: dict) -> Optional[dict]:
             "kind": background.get("mode")}
 
 
-def media_settings_snapshot(slug: str, n) -> dict:
+def _music_snapshot(slug: str, music: dict, audio: dict) -> dict:
+    """A music track and the volumes as stage 7 reads them: `music`, `music_off` and `audio`."""
+    return {"music": _resolved_str(slug, music.get("file")) if music.get("mode") == "file" else None,
+            "music_off": music.get("mode") == "none", "audio": dict(audio)}
+
+
+def media_settings_snapshot(slug: str, n, project: Optional[dict] = None) -> dict:
     """Resolve a project's settings into ABSOLUTE paths for stages 6+7 to
     consume, with defaults folded in (None fields mean "use the built-in
     default"). `voice` and `tts` are read by stage 6 (s6_tts) for Chatterbox cloning or Kokoro;
     `music`/`watermark`/`background` are read by stage 7 (s7_assemble). `tone` is chapter `n`'s
-    tone, which stage 6 turns into voice delivery."""
-    project = load(slug)
+    tone, which stage 6 turns into voice delivery. `project` is the already loaded project, when the
+    caller has it (loading reads every chapter's file)."""
+    project = project or load(slug)
     s = project["settings"]
-    music = s["music"]
     voice = s["voice"]
     out = {
-        "music": _resolved_str(slug, music.get("file")) if music.get("mode") == "file" else None,
-        "music_off": music.get("mode") == "none",
-        "audio": dict(s["audio"]),
+        **_music_snapshot(slug, s["music"], s["audio"]),
         "voice": _resolved_str(slug, voice.get("file")) if voice.get("mode") == "file" else None,
         "tts": {"engine": voice["engine"], "kokoro_voice": voice["kokoro_voice"]},
         "tone": chapter_tone(project, n),
         "watermark": _watermark_snapshot(slug, s["watermark"]),
         "background": _background_snapshot(slug, s["background"]),
-        # `look`: what the shorts show in place of the main watermark and background, when they have their own
+        # `look`: what the shorts show in place of the main watermark and background, when they have their own;
+        # `sound`: their music and volumes in place of the main ones (same keys as above)
         "shorts": {"layout": s["shorts"]["layout"],
+                   "sound": _music_snapshot(slug, s["shorts"]["music"], s["shorts"]["audio"])
+                            if s["shorts"]["own_audio"] else None,
                    "look": {"watermark": _watermark_snapshot(slug, s["shorts"]["watermark"]),
                             "background": _background_snapshot(slug, s["shorts"]["background"])}
                            if s["shorts"]["own_look"] else None},
@@ -841,14 +854,20 @@ def media_settings_snapshot(slug: str, n) -> dict:
     return out
 
 
-def write_media_snapshot(slug: str, n) -> Optional[Path]:
+def write_media_snapshot(slug: str, n, project: Optional[dict] = None) -> Optional[Path]:
     """Write the resolved media_settings.json into one chapter's work dir, if
     that chapter has ever been worked on (its work dir already exists)."""
     work = chapter_dir(slug, n) / "work"
     if not work.is_dir():
         return None
     path = work / "media_settings.json"
-    _atomic_write(path, json.dumps(media_settings_snapshot(slug, n), indent=2, ensure_ascii=False))
+    text = json.dumps(media_settings_snapshot(slug, n, project), indent=2, ensure_ascii=False)
+    try:
+        if path.read_text(encoding="utf-8") == text:
+            return path   # unchanged: no write, and nothing for a synced drive to re-upload
+    except OSError:
+        pass
+    _atomic_write(path, text)
     return path
 
 
@@ -856,7 +875,7 @@ def write_all_media_snapshots(slug: str) -> list[Path]:
     project = load(slug)
     written = []
     for ch in project["chapters"]:
-        p = write_media_snapshot(slug, ch["n"])
+        p = write_media_snapshot(slug, ch["n"], project)
         if p:
             written.append(p)
     return written

@@ -28,15 +28,47 @@ def api_shorts(slug):
         made = shorts.rendered(projects.chapter_output_path(slug, ch["n"]))
         planned = shorts.read_plan(projects.chapter_work_path(slug, ch["n"]))
         if made or planned:
-            chapters.append({"n": ch["n"], "title": ch["title"], "planned": len(planned), "shorts": made})
+            chapters.append({"n": ch["n"], "title": ch["title"], "planned": len(planned), "shorts": made,
+                             "plan": [{k: s.get(k) for k in ("id", "title", "description", "reason", "first_line",
+                                                              "last_line", "duration_s", "score")} for s in planned]})
     current = SHORTS_BATCHES.get(slug)
     view = current.view(job_summary) if current else None
     for run in view["chapters"] if view else []:
         run["title"] = next((c["title"] for c in project["chapters"] if c["n"] == run["n"]), "")
-        plan = shorts.read_plan(projects.chapter_work_path(slug, run["n"])) if "shorts_find" in run["completed"] else None
+        found = "shorts_find" in run["completed"] or "shorts_find" not in run["plan"]
+        plan = shorts.read_plan(projects.chapter_work_path(slug, run["n"])) if found else None
         run["planned"] = None if plan is None else [
             {k: s[k] for k in ("title", "first_line", "last_line", "duration_s")} for s in plan]
     return jsonify(chapters=chapters, batch=view)
+
+
+def _delete_guard(slug: str, n: int):
+    """An error response when chapter n's shorts cannot be deleted now, else None."""
+    if not projects.exists(slug) or n not in {c["n"] for c in projects.load(slug)["chapters"]}:
+        return jsonify(error="No such chapter."), 404
+    current = SHORTS_BATCHES.get(slug)
+    if current and current.active:
+        return jsonify(error="Shorts are being made for this project; stop them first."), 409
+    return None
+
+
+@bp.delete("/api/projects/<slug>/shorts/<int:n>")
+def api_shorts_delete_chapter(slug, n):
+    """Delete all of chapter n's shorts: the plan and the videos."""
+    if (refused := _delete_guard(slug, n)):
+        return refused
+    shorts.clear(projects.chapter_work_path(slug, n), projects.chapter_output_path(slug, n))
+    return jsonify(ok=True)
+
+
+@bp.delete("/api/projects/<slug>/shorts/<int:n>/<int:short_id>")
+def api_shorts_delete_one(slug, n, short_id):
+    """Delete one short of chapter n: its video and its place in the plan."""
+    if (refused := _delete_guard(slug, n)):
+        return refused
+    if not shorts.delete_short(projects.chapter_work_path(slug, n), projects.chapter_output_path(slug, n), short_id):
+        return jsonify(error="No such short."), 404
+    return jsonify(ok=True)
 
 
 @bp.get("/api/projects/<slug>/shorts/<int:n>/zip")
@@ -58,35 +90,38 @@ def api_shorts_zip(slug, n):
 
 @bp.post("/api/projects/<slug>/shorts/batch")
 def api_shorts_start(slug):
-    """Body: JSON {chapters: [n, ...]}. Makes shorts for those chapters that have a finished video
-    (re-running a chapter replaces its shorts); the rest are reported as skipped. A Shorts batch that is
-    already running takes them on as well."""
+    """Body: JSON {chapters: [n, ...]} or {first, last} (a range), and optionally {max_shorts}. Claude studies
+    those chapters that have a finished video as one range and the shorts it finds, in whichever chapters have a
+    strong moment, are rendered; the other chapters get none, and any shorts they already have stay as they
+    are. The rest of the range is reported as skipped. A chapter whose moments are picked again has its
+    shorts replaced."""
     if not projects.exists(slug):
         return jsonify(error=f"No such project: {slug}"), 404
     known = {c["n"] for c in projects.load(slug)["chapters"]}
+    body = request.get_json(silent=True) or {}
     try:
-        numbers = sorted({int(n) for n in (request.get_json(silent=True) or {}).get("chapters") or []})
-    except (TypeError, ValueError):
-        numbers = []
-    if not numbers or not known.issuperset(numbers):
-        return jsonify(error="Choose chapters of this project."), 400
+        numbers = ({n for n in known if int(body["first"]) <= n <= int(body["last"])} if "first" in body
+                   else {int(n) for n in body.get("chapters") or []})
+        max_shorts = int(body["max_shorts"]) if body.get("max_shorts") not in (None, "") else None
+    except (TypeError, ValueError, KeyError):
+        numbers, max_shorts = set(), None
+    if not numbers or not known.issuperset(numbers) or (max_shorts is not None and max_shorts < 1):
+        return jsonify(error="Choose chapters of this project, and a number of shorts of 1 or more."), 400
+    numbers = sorted(numbers)
     skipped = [{"n": n, "reason": reason} for n in numbers if (reason := shorts_blocker(slug, n))]
     eligible = [n for n in numbers if n not in {s["n"] for s in skipped}]
     if not eligible:
         return jsonify(error="None of these chapters can have shorts yet: " +
                              "; ".join(f"chapter {s['n']} {s['reason']}" for s in skipped) + "."), 409
-    plans = {n: list(batch.SHORTS_STAGES) for n in eligible}
     with BATCH_LOCK:
         previous = SHORTS_BATCHES.get(slug)
         if previous and previous.active:
-            try:
-                previous.enqueue(plans)
-            except ValueError as e:
-                return jsonify(error=str(e)), 409
-        else:
-            if previous:
-                previous.close()
-            SHORTS_BATCHES[slug] = batch.Batch.create(shorts_batch_path(slug), shorts_env(slug), plans)
+            return jsonify(error="Shorts are already being made for this project; wait for them or stop them first."), 409
+        if previous:
+            previous.close()
+        SHORTS_BATCHES[slug] = batch.Batch.create(
+            shorts_batch_path(slug), shorts_env(slug), {eligible[0]: list(batch.SHORTS_STAGES)},
+            meta={"find": {"chapters": eligible, "max_shorts": max_shorts, "skipped": skipped}})
     return jsonify(ok=True, started=eligible, skipped=skipped)
 
 

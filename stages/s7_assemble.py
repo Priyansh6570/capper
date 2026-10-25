@@ -791,51 +791,55 @@ def _build_filtergraph(items: list[dict], music_in: int | None, total: float,
         rest.append(f"{backdrop}{vlabel}overlay=x=0:y=0:format=yuv420[vout]")
         vlabel = "[vout]"
 
-    # --- audio: delay each narration onto the timeline, mix, duck music ---
     # Narration inputs were appended in order for the beats that have audio.
-    narr_labels: list[str] = []
     a_in = n if back_in is None else 2 * n  # first audio input index
+    narration = []
     for it in items:
-        if not it["audio"]:
-            continue
-        delay = max(0, int(round(it["start"] * 1000)))
-        lab = f"[na{a_in}]"
-        rest.append(f"[{a_in}:a]aresample={AUDIO_SR},aformat=channel_layouts=stereo,"
-                     f"volume={narration_vol},alimiter=limit=0.95,adelay={delay}:all=1{lab}")
-        narr_labels.append(lab)
-        a_in += 1
+        if it["audio"]:
+            narration.append((a_in, max(0, int(round(it["start"] * 1000)))))
+            a_in += 1
+    audio, alabel = _audio_filters(narration, music_in, narration_vol, music_vol)
+    rest += audio
+
+    graphs = [video, rest] if zoom else [video + rest]
+    return [";".join(graph) for graph in graphs if graph], vlabel, alabel
+
+
+def _audio_filters(narration: list[tuple[int, int]], music_in: int | None,
+                   narration_vol: float, music_vol: float) -> tuple[list[str], str | None]:
+    """The audio part of the graph: each narration input (input index, start in ms) is delayed onto
+    the timeline, the lines are mixed and the music is ducked under them. Returns (filters,
+    audio_label|None). The settings' sample of a mix is built with this too."""
+    filters: list[str] = []
+    labels: list[str] = []
+    for index, delay in narration:
+        label = f"[na{index}]"
+        filters.append(f"[{index}:a]aresample={AUDIO_SR},aformat=channel_layouts=stereo,"
+                       f"volume={narration_vol},alimiter=limit=0.95,adelay={delay}:all=1{label}")
+        labels.append(label)
 
     narr = None
-    if len(narr_labels) == 1:
-        rest.append(f"{narr_labels[0]}anull[narr]")
+    if len(labels) == 1:
+        filters.append(f"{labels[0]}anull[narr]")
         narr = "[narr]"
-    elif len(narr_labels) > 1:
-        rest.append("".join(narr_labels)
-                     + f"amix=inputs={len(narr_labels)}:normalize=0[narr]")
+    elif len(labels) > 1:
+        filters.append("".join(labels) + f"amix=inputs={len(labels)}:normalize=0[narr]")
         narr = "[narr]"
 
     music = None
     if music_in is not None:
-        rest.append(f"[{music_in}:a]aresample={AUDIO_SR},"
-                     f"aformat=channel_layouts=stereo,volume={music_vol}[music]")
+        filters.append(f"[{music_in}:a]aresample={AUDIO_SR},"
+                       f"aformat=channel_layouts=stereo,volume={music_vol}[music]")
         music = "[music]"
 
     if narr and music:
         # Sidechain-duck the music with the narration, then sum them.
-        rest.append(f"{narr}asplit=2[narr_main][narr_key]")
-        rest.append("[music][narr_key]sidechaincompress="
-                     "threshold=0.02:ratio=8:attack=5:release=250[mduck]")
-        rest.append("[narr_main][mduck]amix=inputs=2:normalize=0[aout]")
-        alabel = "[aout]"
-    elif narr:
-        alabel = narr
-    elif music:
-        alabel = music
-    else:
-        alabel = None
-
-    graphs = [video, rest] if zoom else [video + rest]
-    return [";".join(graph) for graph in graphs if graph], vlabel, alabel
+        filters.append(f"{narr}asplit=2[narr_main][narr_key]")
+        filters.append("[music][narr_key]sidechaincompress="
+                       "threshold=0.02:ratio=8:attack=5:release=250[mduck]")
+        filters.append("[narr_main][mduck]amix=inputs=2:normalize=0[aout]")
+        return filters, "[aout]"
+    return filters, narr or music
 
 
 def _build_cmd(ffmpeg: str, items: list[dict], music_path: Path | None,

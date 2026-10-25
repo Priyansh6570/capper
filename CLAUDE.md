@@ -186,17 +186,26 @@ the narration from the resulting text-only breakdown (pass 2), then pre-fills th
 with narration boxed to full panels, bubble blur boxes included. It touches no pipeline stage; TTS/render still read
 the framer's export.
 
-The framer's **Shorts pipeline** (`shorts.py`, `routes/shorts.py`, `stages/s8_shorts.py`) is an add-on for chapters
+The framer's **Shorts pipeline** (`shorts.py`, `routes/shorts.py`, `stages/s8_shorts.py`, `audio_sample.py`) is an add-on for chapters
 that already have a script and a video, in a batch of its own (`batch.SHORTS_STAGES`, `shorts_batch.json`; each step
-runs one chapter at a time, like the main batch). `shorts_find` has the local `claude` CLI read the script and
-write `work/<ch>/shorts/plan.json` (segments under a minute, each with title and description; saving a plan deletes
-the chapter's old shorts). `shorts_render` runs `python -m stages.s8_shorts`, which reads that plan and the chapter's
-existing frames and audio and writes `output/<ch>/shorts/short_NN.mp4` + `shorts.json`. It is not in
+runs one chapter at a time, like the main batch). It works on a **range of chapters**, not per chapter: the batch is created
+with only the range's first eligible chapter and `meta["find"]` = `{chapters, max_shorts}`. That chapter's `shorts_find`
+step is one Claude job over the whole range (`shorts.find_range`: the scripts of all chapters in one call, or a few when
+long; every moment is scored 1-10 for emotion / epic / mystery, only >= `MIN_SCORE` count, optionally cut to the best
+`max_shorts`). It writes `work/<ch>/shorts/plan.json` only for chapters with a strong moment (saving a plan deletes that
+chapter's old shorts; other chapters are left alone), records `meta["found"]` and `Batch.join`s the picked chapters, which
+then run `shorts_render`: `python -m stages.s8_shorts`, which reads that plan and the chapter's
+existing frames (each short's plan entry also carries a `script`, written right after the find by one more Claude call per picked
+moment: a tight recap of the scene ending on a teaser made for it, each line naming the chapter lines whose panels to show;
+s8 voices it with `s6_tts.voice` into `work/<ch>/shorts/audio`, never touching the chapter's narration; a plan without a
+script replays the chapter's lines and audio) and writes `output/<ch>/shorts/short_NN.mp4` + `shorts.json`. It is not in
 `manifest.STAGE_ORDER` or the orchestrator and leaves `m.stage` alone, so a normal run never makes shorts. It calls
 s7's `prepare_render` / `execute_render` (not `run`) with `s7.PORTRAIT`, so the media settings apply as in the main
-video; a project's `settings.shorts` (`layout` frame|cover, `own_look`, `watermark`, `background`) is resolved into the
-snapshot's `shorts` key (`layout`, and `look` that overrides the main watermark and background); `cover` is passed to
-`prepare_render`; the stages stay connected only through those files.
+video; a project's `settings.shorts` (`layout` frame|cover, `own_look`, `watermark`, `background`, `own_audio`, `music`,
+`audio`) is resolved into the snapshot's `shorts` key (`layout`, `look` that overrides the main watermark and background,
+`sound` that overrides the main music and volumes); `cover` is passed to `prepare_render`; the stages stay connected only
+through those files. The settings page plays a **sample** of the mix (`/api/projects/<slug>/preview/audio.wav`,
+`audio_sample.py`): a few narration lines over the music built with `s7._audio_filters`, the same audio graph a render uses.
 
 ## Conventions
 
