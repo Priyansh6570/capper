@@ -112,6 +112,26 @@ def voice_scripts(m: Manifest, work: Path, planned: list[tuple[dict, list[Panel]
         s6.voice(Manifest(chapter_id=m.chapter_id, source_pdf="", work_dir=str(work), beats=every), work / "audio")
 
 
+MAX_OVERSHOOT_S = 20.0   # a track this much longer than the narration is still a good fit
+
+
+def pick_track(library: list[dict], theme: str | None, narration_s: float, used: set[str],
+               short_track: str | None = None) -> dict | None:
+    """The track of the project's music library for a short: the one Claude chose for it when the plan names it
+    (`short_track`, written to fit that track's length and drop), else those of the short's theme (all of them when none
+    has it), preferring one the narration fits in (the short then runs as long as the track), the closest in
+    length, and one not used by another short of the chapter while there is a choice."""
+    pool = [t for t in library if t.get("theme") == theme] or list(library)
+    if short_track:
+        pool = [t for t in library if t.get("id") == short_track] or pool
+    fresh = [t for t in pool if t["file"] not in used] or pool
+    fits = [t for t in fresh if narration_s <= t["duration_s"] <= narration_s + MAX_OVERSHOOT_S]
+    longer = [t for t in fresh if t["duration_s"] >= narration_s]
+    if fits or longer:
+        return min(fits or longer, key=lambda t: t["duration_s"] - narration_s)
+    return max(fresh, key=lambda t: t["duration_s"]) if fresh else None
+
+
 def run(m: Manifest) -> Manifest:
     plan = json.loads((chapter_work_dir(m.chapter_id) / SHORTS_FOLDER / SHORTS_PLAN).read_text(encoding="utf-8"))
     out_dir = chapter_output_dir(m.chapter_id) / SHORTS_FOLDER
@@ -124,6 +144,9 @@ def run(m: Manifest) -> Manifest:
     shorts_settings = settings.get("shorts") or {}
     settings = {**settings, **(shorts_settings.get("look") or {}), **(shorts_settings.get("sound") or {})}
     cover = shorts_settings.get("layout") == "cover"
+    library = [t for t in shorts_settings.get("library") or [] if Path(t["file"]).is_file()]
+    music_share = float(shorts_settings.get("music_share") or 0.4)
+    used: set[str] = set()
     rendered = []
     index = out_dir / SHORTS_INDEX
     work = chapter_work_dir(m.chapter_id) / SHORTS_FOLDER
@@ -137,11 +160,22 @@ def run(m: Manifest) -> Manifest:
         else:
             segment = [beats[order] for order in sorted(beats) if short["first_line"] <= order <= short["last_line"]]
             short_mapping = mapping
-        render = s7.prepare_render(segment, short_mapping, settings, s7.PORTRAIT, cover)
+        chosen = {}
+
+        def pick_music(narration_s: float) -> tuple[Path, float, str] | None:
+            track = pick_track(library, short.get("theme"), narration_s, used, short.get("track")) if library else None
+            if track is None:
+                return None
+            used.add(track["file"])
+            chosen.update(music=track["name"], music_theme=track.get("theme"))
+            return Path(track["file"]), float(track["duration_s"]), track["name"], track.get("drop_s")
+
+        render = s7.prepare_render(segment, short_mapping, settings, s7.PORTRAIT, cover, pick_music, music_share,
+                                 short["peak"] + 1 if short.get("peak") is not None else None)
         out = out_dir / f"short_{short['id']:02d}.mp4"
         s7.execute_render(render, out)
         add_logo(out, render)
-        rendered.append({**short, "file": out.name, "size": out.stat().st_size, "duration_s": round(render.total, 1)})
+        rendered.append({**short, "file": out.name, "size": out.stat().st_size, "duration_s": round(render.total, 1), **chosen})
         index.write_text(  # after every short, so the app can show each one as soon as it is ready
             json.dumps({"chapter_id": m.chapter_id, "shorts": rendered}, indent=2, ensure_ascii=False), encoding="utf-8")
     return m

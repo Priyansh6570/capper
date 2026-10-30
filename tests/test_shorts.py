@@ -20,6 +20,7 @@ import batch
 import config
 import library
 import projects
+import short_music
 import shorts
 from manifest import Manifest, Panel
 from services import batching, jobs
@@ -204,7 +205,7 @@ class RenderStageTest(unittest.TestCase):
             m = Manifest(chapter_id="c", source_pdf="", work_dir=str(work), beats=beats(10, 10, 10, 10, 10))
             seen = []
 
-            def prepare(segment, mapping, settings, canvas, cover):
+            def prepare(segment, mapping, settings, canvas, cover, *music):
                 seen.append(([b.order for b in segment], canvas, cover))
                 return SimpleNamespace(total=20.04 if len(segment) == 2 else 10.0)
 
@@ -236,7 +237,7 @@ class RenderStageTest(unittest.TestCase):
                 encoding="utf-8")
             seen = []
 
-            def prepare(segment, mapping, used, canvas, cover):
+            def prepare(segment, mapping, used, canvas, cover, *music):
                 seen.append((used, cover))
                 return SimpleNamespace(total=12.0)
 
@@ -254,7 +255,7 @@ class RenderStageTest(unittest.TestCase):
 class ShortsSettingsTest(ApiProjects):
     def test_the_shorts_look_is_off_until_chosen_and_its_sliders_are_clamped(self):
         self.assertEqual(projects.media_settings_snapshot(self.slug, 1)["shorts"],
-                         {"layout": "frame", "look": None, "sound": None})
+                         {"layout": "frame", "look": None, "sound": None, "library": [], "music_share": 0.4})
         projects.update_settings(self.slug, {"shorts": {"own_look": True, "layout": "bogus", "watermark": {"enabled": True, "text": "S", "opacity": 9},
                                                          "background": {"mode": "bogus", "dim": 0}}})
         shorts_look = projects.media_settings_snapshot(self.slug, 1)["shorts"]["look"]
@@ -545,7 +546,7 @@ class RangeBatchTest(unittest.TestCase):
 
 class RangeApiTest(ApiProjects):
     def start(self, body: dict):
-        with mock.patch("routes.shorts.shorts_blocker", lambda slug, n: "it has no finished video yet" if n == 2 else None), \
+        with mock.patch("services.batching.shorts_blocker", lambda slug, n: "it has no finished video yet" if n == 2 else None), \
                 mock.patch.object(batch.Batch, "create") as create:
             response = self.client.post(f"/api/projects/{self.slug}/shorts/batch", json=body)
         batching.SHORTS_BATCHES.pop(self.slug, None)   # the mock stands in for a batch that never ran
@@ -564,6 +565,75 @@ class RangeApiTest(ApiProjects):
     def test_a_limit_below_one_is_refused(self):
         self.assertEqual(self.start({"first": 1, "last": 3, "max_shorts": 0})[0].status_code, 400)
 
+
+class MusicLibraryTest(ApiProjects):
+    def track(self, name, theme, seconds):
+        return {"file": f"/m/{name}.mp3", "theme": theme, "duration_s": seconds, "name": name}
+
+    def test_a_track_of_the_shorts_theme_that_fits_the_narration_is_picked(self):
+        lib = [self.track("a", "comedic", 20), self.track("b", "dramatic", 40), self.track("c", "dramatic", 55),
+               self.track("d", "dramatic", 30)]
+        self.assertEqual(s8_shorts.pick_track(lib, "dramatic", 35, set())["name"], "b")
+        self.assertEqual(s8_shorts.pick_track(lib, "dramatic", 25, set())["name"], "d")
+
+    def test_without_a_track_of_the_theme_any_track_is_used_and_tracks_are_not_repeated(self):
+        lib = [self.track("a", "comedic", 40), self.track("b", "comedic", 45)]
+        self.assertEqual(s8_shorts.pick_track(lib, "op", 38, set())["name"], "a")
+        self.assertEqual(s8_shorts.pick_track(lib, "op", 38, {"/m/a.mp3"})["name"], "b")
+        self.assertEqual(s8_shorts.pick_track(lib, "op", 38, {"/m/a.mp3", "/m/b.mp3"})["name"], "a")
+
+    def test_when_the_narration_outlasts_every_track_the_longest_one_is_used(self):
+        lib = [self.track("a", "aura", 20), self.track("b", "aura", 30)]
+        self.assertEqual(s8_shorts.pick_track(lib, "aura", 50, set())["name"], "b")
+
+    def test_the_timeline_is_stretched_to_the_music_length(self):
+        items = [{"dur": 3.0, "start": 0.0}, {"dur": 3.0, "start": 0.0}]
+        total = s7_assemble._pad_to(items, 5.5, 20.0, 0.5)
+        self.assertAlmostEqual(total, 20.0, places=2)
+        self.assertEqual(s7_assemble._pad_to(items, 20.0, 10.0, 0.5), 20.0)
+
+    def test_the_stills_before_the_peak_are_held_until_it_lands_on_the_drop(self):
+        items = [{"order": n, "dur": 4.0, "start": 3.5 * (n - 1)} for n in (1, 2, 3, 4)]
+        self.assertTrue(s7_assemble._hold_before(items, 3, 27.0, 0.5))
+        self.assertAlmostEqual(items[2]["start"], 27.0, places=2)
+        self.assertFalse(s7_assemble._hold_before(items, 3, 10.0, 0.5))    # already later: left alone
+        self.assertFalse(s7_assemble._hold_before(items, 1, 5.0, 0.5))     # nothing before the first line
+
+    def test_the_track_claude_chose_is_the_one_played(self):
+        lib = [{**self.track("a", "op", 34), "id": "a1"}, {**self.track("b", "op", 36), "id": "b1"}]
+        self.assertEqual(s8_shorts.pick_track(lib, "op", 30, set(), "b1")["name"], "b")
+
+    def test_a_drop_point_has_to_be_inside_the_track(self):
+        self.assertEqual(short_music.clean_drop("27", 34.0), 27.0)
+        self.assertIsNone(short_music.clean_drop("", 34.0))
+        for bad in ("0", "34", "x"):
+            with self.assertRaises(short_music.LibraryError):
+                short_music.clean_drop(bad, 34.0)
+
+    def test_the_balanced_mix_levels_both_and_does_not_duck(self):
+        filters, label = s7_assemble._audio_filters([(1, 0)], 2, 0.6, 0.4, balanced=True)
+        graph = ";".join(filters)
+        self.assertEqual(label, "[aout]")
+        self.assertIn("volume=0.6", graph)
+        self.assertIn("volume=0.4", graph)
+        self.assertNotIn("sidechaincompress", graph)
+
+    def test_tracks_are_listed_for_the_stage_and_deleted_with_their_file(self):
+        folder = projects.assets_dir(self.slug) / "shorts_music"
+        folder.mkdir()
+        (folder / "t1.mp3").write_bytes(b"x")
+        projects.update_settings(self.slug, {"shorts": {"music_share": 5}})
+        project = projects.load(self.slug)
+        project["settings"]["shorts"]["library"] = [{"id": "t1", "name": "T", "theme": "aura", "duration_s": 30.0,
+                                                     "file": "assets/shorts_music/t1.mp3"}]
+        projects.save(project)
+        snap = projects.media_settings_snapshot(self.slug, 1)["shorts"]
+        self.assertEqual([(t["name"], t["theme"]) for t in snap["library"]], [("T", "aura")])
+        self.assertEqual(snap["music_share"], 0.7)
+        self.assertEqual(short_music.themes_of(projects.load(self.slug)), ["aura"])
+        self.assertTrue(self.client.delete(f"/api/projects/{self.slug}/shorts_music/t1").get_json()["ok"])
+        self.assertFalse((folder / "t1.mp3").exists())
+        self.assertEqual(projects.media_settings_snapshot(self.slug, 1)["shorts"]["library"], [])
 
 if __name__ == "__main__":
     unittest.main()
@@ -610,6 +680,24 @@ class WriteScriptTest(unittest.TestCase):
                              "closing": {"text": "Watch on.", "pace": "reveal", "source_lines": [3]}})
         self.assertEqual(len(script), 3)
         self.assertTrue(script[-1]["closing"])
+
+    def test_claude_picks_a_track_and_the_line_that_lands_on_its_drop(self):
+        short = {"title": "T", "description": "D"}
+        tracks = [{"id": "aa", "theme": "op", "duration_s": 34.0, "drop_s": 27.0},
+                  {"id": "bb", "theme": "sad", "duration_s": 40.0, "drop_s": None}]
+        answer = {"lines": [{"text": "One.", "pace": "tense", "source_lines": [1]},
+                            {"text": "Two.", "pace": "action", "source_lines": [2]}],
+                  "closing": {"text": "Watch on.", "pace": "reveal", "source_lines": [3]}, "track": "aa", "peak_line": 1}
+        with mock.patch.object(shorts.claude_cli, "call", return_value=answer) as call:
+            shorts.write_script(short, beats(10, 10, 10), [], brief="", model="m", work=Path(tempfile.gettempdir()),
+                                usage={}, tracks=tracks)
+        self.assertEqual((short["track"], short["theme"], short["peak"]), ("aa", "op", 1))
+        self.assertIn("aa | op | 34s | drop at 27s", call.call_args.args[0][0]["text"])
+        short = {"title": "T", "description": "D"}      # a track without a drop, or an unknown one: no peak
+        with mock.patch.object(shorts.claude_cli, "call", return_value={**answer, "track": "bb"}):
+            shorts.write_script(short, beats(10, 10, 10), [], brief="", model="m", work=Path(tempfile.gettempdir()),
+                                usage={}, tracks=tracks)
+        self.assertEqual((short["track"], "peak" in short), ("bb", False))
 
     def test_an_answer_without_a_closing_is_refused(self):
         with self.assertRaises(ValueError):

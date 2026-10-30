@@ -104,5 +104,105 @@ class LowDiskSpaceTest(unittest.TestCase):
         self.assertLess(events.index("offload"), events.index("download2"))
 
 
+
+class FinishedHookTest(unittest.TestCase):
+    def test_the_environment_hears_once_that_the_batch_ran_out_of_work(self):
+        heard = []
+        env = batch.BatchEnv(
+            runners={stage: (lambda b, n: None) for stage in batch.LANE_STAGES},
+            scope=lambda n: contextlib.nullcontext(), done_stages=lambda n: [], review_enabled=lambda: False,
+            thresholds=lambda: {"five_hour": 100, "seven_day": 100}, auto_wait=lambda: False,
+            cancel_job=lambda job: None, notify=lambda title, message: None, claude_total=lambda n: None,
+            usage=lambda: {}, finished=lambda run: heard.append(dict(run.meta)))
+        with tempfile.TemporaryDirectory() as tmp:
+            run = batch.Batch.create(Path(tmp) / "batch.json", env, {1: ["download"], 2: ["download"]}, meta={"find": {"chapters": [1, 2]}})
+            for _ in range(200):
+                if run.status == "finished":
+                    break
+                threading.Event().wait(0.05)
+            run.close()
+        self.assertEqual(heard, [{"find": {"chapters": [1, 2]}}])
+
+
+class RetryTest(unittest.TestCase):
+    """A chapter that failed at a step can be run again from that step or from the start, or be given up on."""
+
+    def setUp(self):
+        self.ran: list[str] = []
+        self.failures: list[tuple[int, str, str]] = []
+        self.finished = 0
+        self.fail_next = {"stitch"}
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def runner(self, stage):
+        def run(b, n):
+            self.ran.append(stage)
+            if stage in self.fail_next:
+                self.fail_next.discard(stage)
+                raise RuntimeError("boom")
+        return run
+
+    def start(self) -> batch.Batch:
+        env = batch.BatchEnv(
+            runners={stage: self.runner(stage) for stage in batch.LANE_STAGES},
+            scope=lambda n: contextlib.nullcontext(), done_stages=lambda n: [], review_enabled=lambda: False,
+            thresholds=lambda: {"five_hour": 100, "seven_day": 100}, auto_wait=lambda: False,
+            cancel_job=lambda job: None, notify=lambda title, message: None, claude_total=lambda n: None,
+            usage=lambda: {}, finished=lambda run: setattr(self, "finished", self.finished + 1),
+            failed=lambda run, n, stage, error: self.failures.append((n, stage, error)))
+        run = batch.Batch.create(Path(self.tmp.name) / "batch.json", env, {1: ["download", "stitch", "script"]})
+        self.addCleanup(run.close)
+        self.settle(run)
+        return run
+
+    def settle(self, run: batch.Batch) -> None:
+        for _ in range(200):
+            if run.status == "finished":
+                return
+            threading.Event().wait(0.05)
+        raise AssertionError(f"the batch did not finish: {run.status}")
+
+    def test_a_failure_is_reported_with_its_chapter_stage_and_error(self):
+        run = self.start()
+        self.assertEqual(self.failures, [(1, "stitch", "RuntimeError: boom")])
+        self.assertEqual((run.chapters[0]["state"], run.chapters[0]["stage"]), ("failed", "stitch"))
+
+    def test_retrying_goes_on_from_the_step_that_failed(self):
+        run = self.start()
+        run.retry(1)
+        self.settle(run)
+        self.assertEqual(self.ran, ["download", "stitch", "stitch", "script"])
+        self.assertEqual(run.chapters[0]["state"], "done")
+        self.assertEqual(self.finished, 2)
+
+    def test_redoing_starts_the_chapter_over_from_its_first_step(self):
+        run = self.start()
+        run.retry(1, from_start=True)
+        self.settle(run)
+        self.assertEqual(self.ran, ["download", "stitch", "download", "stitch", "script"])
+        self.assertEqual(run.chapters[0]["state"], "done")
+
+    def test_a_skipped_chapter_is_cancelled_and_stays_out_of_the_batch(self):
+        run = self.start()
+        run.skip(1)
+        self.assertEqual(run.chapters[0]["state"], "cancelled")
+        self.assertEqual(run.status, "finished")
+
+    def test_only_a_failed_chapter_of_a_running_batch_can_be_retried_or_skipped(self):
+        run = self.start()
+        run.skip(1)
+        with self.assertRaisesRegex(ValueError, "has not failed"):
+            run.retry(1)
+        with self.assertRaisesRegex(ValueError, "has not failed"):
+            run.skip(1)
+
+    def test_a_cancelled_batch_cannot_be_retried(self):
+        run = self.start()
+        run.status = "cancelled"
+        with self.assertRaisesRegex(ValueError, "cancelled or replaced"):
+            run.retry(1)
+
+
 if __name__ == "__main__":
     unittest.main()

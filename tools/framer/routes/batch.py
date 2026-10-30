@@ -4,11 +4,11 @@ from __future__ import annotations
 from flask import Blueprint, jsonify, request
 
 import batch
-import claude_cli
 import claude_usage
 import preflight
 import projects
-from services.batching import BATCHES, BATCH_LOCK, batch_do, batch_env, batch_path, job_summary
+from services.batching import BATCHES, batch_do, job_summary, start_batch
+from services.common import Refused
 
 bp = Blueprint("batch", __name__)
 
@@ -47,21 +47,10 @@ def api_batch_start(slug):
         plans = {}
     if not plans or not set(plans) <= known or not all(plans.values()):
         return jsonify(error="Choose steps to run for chapters of this project."), 400
-    if any("script" in steps for steps in plans.values()):
-        status = claude_cli.cli_status()
-        if not status["ready"]:
-            return jsonify(error=status["message"]), 409
-    with BATCH_LOCK:
-        previous = BATCHES.get(slug)
-        if previous and previous.active:
-            try:
-                previous.enqueue(plans)
-            except ValueError as e:
-                return jsonify(error=str(e)), 409
-            return jsonify(ok=True)
-        if previous:
-            previous.close()
-        BATCHES[slug] = batch.Batch.create(batch_path(slug), batch_env(slug), plans)
+    try:
+        start_batch(slug, plans)
+    except Refused as e:
+        return jsonify(error=str(e)), e.status
     return jsonify(ok=True)
 
 
@@ -77,6 +66,19 @@ def api_batch_control(slug, control):
 def api_batch_continue(slug, n):
     """Continue chapter n past the frame review."""
     return batch_do(slug, lambda b: b.continue_review(n))
+
+
+@bp.post("/api/projects/<slug>/batch/chapters/<int:n>/retry")
+def api_batch_retry(slug, n):
+    """Run failed chapter n again. Body: JSON {from_start: true} to redo all its steps, else only the step that failed."""
+    from_start = bool((request.get_json(silent=True) or {}).get("from_start"))
+    return batch_do(slug, lambda b: b.retry(n, from_start=from_start))
+
+
+@bp.post("/api/projects/<slug>/batch/chapters/<int:n>/skip")
+def api_batch_skip(slug, n):
+    """Give up on failed chapter n; the batch goes on without it."""
+    return batch_do(slug, lambda b: b.skip(n))
 
 
 @bp.post("/api/projects/<slug>/batch/usage")

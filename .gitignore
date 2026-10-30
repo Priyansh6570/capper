@@ -78,3 +78,6 @@ output/**/*.jpeg
 # default intro/outro for merged videos - shipped with the app (installer clones the repo)
 !/recapper_intro.mp4
 !/recapper_outro.mp4
+
+# --- publishing/: YouTube tokens, the Telegram bot token and the upload queue (this PC only) ---
+/publishing/

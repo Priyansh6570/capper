@@ -45,6 +45,7 @@ import claude_cli
 import tones
 from config import OUTPUT_DIR, PROJECTS_DIR, WORK_DIR
 from stages import tts_kokoro
+from publishing.labels import MAX_DESCRIPTION, clean_tags
 from stages.s7_assemble import DEFAULT_QUALITY, QUALITY
 from atomic_io import atomic_write_text, read_json_with_backup_fallback
 
@@ -236,7 +237,12 @@ def default_settings() -> dict:
         # the watermark above.
         # `own_audio` gives them a music track and narration / music volumes of their own too (`music`, `audio`,
         # the same fields as the main ones).
-        "shorts": {"layout": "frame", "own_look": False, "watermark": _default_watermark(),
+        # `auto_make`: the Shorts pipeline runs by itself for the chapters a pipeline run has rendered.
+        # `library`: the shorts' own music, tracks {id, name, theme, duration_s, drop_s, file} (short_music.py); stage 8 picks
+        # the one that fits a short's theme, runs the short as long as it and mixes it in at `music_share` (the
+        # narration gets the rest). With no tracks the music settings above apply.
+        "shorts": {"layout": "frame", "auto_make": True, "own_look": False, "watermark": _default_watermark(),
+                   "library": [], "music_share": 0.4,
                    "background": _default_background(),
                    "own_audio": False, "music": {"mode": "default", "file": None},
                    "audio": {"narration_vol": 2.5, "music_vol": 0.03}},
@@ -270,6 +276,15 @@ def default_settings() -> dict:
         "batch": {"review_before_audio": False, "five_hour_pct": 70, "seven_day_pct": 60,
                   "auto_wait_five_hour": True, "notifications": True,
                   "auto_offload": False, "offload_below_gb": 10},
+        # What the project's videos are uploaded with (see publishing/): the connected channel (its id), the title,
+        # description, tags and thumbnail of the full videos, where {series}, {chapters} and {part} are filled in,
+        # and whether finished shorts are queued for upload by themselves.
+        "youtube": {"channel": None, "title": "{series} Recap | Chapters {chapters}",
+                    "description": "Recap of {series}, chapters {chapters}.", "tags": [], "thumbnail": None,
+                    "auto_shorts": True},
+        # How often the project uploads (see services/planning.py): on which weekdays (0 = Monday, all seven =
+        # daily) and the least video minutes each upload must hold.
+        "plan": {"days": list(range(7)), "min_minutes": 30},
     }
 
 
@@ -663,7 +678,7 @@ def derive_all(slug: str) -> dict:
 # settings + media snapshot for stage 7 (see stages/s7_assemble.py)
 # --------------------------------------------------------------------------- #
 VALID_ASSET_KINDS = ("music", "voice", "watermark", "background", "intro", "outro",
-                     "shorts_watermark", "shorts_background", "shorts_music")
+                     "shorts_watermark", "shorts_background", "shorts_music", "thumbnail")
 _ASSET_EXTS = {
     "music": {".mp3", ".wav", ".m4a", ".ogg", ".oga", ".aac", ".flac"},
     "voice": {".wav"},          # Chatterbox reference clip - wav only
@@ -678,6 +693,7 @@ _ASSET_EXTS = {
 _ASSET_EXTS["shorts_watermark"] = _ASSET_EXTS["watermark"]
 _ASSET_EXTS["shorts_background"] = _ASSET_EXTS["background"]
 _ASSET_EXTS["shorts_music"] = _ASSET_EXTS["music"]
+_ASSET_EXTS["thumbnail"] = _ASSET_EXTS["watermark"]
 
 
 def update_settings(slug: str, settings: dict) -> dict:
@@ -687,6 +703,8 @@ def update_settings(slug: str, settings: dict) -> dict:
         # clamp numeric sliders into sane ranges regardless of what the client sent
         shorts = project["settings"]["shorts"]
         shorts["own_look"] = bool(shorts.get("own_look"))
+        shorts["auto_make"] = bool(shorts.get("auto_make"))
+        shorts["music_share"] = max(0.1, min(0.7, float(shorts.get("music_share") or 0.4)))
         if shorts.get("layout") not in ("frame", "cover"):
             shorts["layout"] = "frame"
         for wm in (project["settings"]["watermark"], shorts["watermark"]):
@@ -742,6 +760,15 @@ def update_settings(slug: str, settings: dict) -> dict:
         bt["offload_below_gb"] = max(1, min(5000, int(bt.get("offload_below_gb") or 10)))
         for key, default in (("five_hour_pct", 70), ("seven_day_pct", 60)):
             bt[key] = max(1, min(100, int(bt.get(key) or default)))
+        yt, defaults = project["settings"]["youtube"], default_settings()["youtube"]
+        yt["channel"] = str(yt["channel"]) if yt.get("channel") else None
+        yt["title"] = str(yt.get("title") or "").strip()[:300] or defaults["title"]
+        yt["description"] = str(yt.get("description") or "")[:MAX_DESCRIPTION]
+        yt["tags"] = clean_tags(yt.get("tags"))
+        yt["auto_shorts"] = bool(yt.get("auto_shorts"))
+        plan = project["settings"]["plan"]
+        plan["days"] = sorted({d for d in plan.get("days") or [] if isinstance(d, int) and d in range(7)}) or list(range(7))
+        plan["min_minutes"] = max(1, min(600, int(plan.get("min_minutes") or 30)))
         save(project)
     write_all_media_snapshots(slug)
     return project
@@ -818,6 +845,17 @@ def _music_snapshot(slug: str, music: dict, audio: dict) -> dict:
             "music_off": music.get("mode") == "none", "audio": dict(audio)}
 
 
+def _library_snapshot(slug: str, library: list) -> list[dict]:
+    """The shorts' music library as stage 8 reads it: absolute paths, tracks whose file is gone left out."""
+    found = []
+    for track in library:
+        path = resolve_asset_path(slug, track.get("file"))
+        if path:
+            found.append({"id": track["id"], "file": str(path), "theme": track["theme"],
+                          "duration_s": track["duration_s"], "drop_s": track.get("drop_s"), "name": track["name"]})
+    return found
+
+
 def media_settings_snapshot(slug: str, n, project: Optional[dict] = None) -> dict:
     """Resolve a project's settings into ABSOLUTE paths for stages 6+7 to
     consume, with defaults folded in (None fields mean "use the built-in
@@ -837,7 +875,8 @@ def media_settings_snapshot(slug: str, n, project: Optional[dict] = None) -> dic
         "background": _background_snapshot(slug, s["background"]),
         # `look`: what the shorts show in place of the main watermark and background, when they have their own;
         # `sound`: their music and volumes in place of the main ones (same keys as above)
-        "shorts": {"layout": s["shorts"]["layout"],
+        "shorts": {"layout": s["shorts"]["layout"], "music_share": s["shorts"]["music_share"],
+                   "library": _library_snapshot(slug, s["shorts"]["library"]),
                    "sound": _music_snapshot(slug, s["shorts"]["music"], s["shorts"]["audio"])
                             if s["shorts"]["own_audio"] else None,
                    "look": {"watermark": _watermark_snapshot(slug, s["shorts"]["watermark"]),

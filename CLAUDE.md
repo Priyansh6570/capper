@@ -207,6 +207,24 @@ video; a project's `settings.shorts` (`layout` frame|cover, `own_look`, `waterma
 through those files. The settings page plays a **sample** of the mix (`/api/projects/<slug>/preview/audio.wav`,
 `audio_sample.py`): a few narration lines over the music built with `s7._audio_filters`, the same audio graph a render uses.
 
+The framer's **publishing** (`tools/framer/publishing/`, `routes/publishing.py`, `services/remote.py`) uploads to YouTube and is
+controlled from a Telegram bot. It touches no pipeline stage or manifest field: it reads finished merges and rendered shorts from
+disk, and a project's channel, upload defaults and thumbnail are `settings.youtube`. Its state (OAuth tokens, bot token, queue,
+quota) is kept in the git-ignored `publishing/` folder in the repo root, never in a project/Drive folder. Full videos wait for
+approval and always upload private; shorts upload public on the channel's schedule (private when YouTube locks an unaudited API
+project, switched to public once the lock lifts). Only `requests` is used for Google and Telegram, no Google client library.
+Telegram is a planner as well as a remote. `/run` and `/shorts` start work; nothing is merged by itself. When a main batch
+finishes (`batching._pipeline_finished`) shorts are made for the chapters it rendered if `settings.shorts.auto_make` is on, and a
+**merge card** proposes the project's next finished, unmerged chapters up to `settings.plan.min_minutes`: Merge runs
+`services/autopublish.py` (merge, intro/outro, the upload approval card), Change range asks for chapters and answers with their
+length, Later drops it. A chapter that fails sends a **failure card** (`BatchEnv.failed`): `Batch.retry` runs it again from the failed
+step or from the start, `Batch.skip` cancels it; the website has the same buttons (`/batch/chapters/<n>/retry|skip`, also under
+`/shorts/batch/`). `services/planning.py` computes a project's plan from `settings.plan` (upload weekdays, minimum minutes): average
+chapter length, chapters per upload, and the buffer (queued + merged + finished-unmerged video, in whole uploads, as days of the
+schedule); `/plan` shows it. `services/advisor.py` suggests the neediest project (card with Run / Later) while no pipeline runs and
+both Claude usage windows are under the project's batch limits. Card buttons act on `publishing/cards.json`
+(`services/cards.py`), so they survive a restart. None of this touches the manifest, the orchestrator or any stage.
+
 ## Conventions
 
 - Make every stage write inspectable files; do not optimize them away into memory.
@@ -226,5 +244,5 @@ through those files. The settings page plays a **sample** of the mix (`/api/proj
 
 After completing any task in this project, write a summary of what you did to
 `work_log.md` in the project root - what was changed, which files, and any
-commands the user should run next. OVERWRITE the file each time (not append), so
-it always reflects only the most recent task. Keep it concise.
+commands the user should run next. APPEND a new entry at the end each time; never
+replace or rewrite earlier entries. Keep it concise.

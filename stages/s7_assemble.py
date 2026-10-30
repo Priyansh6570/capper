@@ -692,8 +692,8 @@ def _build_filtergraph(items: list[dict], music_in: int | None, total: float,
                        zoom: float | None = None, bg_in: int | None = None,
                        bg_dim: float = 0.85, out_size: tuple[int, int] = (W, H), blur_bg: bool = False,
                        back_in: int | None = None, wm_in: int | None = None,
-                       narration_vol: float = NARRATION_VOL, music_vol: float = MUSIC_VOL
-                       ) -> tuple[list[str], str, str | None]:
+                       narration_vol: float = NARRATION_VOL, music_vol: float = MUSIC_VOL,
+                       balanced: bool = False) -> tuple[list[str], str, str | None]:
     """Build the ffmpeg filter_complex graphs for the video transition chain + audio
     mix. Image inputs are 0..n-1; narration audio inputs follow; the video
     background (if any) is at index `bg_in`; music (if any) is at index
@@ -798,24 +798,31 @@ def _build_filtergraph(items: list[dict], music_in: int | None, total: float,
         if it["audio"]:
             narration.append((a_in, max(0, int(round(it["start"] * 1000)))))
             a_in += 1
-    audio, alabel = _audio_filters(narration, music_in, narration_vol, music_vol)
+    audio, alabel = _audio_filters(narration, music_in, narration_vol, music_vol, balanced)
     rest += audio
 
     graphs = [video, rest] if zoom else [video + rest]
     return [";".join(graph) for graph in graphs if graph], vlabel, alabel
 
 
+LOUDNORM = f"loudnorm=I=-16:TP=-1.5:LRA=11,aresample={AUDIO_SR}"   # loudnorm resamples to 192 kHz
+
+
 def _audio_filters(narration: list[tuple[int, int]], music_in: int | None,
-                   narration_vol: float, music_vol: float) -> tuple[list[str], str | None]:
+                   narration_vol: float, music_vol: float, balanced: bool = False) -> tuple[list[str], str | None]:
     """The audio part of the graph: each narration input (input index, start in ms) is delayed onto
     the timeline, the lines are mixed and the music is ducked under them. Returns (filters,
-    audio_label|None). The settings' sample of a mix is built with this too."""
+    audio_label|None). The settings' sample of a mix is built with this too.
+
+    `balanced` mixes by share instead: the narration and the music are each levelled to the same loudness,
+    then `narration_vol` and `music_vol` are their shares of the mix (0.6 / 0.4), with no ducking."""
     filters: list[str] = []
     labels: list[str] = []
+    line_vol = 1.0 if balanced else narration_vol
     for index, delay in narration:
         label = f"[na{index}]"
         filters.append(f"[{index}:a]aresample={AUDIO_SR},aformat=channel_layouts=stereo,"
-                       f"volume={narration_vol},alimiter=limit=0.95,adelay={delay}:all=1{label}")
+                       f"volume={line_vol},alimiter=limit=0.95,adelay={delay}:all=1{label}")
         labels.append(label)
 
     narr = None
@@ -828,11 +835,18 @@ def _audio_filters(narration: list[tuple[int, int]], music_in: int | None,
 
     music = None
     if music_in is not None:
+        level = f"{LOUDNORM}," if balanced else ""
         filters.append(f"[{music_in}:a]aresample={AUDIO_SR},"
-                       f"aformat=channel_layouts=stereo,volume={music_vol}[music]")
+                       f"aformat=channel_layouts=stereo,{level}volume={music_vol}[music]")
         music = "[music]"
 
-    if narr and music:
+    if balanced and narr:
+        filters.append(f"{narr}{LOUDNORM},volume={narration_vol}[narr_lvl]")
+        narr = "[narr_lvl]"
+        if music:
+            filters.append(f"{narr}{music}amix=inputs=2:normalize=0:duration=longest,alimiter=limit=0.95[aout]")
+            return filters, "[aout]"
+    elif narr and music:
         # Sidechain-duck the music with the narration, then sum them.
         filters.append(f"{narr}asplit=2[narr_main][narr_key]")
         filters.append("[music][narr_key]sidechaincompress="
@@ -847,7 +861,8 @@ def _build_cmd(ffmpeg: str, items: list[dict], music_path: Path | None,
                transition: str = "fade", crossfade: float = CROSSFADE,
                zoom: float | None = None, video_bg: Path | None = None,
                bg_dim: float = 0.85, wm_layer: Path | None = None,
-               narration_vol: float = NARRATION_VOL, music_vol: float = MUSIC_VOL) -> list[str]:
+               narration_vol: float = NARRATION_VOL, music_vol: float = MUSIC_VOL,
+               balanced: bool = False) -> list[str]:
     cmd = [ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-stats"]
     # Image inputs: one frame each, repeated to its duration by the filtergraph.
     for it in items:
@@ -882,7 +897,7 @@ def _build_cmd(ffmpeg: str, items: list[dict], music_path: Path | None,
 
     graphs, vlabel, alabel = _build_filtergraph(items, music_in, total, transition, crossfade,
                                                 zoom, bg_in, bg_dim, out_size, quality["blur_bg"],
-                                                back_in, wm_in, narration_vol, music_vol)
+                                                back_in, wm_in, narration_vol, music_vol, balanced)
     # the graphs go through files: inline, a long chapter overflows Windows' command-line limit
     for k, graph in enumerate(graphs):
         script = Path(items[0]["still"]).with_name(f"filtergraph_{k}.txt")
@@ -963,13 +978,14 @@ def _assemble_ffmpeg(items: list[dict], music_path: Path | None, total: float, o
                      quality: dict, out_size: tuple[int, int], transition: str = "fade", crossfade: float = CROSSFADE,
                      zoom: float | None = None, video_bg: Path | None = None,
                      bg_dim: float = 0.85, wm_layer: Path | None = None,
-                     narration_vol: float = NARRATION_VOL, music_vol: float = MUSIC_VOL) -> str:
+                     narration_vol: float = NARRATION_VOL, music_vol: float = MUSIC_VOL,
+                     balanced: bool = False) -> str:
     """Render with ffmpeg directly, logging exactly what is being run. Returns the codec used;
     raises if ffmpeg fails (there is no fallback renderer)."""
     ffmpeg = _require_ffmpeg()
     total_frames = int(round(total * FPS))
     cmd = _build_cmd(ffmpeg, items, music_path, total, out, quality, out_size, transition, crossfade,
-                     zoom, video_bg, bg_dim, wm_layer, narration_vol, music_vol)
+                     zoom, video_bg, bg_dim, wm_layer, narration_vol, music_vol, balanced)
     print(f"  ffmpeg: {ffmpeg}", flush=True)
     print(f"          {_ffmpeg_version(ffmpeg)}", flush=True)
     print(f"  encoder: libx264 (CPU), preset {X264_PRESET}, crf {quality['crf']}, "
@@ -1021,6 +1037,42 @@ class RenderPlan:
     bg_dim: float
     background: object | None
     cover: bool
+    balanced: bool = False       # narration and music mixed by share (see _audio_filters)
+    music_name: str | None = None
+
+
+MAX_PAD_PER_STILL = 0.8   # the most a still is held longer to reach a target length; the last one takes the rest
+
+
+def _pad_to(items: list[dict], total: float, target: float, crossfade: float) -> float:
+    """Stretch the timeline to `target` seconds by holding the stills a little longer (spread over all of
+    them, the narration keeps its place on each), returning the new total. A target under `total` changes nothing."""
+    extra = target - total
+    if extra <= 0 or not items:
+        return total
+    each = min(MAX_PAD_PER_STILL, extra / len(items))
+    for it in items:
+        it["dur"] = round(it["dur"] + each, 3)
+    items[-1]["dur"] = round(items[-1]["dur"] + extra - each * len(items), 3)
+    for i, it in enumerate(items):
+        it["start"] = round(sum(x["dur"] for x in items[:i]) - i * crossfade, 3)
+    return round(sum(it["dur"] for it in items) - (len(items) - 1) * crossfade, 3)
+
+
+def _hold_before(items: list[dict], order: int, at: float, crossfade: float) -> bool:
+    """Hold the stills before the line `order` longer (all alike) so that line starts `at` seconds in; its
+    narration moves with it. False when there is nothing before it or it starts later than `at` already."""
+    first = next((i for i, it in enumerate(items) if it["order"] == order), None)
+    if not first:
+        return False
+    extra = at - items[first]["start"]
+    if extra <= 0:
+        return False
+    for it in items[:first]:
+        it["dur"] = round(it["dur"] + extra / first, 3)
+    for i, it in enumerate(items):
+        it["start"] = round(sum(x["dur"] for x in items[:i]) - i * crossfade, 3)
+    return True
 
 
 def beats_duration(chapter_id: str, beats: list[Panel]) -> float:
@@ -1030,9 +1082,16 @@ def beats_duration(chapter_id: str, beats: list[Panel]) -> float:
 
 
 def prepare_render(beats: list[Panel], mapping: dict[int, dict], settings: dict,
-                   canvas: Canvas = LANDSCAPE, cover: bool = False) -> RenderPlan:
+                   canvas: Canvas = LANDSCAPE, cover: bool = False,
+                   pick_music=None, music_share: float = 0.4, peak_order: int | None = None) -> RenderPlan:
     """With `cover` every frame fills the whole canvas, one at a time, with the watermark above it; the
-    background is never visible, so it is not loaded."""
+    background is never visible, so it is not loaded.
+
+    `pick_music(narration_s)` chooses a track once the narration's length is known and returns
+    (path, track length in s, name, drop point in s or None) or None. The render then runs exactly as long as the track (the stills are
+    held longer when the narration is shorter) and mixes the narration and the music at `1 - music_share` and
+    `music_share`, with no ducking. With a drop point and a `peak_order` (the line that is the story's peak) the
+    stills before that line are held until the line starts exactly at the drop."""
     if cover:
         mapping = {order: {**info, "mode": "sequence"} for order, info in mapping.items()}
     transition, crossfade, zoom = _resolve_animation(settings)
@@ -1040,6 +1099,14 @@ def prepare_render(beats: list[Panel], mapping: dict[int, dict], settings: dict,
     items, total, lines = _plan(beats, mapping, crossfade)
     music_path = _resolve_music(settings)
     narration_vol, music_vol = _resolve_volumes(settings)
+    balanced, music_name = False, None
+    chosen = pick_music(total) if pick_music else None
+    if chosen:
+        music_path, track_s, music_name, drop_s = chosen
+        if drop_s and peak_order is not None and _hold_before(items, peak_order, drop_s, crossfade):
+            total = round(sum(it["dur"] for it in items) - (len(items) - 1) * crossfade, 3)
+        total = _pad_to(items, total, track_s, crossfade)
+        narration_vol, music_vol, balanced = 1.0 - music_share, music_share, True
     wm_cfg = settings.get("watermark")
     print(f"  [debug] media_settings.json watermark cfg: {wm_cfg!r}")
     watermark = _build_watermark_layer(settings, canvas)
@@ -1067,7 +1134,7 @@ def prepare_render(beats: list[Panel], mapping: dict[int, dict], settings: dict,
 
     return RenderPlan(items, total, lines, canvas, canvas.output_size(quality["height"]), quality_name, quality,
                       transition, crossfade, zoom, music_path, narration_vol, music_vol, watermark, video_bg,
-                      bg_dim, background, cover)
+                      bg_dim, background, cover, balanced, music_name)
 
 
 def execute_render(plan: RenderPlan, out: Path) -> None:
@@ -1092,7 +1159,7 @@ def execute_render(plan: RenderPlan, out: Path) -> None:
         print(f"  precompose took {t_pre:.1f}s ({len(plan.items) / max(t_pre, 0.001):.1f} stills/s)", flush=True)
         codec = _assemble_ffmpeg(plan.items, plan.music_path, plan.total, out, plan.quality, plan.out_size,
                                  plan.transition, plan.crossfade, plan.zoom, plan.video_bg, plan.bg_dim, wm_layer,
-                                 plan.narration_vol, plan.music_vol)
+                                 plan.narration_vol, plan.music_vol, plan.balanced)
     finally:
         shutil.rmtree(stills_dir, ignore_errors=True)
 

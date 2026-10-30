@@ -1,0 +1,406 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ReCapper - Publishing</title>
+<link rel="icon" href="/assets/ReCapper.png">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/css/shell.css">
+<style>
+  .row2 { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr); gap: 16px; }
+  .channel-rows { display: flex; flex-direction: column; gap: 16px; }
+  .channel-card { display: flex; flex-direction: column; overflow: hidden; }
+  .channel-head { display: flex; align-items: center; gap: 14px; padding: 20px 22px; }
+  .avatar { width: 52px; height: 52px; flex: none; border-radius: 50%; display: grid; place-items: center; background: var(--red); color: #fff;
+            font: 700 20px 'IBM Plex Sans', sans-serif; box-shadow: 0 0 0 3px var(--panel), 0 0 0 4px var(--line); object-fit: cover; }
+  .channel-head .who { flex: 1; display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+  .channel-head .who .line { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .channel-head .who b { font-size: 19px; font-weight: 700; letter-spacing: -.01em; }
+  .channel-head .who span.sub { font-size: 13px; color: var(--text2); }
+  .badge { display: flex; align-items: center; gap: 6px; height: 22px; padding: 0 8px; border-radius: 11px; background: var(--green-soft); color: var(--green); font: 500 11.5px 'IBM Plex Mono', monospace; }
+  .badge.warn { background: var(--amber-soft); color: var(--amber); }
+  .badge.bad { background: oklch(0.62 0.17 25 / 0.16); color: var(--red-text); }
+  .quota { display: flex; flex-direction: column; gap: 12px; padding: 18px 22px 22px; border-top: 1px solid var(--line); }
+  .quota .big { display: flex; align-items: baseline; gap: 10px; }
+  .quota .big b { font: 600 40px/1 'IBM Plex Mono', monospace; letter-spacing: -.03em; }
+  .quota .big span { font: 500 15px 'IBM Plex Mono', monospace; color: var(--text3); }
+  .quota .meter { display: flex; height: 8px; border-radius: 5px; overflow: hidden; background: var(--track); }
+  .quota .meter span { background: var(--blue); border-radius: 5px; }
+  .quota .foot { display: flex; align-items: center; gap: 16px; font-size: 13px; color: var(--text2); }
+  .quota .foot b { font: 600 13px 'IBM Plex Mono', monospace; color: var(--text); }
+  .quota .foot .grow { flex: 1; }
+  .quota .foot .reset { font: 12.5px 'IBM Plex Mono', monospace; color: var(--text3); }
+  .top-quota { display: flex; align-items: center; gap: 10px; font: 500 13px 'IBM Plex Mono', monospace; color: var(--text2); }
+  .top-quota .meter { display: flex; width: 90px; height: 5px; border-radius: 3px; overflow: hidden; background: var(--track); }
+  .top-quota .meter span { background: var(--blue); }
+
+  .schedule { display: flex; flex-direction: column; gap: 20px; padding: 20px 22px 22px; }
+  .schedule-head { display: flex; align-items: center; gap: 12px; }
+  .schedule-head .label { flex: 1; }
+  .steppers { display: flex; align-items: center; flex-wrap: wrap; gap: 10px 12px; font-size: 16px; color: var(--text2); }
+  .steppers .unit { display: flex; align-items: center; gap: 12px; }
+  .stepper { display: flex; align-items: center; height: 40px; border-radius: 10px; background: var(--field); box-shadow: inset 0 0 0 1px var(--line); }
+  .stepper button { width: 32px; height: 40px; border: 0; background: transparent; color: var(--text3); font: 500 18px 'IBM Plex Mono', monospace; cursor: pointer; }
+  .stepper button:hover { color: oklch(0.66 0.17 25); }
+  .stepper span { text-align: center; font: 600 17px 'IBM Plex Mono', monospace; color: var(--text); }
+  .timeline { display: flex; flex-direction: column; gap: 8px; margin-top: auto; }
+  .track-area { position: relative; height: 54px; }
+  .track-area .rail { position: absolute; left: 0; right: 0; top: 26px; height: 8px; border-radius: 5px; background: var(--track); }
+  .track-area .win { position: absolute; top: 26px; height: 8px; border-radius: 5px; background: var(--win-bg); transition: all .25s; }
+  .track-area .slot { position: absolute; top: 0; transform: translateX(-50%); display: flex; flex-direction: column; align-items: center; gap: 6px; transition: left .25s; }
+  .track-area .slot span { font: 500 11.5px 'IBM Plex Mono', monospace; }
+  .track-area .slot i { width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--panel); box-shadow: 0 0 0 1.5px var(--blue); }
+  .track-area .now { position: absolute; top: 18px; bottom: 6px; width: 2px; margin-left: -1px; border-radius: 1px; background: var(--red); }
+  .ticks { display: flex; justify-content: space-between; font: 11.5px 'IBM Plex Mono', monospace; color: var(--text3); }
+  .timeline .next { margin-top: 4px; font-size: 13px; color: var(--text2); }
+
+  .btn { display: inline-flex; align-items: center; justify-content: center; gap: 7px; height: 34px; padding: 0 13px; border-radius: 9px; border: 1px solid var(--btn-line);
+         background: transparent; color: var(--text); font: 600 13px 'IBM Plex Sans', sans-serif; cursor: pointer; white-space: nowrap; }
+  .btn:hover { background: var(--hover); }
+  .btn.small { height: 32px; }
+  .btn.big { height: 38px; padding: 0 16px; }
+  .btn.muted { color: var(--text2); }
+  .btn.off { color: var(--text3); }
+  .btn.danger { color: var(--red-text); }
+  .btn.primary { border: 0; background: var(--red); color: #fff; }
+  .btn.primary:hover { background: var(--red); filter: brightness(1.08); }
+  .btn:disabled { opacity: .45; cursor: default; }
+
+  .lanes { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 16px; align-items: start; }
+  .lane { display: flex; flex-direction: column; gap: 10px; padding: 16px 14px 14px; min-height: 220px; }
+  .lane-head { display: flex; align-items: center; gap: 9px; padding: 0 4px 2px; }
+  .lane-head .dot { width: 8px; height: 8px; }
+  .lane-head b { flex: 1; font-size: 14.5px; font-weight: 600; }
+  .lane-head .count { min-width: 22px; height: 22px; padding: 0 6px; border-radius: 11px; display: grid; place-items: center; background: var(--field); font: 600 12px 'IBM Plex Mono', monospace; }
+  .card { display: flex; flex-direction: column; gap: 10px; padding: 10px; border-radius: 12px; background: var(--field); box-shadow: inset 0 0 0 1px var(--line); }
+  .card-top { display: flex; gap: 11px; min-width: 0; }
+  .thumb { position: relative; flex: none; border-radius: 8px; overflow: hidden; background-size: cover; background-position: center; }
+  .thumb.full { width: 96px; aspect-ratio: 16/9; }
+  .thumb.short { width: 46px; aspect-ratio: 9/16; }
+  .thumb em { position: absolute; right: 4px; bottom: 4px; padding: 1px 4px; border-radius: 4px; background: oklch(0.12 0 0 / 0.72); color: #fff; font: 500 10.5px 'IBM Plex Mono', monospace; font-style: normal; }
+  .card-text { flex: 1; display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+  .card-text .title { font-size: 13.5px; font-weight: 600; line-height: 1.35; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; text-wrap: pretty; }
+  .card-text .meta { font: 11.5px 'IBM Plex Mono', monospace; color: var(--text3); }
+  .card-text .meta.blue { color: var(--blue); }
+  .card-text .meta.bad { color: var(--red-text); }
+  .card-text .meta.warn { color: var(--amber); }
+  .uploaded-row { display: flex; align-items: center; gap: 8px; }
+  .uploaded-row .vis { height: 20px; padding: 0 7px; border-radius: 10px; display: grid; place-items: center; background: var(--amber-soft); color: var(--amber); font: 500 11px 'IBM Plex Mono', monospace; }
+  .uploaded-row .vis.live { background: var(--green-soft); color: var(--green); }
+  .uploaded-row a { flex: 1; min-width: 0; font: 12px 'IBM Plex Mono', monospace; color: var(--blue); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .card-actions { display: flex; gap: 6px; }
+  .card-actions .btn { flex: 1; height: 30px; padding: 0 8px; border-radius: 8px; font-size: 12.5px; }
+  .bar { height: 5px; border-radius: 3px; overflow: hidden; background: var(--track); }
+  .bar i { display: block; height: 100%; background: var(--blue); }
+  .edit { display: flex; flex-direction: column; gap: 8px; padding-top: 10px; border-top: 1px solid var(--line); }
+  .edit input, .edit textarea { width: 100%; border: 0; border-radius: 8px; background: var(--main); box-shadow: inset 0 0 0 1px var(--line); color: var(--text); padding: 7px 9px; font: 13px 'IBM Plex Sans', sans-serif; outline: none; }
+  .edit textarea { min-height: 84px; resize: vertical; }
+  .edit .row { display: flex; gap: 6px; flex-wrap: wrap; }
+  .edit .row .btn { height: 30px; font-size: 12.5px; }
+  .empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; padding: 22px 14px; border-radius: 12px; border: 1.5px dashed var(--line); text-align: center; color: var(--text3); }
+  .empty span { max-width: 200px; font-size: 13px; line-height: 1.5; text-wrap: pretty; }
+
+  .row3 { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+  .setting { display: flex; flex-direction: column; gap: 16px; padding: 20px 22px 22px; }
+  .setting-head { display: flex; align-items: center; gap: 12px; }
+  .setting-head .label { flex: 1; }
+  .bot { display: flex; align-items: center; gap: 14px; }
+  .bot .icon { width: 42px; height: 42px; flex: none; border-radius: 11px; display: grid; place-items: center; }
+  .bot .who { flex: 1; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .bot .who b { font: 600 15px 'IBM Plex Mono', monospace; }
+  .bot .who span { display: flex; align-items: center; gap: 7px; font-size: 13px; }
+  .bot .buttons { display: flex; gap: 6px; }
+  .form { display: flex; flex-direction: column; gap: 7px; }
+  .form > span { font-size: 13px; font-weight: 600; color: var(--text2); }
+  .form .line { display: flex; align-items: center; gap: 8px; }
+  .input { flex: 1; min-width: 0; height: 38px; padding: 0 12px; border: 0; border-radius: 9px; background: var(--field); box-shadow: inset 0 0 0 1px var(--line); color: var(--text); font: 13px 'IBM Plex Mono', monospace; }
+  .input.num { flex: none; width: 120px; font-weight: 500; font-size: 14px; }
+  .form .unit { font-size: 13px; color: var(--text3); }
+  .form .grow { flex: 1; }
+  .signin { font-size: 13px; color: var(--text2); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .signin.err { color: var(--red-text); }
+  .note { padding: 40px; text-align: center; color: var(--text3); }
+</style>
+</head>
+<body>
+<div class="shell">
+  <aside class="side" id="side"></aside>
+  <main class="main">
+    <div class="topbar">
+      <h1>Publishing</h1>
+      <div class="grow"></div>
+      <span class="top-quota" id="topQuota"></span>
+      <span class="sep"></span>
+      <span class="clock" id="clock"></span>
+    </div>
+    <div class="page">
+      <div id="channelsArea" class="channel-rows"></div>
+      <div id="lanes" class="lanes"></div>
+      <div id="settings" class="row3"></div>
+    </div>
+  </main>
+</div>
+<script src="/static/js/shell.js"></script>
+<script>
+const { esc, icon, dot } = Shell;
+const DEFAULT_CLIENT_FILE = 'D:\\Work\\ReCapper-secrets\\client_secret.json';
+const EDITABLE = ['waiting_approval', 'queued', 'scheduled', 'failed'];
+const UPLOAD_COST = 1600;      // YouTube quota units one video upload costs
+const THUMBS = ['linear-gradient(160deg,oklch(0.36 0.07 20),oklch(0.18 0.03 10))', 'linear-gradient(160deg,oklch(0.32 0.06 270),oklch(0.18 0.03 280))',
+                'linear-gradient(160deg,oklch(0.33 0.05 200),oklch(0.17 0.02 220))'];
+const LANES = [
+  {key: 'appr', title: 'Waiting for approval', color: 'var(--amber)', statuses: ['waiting_approval'], msg: 'Shorts that need your OK before upload land here.', paths: ['M12 8v4l3 2', 'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18z']},
+  {key: 'queue', title: 'Upload queue', color: 'var(--blue)', statuses: ['uploading', 'queued', 'scheduled'], msg: 'Approved videos wait here for their next schedule slot.', paths: ['M4 6h16', 'M4 12h16', 'M4 18h10']},
+  {key: 'up', title: 'Uploaded', color: 'var(--green)', statuses: ['private', 'live', 'removed'], msg: 'Nothing uploaded yet.', paths: ['M5 12l5 5 9-10']},
+  {key: 'fail', title: 'Failed and skipped', color: 'var(--red)', statuses: ['failed', 'skipped'], msg: 'All clear. Failed or skipped uploads show up here.', paths: ['M12 3l9 16H3z', 'M12 10v4', 'M12 17v.5']},
+];
+let state = null, fetchedAt = 0, thumbVersion = Date.now();
+const drafts = {sched: {}, token: '', quota: null, client: localStorage.getItem('publishingClientFile') || DEFAULT_CLIENT_FILE, editClient: false};
+const open = new Set();      // items whose edit area is open
+const shown = {};            // the html last put in each area
+
+async function api(path, method = 'GET', body) {
+  const opts = {method, headers: {}};
+  if (body instanceof FormData) opts.body = body;
+  else if (body !== undefined) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
+  const res = await fetch(path, opts);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
+  return data;
+}
+async function act(fn) {
+  try { await fn(); } catch (e) { alert(e.message); }
+  await load(true);
+}
+
+const hh = h => { const H = Math.floor(h), M = Math.round((h - H) * 60); return String(H).padStart(2, '0') + ':' + String(M).padStart(2, '0'); };
+const local = iso => new Date(iso).toLocaleString('en-US', {weekday: 'short', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit'});
+const length = s => { s = Math.round(s || 0); const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), x = String(s % 60).padStart(2, '0'); return h ? `${h}:${String(m).padStart(2, '0')}:${x}` : `${m}:${x}`; };
+const resetText = s => `${Math.floor(s / 3600)}h ${String(Math.floor(s % 3600 / 60)).padStart(2, '0')}m`;
+const elapsed = () => (Date.now() - fetchedAt) / 1000;
+
+function put(id, html, force) {
+  const box = document.getElementById(id);
+  const typing = box.contains(document.activeElement) && /^(INPUT|TEXTAREA)$/.test(document.activeElement.tagName);
+  if (typing && !force) return;
+  if (shown[id] !== html) { box.innerHTML = html; shown[id] = html; }
+}
+
+// ---------------------------------------------------------------- channels
+function draftOf(c) {
+  const saved = c.shorts;
+  if (!drafts.sched[c.id]) drafts.sched[c.id] = {n: saved.per_day, a: saved.from_hour, b: saved.to_hour};
+  return drafts.sched[c.id];
+}
+function stepper(id, key, value, width, after, label) {
+  return `<span class="unit"><span class="stepper"><button data-act="step" data-ch="${id}" data-key="${key}" data-by="-1">−</button>
+    <span style="min-width:${width}">${value}</span><button data-act="step" data-ch="${id}" data-key="${key}" data-by="1">+</button></span>${after ? `<span>${after}</span>` : ''}</span>`;
+}
+function scheduleHtml(c) {
+  const d = draftOf(c), saved = c.shorts;
+  const dirty = d.n !== saved.per_day || d.a !== saved.from_hour || d.b !== saved.to_hour;
+  const times = Array.from({length: d.n}, (_, i) => d.a + (d.b - d.a) * (i + 0.5) / d.n);
+  const date = new Date(), nowH = date.getHours() + date.getMinutes() / 60;
+  const wait = t => (t > nowH ? t : t + 24) - nowH;
+  const nextT = times.reduce((best, t) => wait(t) < wait(best) ? t : best, times[0]);
+  const minutes = Math.round(wait(nextT) * 60);
+  const queued = state.items.filter(i => i.kind === 'short' && i.channel === c.id && ['uploading', 'queued', 'scheduled'].includes(i.status)).length;
+  const inText = `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, '0')}m`;
+  const slots = times.map(t => { const next = t === nextT; return `<div class="slot" style="left:${t / 24 * 100}%"><span style="color:${next ? 'var(--text)' : 'var(--text3)'}">${hh(t)}</span><i style="background:${next ? 'var(--blue)' : 'var(--panel)'}"></i></div>`; }).join('');
+  return `<section class="panel schedule">
+    <div class="schedule-head"><span class="label">POSTING SCHEDULE${state.channels.length > 1 ? ' · ' + esc(c.title).toUpperCase() : ''}</span>
+      <button class="btn small ${dirty ? 'primary' : 'off'}" data-act="saveSched" data-ch="${c.id}">${dirty ? '' : icon(['M5 12l5 5 9-10'], 13)}${dirty ? 'Save schedule' : 'Saved'}</button></div>
+    <div class="steppers">${stepper(c.id, 'n', d.n, '26px', d.n === 1 ? 'short a day, between' : 'shorts a day, between')}${stepper(c.id, 'a', hh(d.a), '58px', 'and')}${stepper(c.id, 'b', hh(d.b), '58px', '')}</div>
+    <div class="timeline"><div class="track-area"><div class="rail"></div><div class="win" style="left:${d.a / 24 * 100}%;width:${(d.b - d.a) / 24 * 100}%"></div>${slots}
+        <div class="now" style="left:${nowH / 24 * 100}%"></div></div>
+      <div class="ticks">${['00', '06', '12', '18', '24'].map(k => `<span>${k}</span>`).join('')}</div>
+      <span class="next">${queued ? `Next post at ${hh(nextT)}, in ${inText} · ${queued} in queue` : `Next slot at ${hh(nextT)}, in ${inText} · queue is empty`}</span></div></section>`;
+}
+function channelHtml(c) {
+  const q = c.quota, left = Math.max(0, q.resets_in_s - elapsed());
+  const flags = [c.needs_reconnect ? '<span class="badge bad">reconnect needed</span>' : '', c.public_locked ? '<span class="badge warn">API uploads locked to private</span>' : ''].join('');
+  return `<div class="row2"><section class="panel channel-card">
+      <div class="channel-head">${c.avatar ? `<img class="avatar" src="${esc(c.avatar)}" alt="">` : `<div class="avatar">${esc(c.title[0] || 'Y')}</div>`}
+        <div class="who"><span class="line"><b>${esc(c.title)}</b>${c.needs_reconnect ? '' : `<span class="badge">${dot('var(--green)')}connected</span>`}${flags}</span>
+          <span class="sub">YouTube channel · uploads as private</span></div>
+        <button class="btn small muted" data-act="disconnect" data-ch="${c.id}" data-title="${esc(c.title)}">Disconnect</button></div>
+      <div class="quota"><span class="label">API QUOTA TODAY</span>
+        <div class="big"><b>${q.used.toLocaleString('en-US')}</b><span>/ ${q.limit.toLocaleString('en-US')} units</span></div>
+        <div class="meter"><span style="width:${Math.min(100, q.used / q.limit * 100)}%"></span></div>
+        <div class="foot"><span><b>≈ ${Math.max(0, Math.floor((q.limit - q.used) / UPLOAD_COST))}</b> uploads left today</span><div class="grow"></div><span class="reset">resets in ${resetText(left)}</span></div></div>
+    </section>${scheduleHtml(c)}</div>`;
+}
+function renderChannels(force) {
+  put('channelsArea', state.channels.length ? state.channels.map(channelHtml).join('')
+    : '<section class="panel note">No YouTube channel is connected yet. Use “Connect channel” under Google Cloud below.</section>', force);
+  const first = state.channels[0];
+  document.getElementById('topQuota').innerHTML = first
+    ? `API quota<span class="meter"><span style="width:${Math.min(100, first.quota.used / first.quota.limit * 100)}%"></span></span>${first.quota.used.toLocaleString('en-US')} / ${first.quota.limit.toLocaleString('en-US')}` : '';
+}
+
+// ---------------------------------------------------------------- queue lanes
+function thumbStyle(item) {
+  const hash = [...item.id].reduce((sum, ch) => sum + ch.charCodeAt(0), 0) % THUMBS.length;
+  return item.has_thumbnail ? `background-image:url(/api/publishing/items/${item.id}/thumbnail?v=${thumbVersion})` : `background:${THUMBS[hash]}`;
+}
+function metaOf(item, lane) {
+  const where = `${item.series ? esc(item.series) + ' · ' : ''}ch ${item.chapters.join(', ')}${item.parts > 1 ? ` · part ${item.part}/${item.parts}` : ''}`;
+  if (lane === 'queue') {
+    const text = item.status === 'uploading' ? `uploading ${Math.round((item.progress || 0) * 100)}%` : item.status === 'scheduled' ? 'posts ' + local(item.publish_at)
+      : item.next_attempt_at ? 'retry ' + local(item.next_attempt_at) : 'posts when the quota allows';
+    return [text, 'blue'];
+  }
+  if (lane === 'up') return [item.uploaded_at ? 'uploaded ' + local(item.uploaded_at) : where, ''];
+  if (lane === 'fail') return [item.error || item.status, 'bad'];
+  return [where, ''];
+}
+function editHtml(item) {
+  const id = item.id;
+  return `<div class="edit"><input id="title-${id}" value="${esc(item.title)}" maxlength="100"><textarea id="desc-${id}">${esc(item.description)}</textarea>
+    <input id="tags-${id}" value="${esc(item.tags.join(', '))}" placeholder="tags, separated by commas">
+    <div class="row"><button class="btn" data-act="save" data-id="${id}">Save</button>
+      ${item.kind === 'full' ? `<button class="btn" data-act="thumb" data-id="${id}">Thumbnail…</button>${item.has_thumbnail ? `<button class="btn" data-act="clearThumb" data-id="${id}">Clear</button>` : ''}` : ''}
+      <button class="btn danger" data-act="remove" data-id="${id}">Remove</button></div></div>`;
+}
+function cardHtml(item, lane) {
+  const [meta, tone] = metaOf(item, lane), editable = EDITABLE.includes(item.status);
+  const long = item.kind === 'full';
+  const actions = [];
+  if (lane === 'appr') actions.push(`<button class="btn primary" data-act="approve" data-id="${item.id}">Approve</button><button class="btn muted" data-act="skip" data-id="${item.id}">Skip</button>`);
+  if (item.status === 'failed') actions.push(`<button class="btn" data-act="retry" data-id="${item.id}">Retry upload</button>`);
+  if (editable) actions.push(`<button class="btn muted" data-act="toggle" data-id="${item.id}">${open.has(item.id) ? 'Close' : 'Edit'}</button>`);
+  const notes = (item.warnings || []).map(w => `<span class="meta warn">${esc(w)}</span>`).join('');
+  return `<article class="card"><div class="card-top"><div class="thumb ${long ? 'full' : 'short'}" style="${thumbStyle(item)}">${item.duration_s ? `<em>${length(item.duration_s)}</em>` : ''}</div>
+      <div class="card-text"><span class="title" title="${esc(item.title)}">${esc(item.title)}</span><span class="meta ${tone}">${esc(meta)}</span>${notes}</div></div>
+    ${item.status === 'uploading' ? `<div class="bar"><i style="width:${Math.round((item.progress || 0) * 100)}%"></i></div>` : ''}
+    ${lane === 'up' ? `<div class="uploaded-row"><span class="vis ${item.status === 'live' ? 'live' : ''}">${item.status === 'live' ? 'public' : item.status === 'private' ? (item.locked ? 'private · publish in Studio' : 'private') : item.status}</span>
+      ${item.url ? `<a href="${esc(item.url)}" target="_blank" rel="noopener">${esc(item.url.replace('https://', ''))}</a>` : ''}</div>` : ''}
+    ${actions.length ? `<div class="card-actions">${actions.join('')}</div>` : ''}${open.has(item.id) && editable ? editHtml(item) : ''}</article>`;
+}
+function laneHtml(lane) {
+  const items = state.items.filter(i => lane.statuses.includes(i.status));
+  const newest = (a, b) => (b.uploaded_at || b.created_at).localeCompare(a.uploaded_at || a.created_at);
+  items.sort(lane.key === 'queue' ? (a, b) => (a.publish_at || a.created_at).localeCompare(b.publish_at || b.created_at) : newest);
+  return `<section class="panel lane"><div class="lane-head"><span class="dot" style="background:${lane.color}"></span><b>${lane.title}</b>
+      <span class="count" style="color:${items.length ? 'var(--text)' : 'var(--text3)'}">${items.length}</span></div>
+    ${items.map(i => cardHtml(i, lane.key)).join('')}
+    ${items.length ? '' : `<div class="empty">${icon(lane.paths, 20, 1.8)}<span>${lane.msg}</span></div>`}</section>`;
+}
+function renderLanes(force) { put('lanes', LANES.map(laneHtml).join(''), force); }
+
+// ---------------------------------------------------------------- settings panels
+function settingsHtml() {
+  const t = state.telegram, mode = !t.configured ? 'none' : t.paired ? 'paired' : 'unpaired';
+  const quotaDraft = drafts.quota ?? String(state.quota_limit), quotaDirty = Number(quotaDraft) !== state.quota_limit && Number(quotaDraft) > 0;
+  const si = state.sign_in;
+  const plane = icon(['M21 3L3 10.5l7 2.5 2.5 7z', 'M21 3l-11 10'], 19, 1.8);
+  const connectLabel = state.channels.length ? 'Connect another channel' : 'Connect channel';
+  return `<section class="panel setting"><span class="label">TELEGRAM REMOTE</span>
+      <div class="bot"><span class="icon" style="background:${mode === 'paired' ? 'oklch(0.7 0.1 250 / 0.16)' : 'var(--field)'};color:${mode === 'paired' ? 'var(--blue)' : 'var(--text3)'}">${plane}</span>
+        <div class="who"><b>${mode === 'none' ? 'No bot connected' : '@' + esc(t.username)}</b>
+          <span style="color:${mode === 'paired' ? 'var(--green)' : 'var(--text2)'}">${mode === 'paired' ? dot('var(--green)') : ''}${mode === 'paired' ? 'Paired with your chat' : mode === 'none' ? 'Add a bot to approve uploads from your phone' : 'Bot saved · send /start to it to pair'}</span></div>
+        <div class="buttons">${t.paired ? '<button class="btn" data-act="unpair">Unpair chat</button>' : ''}${t.configured ? '<button class="btn danger" data-act="removeBot">Remove bot</button>' : ''}</div></div>
+      <div class="form"><span>${mode === 'none' ? 'Bot token' : 'Replace bot token'}</span><div class="line">
+        <input class="input" id="botToken" type="password" autocomplete="off" value="${esc(drafts.token)}" placeholder="Paste the bot token from @BotFather">
+        <button class="btn big ${drafts.token.trim() ? 'primary' : 'off'}" data-act="saveToken">Save</button></div></div></section>
+    <section class="panel setting"><div class="setting-head"><span class="label">GOOGLE CLOUD</span>
+        <button class="btn small" data-act="connect"><span style="font-size:15px;line-height:1">+</span>${connectLabel}</button></div>
+      ${si ? `<div class="signin${si.state === 'error' ? ' err' : ''}">${esc(si.message)}${si.state === 'choose' ? si.options.map(o => `<button class="btn small" data-act="choose" data-id="${esc(o.id)}">${esc(o.title)}</button>`).join('') : ''}</div>` : ''}
+      <div class="form"><span>OAuth client secret</span><div class="line">
+        <input class="input" id="clientFile" spellcheck="false" value="${esc(drafts.client)}" ${drafts.editClient ? '' : 'readonly'} style="${drafts.editClient ? '' : 'color:var(--text2)'}">
+        <button class="btn big" data-act="changeClient">${drafts.editClient ? 'Done' : 'Change'}</button></div></div>
+      <div class="form"><span>Daily API quota of your project</span><div class="line">
+        <input class="input num" id="quotaLimit" type="number" min="1" step="1000" value="${esc(quotaDraft)}"><span class="unit">units</span><div class="grow"></div>
+        <button class="btn big ${quotaDirty ? 'primary' : 'off'}" data-act="saveQuota">Save</button></div></div></section>`;
+}
+function renderSettings(force) { put('settings', settingsHtml(), force); }
+
+function renderAll(force) { renderChannels(force); renderLanes(force); renderSettings(force); }
+
+// ---------------------------------------------------------------- actions
+function saveEdits(item) {
+  if (!document.getElementById(`title-${item.id}`)) return Promise.resolve();
+  const value = id => document.getElementById(`${id}-${item.id}`).value;
+  return api(`/api/publishing/items/${item.id}`, 'PATCH', {title: value('title'), description: value('desc'),
+    tags: value('tags').split(',').map(t => t.trim()).filter(Boolean)});
+}
+function pickThumbnail(item) {
+  const input = Object.assign(document.createElement('input'), {type: 'file', accept: 'image/*'});
+  input.onchange = () => input.files[0] && act(async () => {
+    const form = new FormData(); form.append('file', input.files[0]);
+    await api(`/api/publishing/items/${item.id}/thumbnail`, 'POST', form);
+    thumbVersion = Date.now();
+  });
+  input.click();
+}
+const post = (item, action) => api(`/api/publishing/items/${item.id}/${action}`, 'POST');
+const itemOf = id => state.items.find(i => i.id === id);
+const channelOf = id => state.channels.find(c => c.id === id);
+
+const ACTIONS = {
+  step(el) {
+    const c = channelOf(el.dataset.ch), d = draftOf(c), by = +el.dataset.by;
+    const next = {...d, [el.dataset.key]: el.dataset.key === 'n' ? Math.max(1, Math.min(48, d.n + by)) : el.dataset.key === 'a' ? Math.max(0, Math.min(23, d.a + by)) : Math.max(1, Math.min(24, d.b + by))};
+    if (next.a < next.b) drafts.sched[c.id] = next;
+    renderChannels(true);
+  },
+  saveSched(el) {
+    const d = draftOf(channelOf(el.dataset.ch));
+    act(() => api(`/api/publishing/channels/${el.dataset.ch}/schedule`, 'POST', {per_day: d.n, from_hour: d.a, to_hour: d.b}).then(() => { delete drafts.sched[el.dataset.ch]; }));
+  },
+  disconnect(el) { confirm(`Disconnect ${el.dataset.title}?`) && act(() => api(`/api/publishing/channels/${el.dataset.ch}`, 'DELETE')); },
+  approve(el) { const item = itemOf(el.dataset.id); act(async () => { await saveEdits(item); await post(item, 'approve'); }); },
+  skip(el) { act(() => post(itemOf(el.dataset.id), 'skip')); },
+  retry(el) { const item = itemOf(el.dataset.id); act(async () => { await saveEdits(item); await post(item, 'retry'); }); },
+  toggle(el) { open.has(el.dataset.id) ? open.delete(el.dataset.id) : open.add(el.dataset.id); renderLanes(true); },
+  save(el) { act(() => saveEdits(itemOf(el.dataset.id))); },
+  thumb(el) { pickThumbnail(itemOf(el.dataset.id)); },
+  clearThumb(el) { act(async () => { await api(`/api/publishing/items/${el.dataset.id}/thumbnail`, 'DELETE'); thumbVersion = Date.now(); }); },
+  remove(el) { confirm('Remove this item from the queue?') && act(() => api(`/api/publishing/items/${el.dataset.id}`, 'DELETE')); },
+  unpair() { act(() => api('/api/publishing/telegram/unpair', 'POST')); },
+  removeBot() { confirm('Remove the bot token?') && act(() => api('/api/publishing/telegram', 'DELETE')); },
+  saveToken() {
+    if (drafts.token.trim()) act(async () => { await api('/api/publishing/telegram', 'POST', {token: drafts.token}); drafts.token = ''; });
+  },
+  connect() {
+    localStorage.setItem('publishingClientFile', drafts.client);
+    act(() => api('/api/publishing/channels/connect', 'POST', {client_file: drafts.client}));
+  },
+  choose(el) { act(() => api('/api/publishing/channels/connect/choose', 'POST', {channel_id: el.dataset.id})); },
+  changeClient() { drafts.editClient = !drafts.editClient; localStorage.setItem('publishingClientFile', drafts.client); renderSettings(true); },
+  saveQuota() {
+    const value = Number(drafts.quota);
+    if (value > 0) act(async () => { await api('/api/publishing/quota', 'POST', {limit: value}); drafts.quota = null; });
+  },
+};
+
+document.addEventListener('click', e => {
+  const el = e.target.closest('[data-act]');
+  if (el && ACTIONS[el.dataset.act]) ACTIONS[el.dataset.act](el);
+});
+document.addEventListener('input', e => {
+  if (e.target.id === 'botToken') { drafts.token = e.target.value; renderSettingsButtons(); }
+  else if (e.target.id === 'quotaLimit') { drafts.quota = e.target.value; renderSettingsButtons(); }
+  else if (e.target.id === 'clientFile') drafts.client = e.target.value;
+});
+// typing recolours the Save buttons without replacing the field being typed in
+function renderSettingsButtons() {
+  const quotaDirty = Number(drafts.quota) !== state.quota_limit && Number(drafts.quota) > 0;
+  document.querySelector('[data-act=saveToken]').className = `btn big ${drafts.token.trim() ? 'primary' : 'off'}`;
+  document.querySelector('[data-act=saveQuota]').className = `btn big ${quotaDirty ? 'primary' : 'off'}`;
+}
+
+async function load(force) {
+  if (!force && document.hidden) return;
+  try { state = await api('/api/publishing'); fetchedAt = Date.now(); } catch (e) { return; }
+  renderAll(force);
+  if (force) Shell.refresh();
+}
+
+Shell.init('Publishing');
+load(true);
+setInterval(load, 3000);
+</script>
+</body>
+</html>

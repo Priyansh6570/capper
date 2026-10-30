@@ -15,6 +15,7 @@ from typing import Callable, Optional
 import requests
 from bs4 import BeautifulSoup
 
+import app_settings
 from . import meta
 from .images import fetch_pages, images_to_pdf
 
@@ -40,8 +41,36 @@ def _slug(url: str) -> Optional[str]:
     return (m.group(1) or m.group(2)) if m else None
 
 
+def _session_headers() -> dict:
+    """Headers for mgeko.cc pages: with a saved browser session (app_settings.json, "site_sessions")
+    the Cloudflare cookie and the user agent it was issued to. Not used for the image host."""
+    saved = app_settings.site_session("mgeko")
+    headers = dict(_HEADERS)
+    if saved.get("user_agent"):
+        headers["User-Agent"] = saved["user_agent"]
+    if saved.get("cookie"):
+        headers["Cookie"] = _clean_cookie(saved["cookie"])
+    return headers
+
+
+def _clean_cookie(raw: str) -> str:
+    """`cf_clearance=<value>` from whatever was pasted: the bare value, `name=value`, or a copied
+    devtools row such as `cf_clearance: <value>` (also after a `name=`)."""
+    value = raw.strip()
+    while True:
+        m = re.match(r"cf_clearance\s*[=:]\s*", value, re.I)
+        if not m:
+            break
+        value = value[m.end():]
+    return f"cf_clearance={value}"
+
+
 def _get(url: str) -> str:
-    resp = requests.get(url, headers=_HEADERS, timeout=_TIMEOUT)
+    resp = requests.get(url, headers=_session_headers(), timeout=_TIMEOUT)
+    if resp.status_code == 403 and resp.headers.get("cf-mitigated") == "challenge":
+        raise RuntimeError(f"Couldn't load {url}: mgeko.cc is behind a Cloudflare browser check. "
+                           "Save a fresh cf_clearance cookie and your browser's user agent under "
+                           '"site_sessions" -> "mgeko" in app_settings.json (it expires after a while).')
     if resp.status_code != 200 or not resp.text:
         raise RuntimeError(f"Couldn't load {url} (HTTP {resp.status_code}).")
     return resp.text

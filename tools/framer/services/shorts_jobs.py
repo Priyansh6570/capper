@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 import chapter_backup
 import config
 import projects
+import short_music
 import shorts
 from services.script_jobs import attach_proc, wait_out_usage_limit
 from stages import s7_assemble
@@ -54,6 +55,7 @@ def run_shorts_find_job(job: "Job") -> None:
         for note in found["notes"]:
             job.note(note)
         picked = sum(len(plan) for plan in found["shorts"].values())
+        music_tracks = short_music.library(projects.load(slug))
         done = 0
         for n, plan in list(found["shorts"].items()):
             beats = scripts[n]
@@ -67,8 +69,9 @@ def run_shorts_find_job(job: "Job") -> None:
                         short, scene, after, brief=settings["series_brief"], model=settings["comprehension_model"],
                         work=projects.local_dir(slug) / "shorts_find", usage=found["usage"], on_event=on_event,
                         on_limit=lambda at: wait_out_usage_limit(job, at), on_proc=attach_proc(job),
-                        before_call=job.before_claude_call)
-                    short["duration_s"] = shorts.script_seconds(short["script"])
+                        before_call=job.before_claude_call, tracks=music_tracks or None)
+                    track = next((t for t in music_tracks if t["id"] == short.get("track")), None)
+                    short["duration_s"] = track["duration_s"] if track else shorts.script_seconds(short["script"])
                 except ValueError as e:
                     plan.remove(short)
                     job.note(f"Chapter {n}: dropped \"{short['title']}\": {e}")

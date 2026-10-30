@@ -2006,14 +2006,29 @@ async function useManualRange() {
 // independently deep-linkable / refreshable via the URL).
 let projectLoadedAt = 0;
 const PROJECT_FRESH_MS = 60_000;   // coming back from settings within this long reuses the loaded project
-const CHAPTER_PAGE = 50;           // chapters shown (and detailed by the server) at a time
-let chaptersShown = CHAPTER_PAGE;
+const CHAPTER_PAGE = 50;           // chapters on one page of the list
+let chPage = null;                 // 0-based page of the visible chapters; null = not chosen yet (opens on the next chapter to run)
+let viewRange = null;              // {from, to}: show only these chapters
 
+// The project comes without chapter detail; the detail (steps, video length, ...) is fetched for the page on screen only.
+let projectLoadSeq = 0;
 async function loadCurrentProject(slug) {
-  const d = await (await fetch(`/api/projects/${encodeURIComponent(slug)}?limit=${chaptersShown}`)).json();
+  const seq = ++projectLoadSeq;
+  if (!CURRENT_PROJECT || CURRENT_PROJECT.slug !== slug) { chPage = null; viewRange = null; }   // another project: start at its own page
+  let window_ = 'limit=0';
+  if (chPage === null) window_ = 'auto=1';
+  else if (CURRENT_PROJECT && CURRENT_PROJECT.slug === slug) {
+    const page = pageChapters();
+    if (page.length) window_ = `from=${page[0].n}&to=${page[page.length - 1].n}`;
+  }
+  const d = await (await fetch(`/api/projects/${encodeURIComponent(slug)}?${window_}`)).json();
   if (!d.project) throw new Error(d.error || 'not found');
+  // a newer load (another project opened meanwhile) wins: a slow response must not put this project back
+  if (seq !== projectLoadSeq) return CURRENT_PROJECT;
   CURRENT_PROJECT = d.project;
   projectLoadedAt = Date.now();
+  if (chPage === null) chPage = pageOfChapter((chapterProgress().next || {}).n);
+  await ensureChapterDetails(pageChapters().filter(c => !hasDetail(c.n)).map(c => c.n));
   paintProjectFolder();
   return CURRENT_PROJECT;
 }
@@ -2043,7 +2058,7 @@ function shortHost(url) {
 
 async function openProjectScreen(slug) {
   const cached = CURRENT_PROJECT && CURRENT_PROJECT.slug === slug;
-  if (!cached) chaptersShown = CHAPTER_PAGE;
+  if (!cached) { chPage = null; viewRange = null; }
   showScreen('project');
   if (!cached) {
     $('pjTitle').textContent = 'Loading…';
@@ -2055,6 +2070,7 @@ async function openProjectScreen(slug) {
   $('mergeStatus').textContent = ''; $('mergeResult').innerHTML = '';
   try {
     if (!cached) await loadCurrentProject(slug);
+    if (CURRENT_PROJECT.slug !== slug) return;   // another project was opened while this one loaded
     $('pjTitle').textContent = CURRENT_PROJECT.name;
     paintProjectChrome();
     paintFolds();
@@ -2184,7 +2200,8 @@ const BATCH_LOG_VIEW = new Map();   // chapter -> {open, scrollTop, stick}: surv
 function batchLogHtml(c) {
   const view = BATCH_LOG_VIEW.get(c.n);
   const open = view ? view.open : ['running', 'failed'].includes(c.state);
-  return `<details class="blog" ${open ? 'open' : ''}><summary>Log (${c.log.length} lines)</summary>` +
+  return `<details class="blog" ${open ? 'open' : ''}><summary>Log (${c.log.length} lines)` +
+         `<button type="button" class="blogcopy" data-n="${c.n}" title="Copy this log">Copy</button></summary>` +
          `<pre>${escHtml(c.log.join('\n'))}</pre></details>`;
 }
 
@@ -2224,7 +2241,11 @@ function batchChapterHtml(c) {
     : c.state === 'done' ? 'Done.' : c.state === 'cancelled' ? 'Cancelled.' : c.state === 'queued' ? `Waiting for ${c.stage}.` : '';
   const progress = c.state === 'running' && job && job.status === 'running' ? Math.round((job.progress || 0) * 100) : null;
   const acts = [];
-  if (c.state === 'failed') acts.push(`<button class="small primary" data-act="retry" data-stage="${c.stage}">Retry ${escHtml(c.stage)}</button>`);
+  if (c.state === 'failed') {
+    acts.push(`<button class="small primary" data-act="retry">Retry from ${escHtml(c.stage)}</button>`,
+              `<button class="small ghost" data-act="redo">Redo all stages</button>`,
+              `<button class="small ghost" data-act="skip">Skip chapter</button>`);
+  }
   if (c.state === 'waiting') acts.push(`<button class="small primary" data-act="continue">Continue to audio</button>`);
   if (['waiting', 'failed'].includes(c.state) || (c.state === 'running' && job && job.claude)) {
     acts.push(`<button class="small ghost" data-act="open">${c.state === 'running' ? 'Watch live' : 'Open editor'}</button>`);
@@ -2518,7 +2539,9 @@ function wireBatch() {
     const n = +btn.closest('.bchap').dataset.n;
     btn.onclick = () => {
       if (btn.dataset.act === 'open') navTo({ project: CURRENT_PROJECT.slug, chapter: n });
-      else if (btn.dataset.act === 'retry') openPipelineModal([n], PIPELINE_STEPS.indexOf(btn.dataset.stage));
+      else if (btn.dataset.act === 'retry') batchCall(`/chapters/${n}/retry`);
+      else if (btn.dataset.act === 'redo') batchCall(`/chapters/${n}/retry`, { from_start: true });
+      else if (btn.dataset.act === 'skip') batchCall(`/chapters/${n}/skip`);
       else batchCall(`/chapters/${n}/continue`);
     };
   });
@@ -2562,6 +2585,13 @@ async function startPipeline() {
 }
 
 $('batchList').addEventListener('toggle', rememberBatchLogs, true);
+$('batchList').addEventListener('click', e => {
+  const btn = e.target.closest('.blogcopy');
+  if (!btn) return;
+  e.preventDefault();   // the button sits in <summary>: don't fold the log
+  const pre = btn.closest('.blog').querySelector('pre');
+  copyToClipboard(pre.textContent).then(() => { btn.textContent = 'Copied'; setTimeout(() => { btn.textContent = 'Copy'; }, 1500); });
+});
 $('batchRunBtn').onclick = () => openPipelineModal([...SELECTION]);
 $('batchPauseBtn').onclick = () => batchCall(BATCH.batch.status === 'paused' ? '/resume' : '/pause');
 $('batchCancelBtn').onclick = async () => {
@@ -2592,14 +2622,15 @@ async function apiJson(url, method, body) {
 // folder, and clear the heavy ones from this PC once they are verified there. Cleared chapters come
 // back by themselves the next time they are opened (server: chapter_backup.py).
 // ---------------------------------------------------------------------------
-let BK = null, bkRunning = false;
+let BK = null, bkRunning = false, BK_SCOPE = [];
 
 async function openBackup() {
   $('backupModal').classList.add('on');
   $('bkLoading').hidden = false; $('bkMain').hidden = true; $('bkNotShared').hidden = true;
   $('bkRun').hidden = true; $('bkSummary').textContent = '';
   try {
-    const res = await fetch(projectApi('/backup'));
+    BK_SCOPE = [...SELECTION].sort((a, b) => a - b);
+    const res = await fetch(projectApi('/backup') + (BK_SCOPE.length ? `?chapters=${BK_SCOPE.join(',')}` : ''));
     BK = await res.json();
     if (!res.ok) throw new Error(BK.error || 'failed');
   } catch (e) {
@@ -2610,8 +2641,12 @@ async function openBackup() {
   $('bkLoading').hidden = true;
   if (!BK.shared) { $('bkNotShared').hidden = false; return; }
   BK.kindsOn = new Set(BK.kinds.filter(k => k.default).map(k => k.key));
-  BK.selected = new Set(BK.chapters.filter(c => bkPending(c, [...BK.kindsOn])).map(c => c.n));
+  BK.clearOn = new Set(BK.kinds.filter(k => k.clearable).map(k => k.key)); BK.force = false;
+  BK.selected = new Set(BK.chapters.map(c => c.n));      // the scanned range: all of it, since the point is to see what is missing
   $('bkMain').hidden = false; $('bkRun').hidden = false;
+  $('bkScope').textContent = BK_SCOPE.length
+    ? `Compared with Drive for the ${BK_SCOPE.length} chapter(s) you selected (${listNumbers(BK_SCOPE)}). Select other chapters in the list to look at another range.`
+    : 'No chapters were selected in the list, so the whole project was compared with Drive.';
   $('bkFolder').textContent = BK.folder;
   renderBackup();
 }
@@ -2620,10 +2655,13 @@ const bkPending = (chapter, kinds) => kinds.some(k => chapter.kinds[k].files && 
 
 function renderBackup() {
   const kindsOn = [...BK.kindsOn], selected = BK.chapters.filter(c => BK.selected.has(c.n));
+  const sumKind = (k, test) => selected.reduce((a, c) => { const st = c.kinds[k.key]; return a + (st.files && test(st) ? st.local_bytes : 0); }, 0);
   $('bkKinds').innerHTML = BK.kinds.map(k => {
-    const bytes = BK.chapters.filter(c => BK.selected.has(c.n)).reduce((a, c) => a + c.kinds[k.key].local_bytes, 0);
+    const onPc = sumKind(k, () => true), inDrive = k.clearable ? sumKind(k, st => st.backed_up) : 0, missing = sumKind(k, st => !st.backed_up);
     return `<label class="bkkind"><input type="checkbox" data-kind="${k.key}" ${BK.kindsOn.has(k.key) ? 'checked' : ''} />` +
-      `<span class="bkktxt"><b>${escHtml(k.label)}</b><em>${escHtml(k.hint)}</em></span><span class="bksize">${fmtSize(bytes) || '0B'}</span></label>`;
+      `<span class="bkktxt"><b>${escHtml(k.label)}</b><em>${escHtml(k.clearable ? k.hint : k.hint + ' Stays on this PC.')}</em></span>` +
+      `<span class="bksize">${fmtSize(onPc) || '0B'}</span><span class="bksize drive ${inDrive ? 'hot' : ''}">${fmtSize(inDrive) || '0B'}</span>` +
+      `<span class="bksize miss ${missing ? 'hot' : ''}">${fmtSize(missing) || '0B'}</span></label>`;
   }).join('');
   $('bkChapters').innerHTML = BK.chapters.length ? BK.chapters.map(c => {
     const chips = BK.kinds.filter(k => c.kinds[k.key].files || c.kinds[k.key].cleared).map(k => {
@@ -2640,18 +2678,31 @@ function renderBackup() {
     : `<b>Merged videos</b> \u2014 these are saved in this project's Drive folder automatically when you merge.`;
 
   const todo = selected.reduce((a, c) => a + kindsOn.reduce((b, k) => b + (c.kinds[k].files && !c.kinds[k].backed_up ? c.kinds[k].local_bytes : 0), 0), 0);
-  $('bkSummary').textContent = !selected.length || !kindsOn.length ? 'Pick at least one chapter and one kind of file.'
-    : todo ? `${selected.length} chapter(s) \u00b7 ${fmtSize(todo)} to copy.` : `${selected.length} chapter(s) \u00b7 everything chosen is already backed up.`;
-  $('bkRun').disabled = bkRunning || !selected.length || !kindsOn.length;
+  $('bkSummary2').textContent = !selected.length || !kindsOn.length ? 'Pick at least one chapter and one kind of file.'
+    : todo ? `${fmtSize(todo)} of the ticked kinds is not in Drive yet (${selected.length} chapter(s)).` : 'Everything ticked is already in Drive.';
+  $('bkRun').disabled = bkRunning || !selected.length || !kindsOn.length || !todo;
 
-  const clearKinds = BK.kinds.filter(k => k.clearable).map(k => k.key);
-  const freeable = selected.filter(c => !BK.busy.includes(c.n)).reduce((a, c) => a + clearKinds.reduce((b, k) => {
-    const s = c.kinds[k]; return b + (s.files && s.backed_up && !s.cleared ? s.local_bytes : 0); }, 0), 0);
+  const clearKinds = BK.kinds.filter(k => k.clearable);
+  $('bkClearKinds').innerHTML = clearKinds.map(k => `<label><input type="checkbox" data-clear="${k.key}" ${BK.clearOn.has(k.key) ? 'checked' : ''} />` +
+    `${escHtml(k.label)} <em>${fmtSize(sumKind(k, st => !st.cleared)) || '0B'}</em></label>`).join('');
+  $('bkForce').checked = BK.force;
+  const idle = BK.busy;
+  // what Clear would delete: files verified in Drive, plus (when allowed) the ones Drive does not have, except the PDF
+  const freeableOf = (c, k) => { const s = c.kinds[k.key]; return s.files && !s.cleared && (s.backed_up || (BK.force && k.key !== 'download')) ? s.local_bytes : 0; };
+  const freeable = selected.filter(c => !idle.includes(c.n)).reduce((a, c) => a + clearKinds.filter(k => BK.clearOn.has(k.key)).reduce((b, k) => b + freeableOf(c, k), 0), 0);
+  const unverified = selected.reduce((a, c) => a + clearKinds.filter(k => BK.clearOn.has(k.key) && k.key !== 'download').reduce((b, k) => {
+    const s = c.kinds[k.key]; return b + (s.files && !s.cleared && !s.backed_up ? s.local_bytes : 0); }, 0), 0);
   $('bkFreeText').textContent = freeable
-    ? `${fmtSize(freeable)} of the selected chapters is already verified in Drive and can be removed from this PC (frames, audio, page images and chapter videos). They come back automatically when you open the chapter again; scripts and key mappings always stay here.`
-    : 'Nothing in the selected chapters is backed up and still on this PC. Back up first; once files are verified in Drive, you can clear them here to free up space.';
+    ? `${fmtSize(freeable)} will be removed from this PC. Files that are in Drive come back automatically when you open the chapter again; scripts and key mappings always stay here.` +
+      (BK.force && unverified ? ` ${fmtSize(unverified)} of it is NOT in Drive and will be gone for good (page images are rebuilt by stitching the PDF again).` : '')
+    : unverified && !BK.force ? `${fmtSize(unverified)} of the ticked kinds is not in Drive, so it is kept. Tick "Also delete files that are not in Drive" to remove it anyway.`
+    : 'Nothing of the ticked kinds is left on this PC for the selected chapters.';
   $('bkClear').disabled = bkRunning || !freeable;
+  $('bkBoth').disabled = bkRunning || !selected.length || !(todo || freeable);
 
+  $('bkClearKinds').querySelectorAll('input').forEach(i => i.onchange = () => {
+    i.checked ? BK.clearOn.add(i.dataset.clear) : BK.clearOn.delete(i.dataset.clear); renderBackup(); });
+  $('bkForce').onchange = e => { BK.force = e.target.checked; renderBackup(); };
   $('bkKinds').querySelectorAll('input').forEach(i => i.onchange = () => {
     i.checked ? BK.kindsOn.add(i.dataset.kind) : BK.kindsOn.delete(i.dataset.kind); renderBackup(); });
   $('bkChapters').querySelectorAll('input').forEach(i => i.onchange = () => {
@@ -2681,23 +2732,24 @@ async function runBackup() {
 }
 
 async function refreshBackup() {
-  const keepSel = BK.selected, keepKinds = BK.kindsOn;
-  const fresh = await (await fetch(projectApi('/backup'))).json();
-  BK = { ...fresh, selected: keepSel, kindsOn: keepKinds };
+  const keepSel = BK.selected, keepKinds = BK.kindsOn, keepClear = BK.clearOn, keepForce = BK.force;
+  const fresh = await (await fetch(projectApi('/backup') + (BK_SCOPE.length ? `?chapters=${BK_SCOPE.join(',')}` : ''))).json();
+  BK = { ...fresh, selected: keepSel, kindsOn: keepKinds, clearOn: keepClear, force: keepForce };
   renderBackup();
 }
 
 async function clearBackedUp() {
-  const clearKinds = BK.kinds.filter(k => k.clearable).map(k => k.key);
+  const clearKinds = [...BK.clearOn];
   const numbers = [...BK.selected];
+  const labels = BK.kinds.filter(k => BK.clearOn.has(k.key)).map(k => k.label.toLowerCase()).join(', ');
   const ok = await askConfirm({
     title: 'Clear from this PC?',
-    body: `<p>The frames, audio, page images and chapter videos of ${numbers.length} chapter(s) will be deleted from this PC, but only the files that are verified in this project's Drive folder.</p>
-           <p class="hint">They are copied back automatically the next time you open a chapter or render it. This needs Drive to be connected then. Scripts and key mappings are not touched.</p>`,
+    body: `<p>The ${escHtml(labels)} of ${numbers.length} chapter(s) will be deleted from this PC${BK.force ? ', including files that are NOT in Drive' : ', but only the files that are verified in Drive'}.</p>
+           <p class="hint">${BK.force ? 'Files that are not in Drive cannot be restored; page images can be rebuilt by stitching the chapter PDF again. ' : ''}Files that are in Drive are copied back automatically the next time you open a chapter or render it (Drive must be connected then). Scripts and key mappings are not touched.</p>`,
     confirmLabel: 'Clear from this PC' });
   if (!ok) return;
   bkRunning = true; renderBackup();
-  const { ok: good, data } = await apiJson(projectApi('/backup_clear'), 'POST', { chapters: numbers, kinds: clearKinds });
+  const { ok: good, data } = await apiJson(projectApi('/backup_clear'), 'POST', { chapters: numbers, kinds: clearKinds, force: BK.force });
   bkRunning = false;
   if (!good) showToast(data.error || 'Clear failed.', null, null, 'err');
   else showToast(`Freed ${fmtSize(data.freed) || '0B'}.` + (data.skipped.length ? ` ${data.skipped.length} item(s) were skipped.` : ''), null, null, 'ok');
@@ -2814,6 +2866,12 @@ async function stopShorts() {
   await loadShorts();
 }
 
+async function recoverShorts(n, action, body) {
+  const { ok, data } = await apiJson(projectApi(`/shorts/batch/chapters/${n}/${action}`), 'POST', body);
+  if (!ok) showToast(data.error || 'Request failed.', null, null, 'warn');
+  await loadShorts();
+}
+
 async function loadShorts() {
   clearTimeout(shortsTimer);
   const res = await fetch(projectApi('/shorts'), { cache: 'no-store' });
@@ -2914,6 +2972,10 @@ function renderShortsJob(runs) {
       <div class="shjobtext"><b>${escHtml(title)}</b><span>${escHtml(sub)}</span></div>
       <span class="shjobtotal">${overall}</span>${action}</div>
     ${note}${shortsActive() ? `<div class="shbar"><span id="shortsTotalBar" style="width:${total}%"></span></div>` : ''}${rows}</div>`;
+  box.querySelectorAll('[data-short-act]').forEach(btn => {
+    const action = btn.dataset.shortAct;
+    btn.onclick = () => recoverShorts(btn.dataset.n, action === 'skip' ? 'skip' : 'retry', action === 'redo' ? { from_start: true } : undefined);
+  });
   if ($('shortsStopBtn')) $('shortsStopBtn').onclick = stopShorts;
   if ($('shortsDismissBtn')) $('shortsDismissBtn').onclick = () => { shortsDismissed = b.created_at; renderShortsJob(runs); };
 }
@@ -2939,7 +3001,10 @@ function shortRowHtml(r) {
     <span class="shcode">${code}</span>
     <div class="shrowname"><b>${escHtml(name)}</b><span title="${escAttr(rowSub)}">${escHtml(rowSub)}</span></div>
     <div class="shsteps">${step('find', 'Choose segments', r.cp, phase === 'choose')}${step('render', renderLabel, r.rp, phase === 'render')}</div>
-    <span class="shstatus ${tone}">${escHtml(status)}<em>${phase === 'done' ? '' : r.pct + '%'}</em></span></div>`;
+    <span class="shstatus ${tone}">${escHtml(status)}<em>${phase === 'done' ? '' : r.pct + '%'}</em></span>
+    ${phase === 'failed' ? `<span class="shrowacts"><button class="small primary" data-short-act="retry" data-n="${c.n}">Retry from ${escHtml(c.stage)}</button>
+      <button class="small ghost" data-short-act="redo" data-n="${c.n}">Redo all stages</button>
+      <button class="small ghost" data-short-act="skip" data-n="${c.n}">Skip chapter</button></span>` : ''}</div>`;
 }
 
 // The numbers that change every poll (bars, the rendering card) are updated in place, so the cards and
@@ -3155,6 +3220,7 @@ function mergedCardHtml(m) {
       <div class="mtop">
         <b>Chapters ${m.chapters.join(', ') || '?'}</b><span class="mmeta">${meta}</span>
         <div class="macts">
+          <button class="small ghost mergeQueue" data-icon="upload" data-ic-size="13" title="Add to the YouTube upload queue (waits for your approval)"><span>Queue for YouTube</span></button>
           <button class="small ghost mergeFolder" data-icon="folder" data-ic-size="13"><span>Open folder</span></button>
           <button class="small ghost danger mergeDelete" data-icon="trash" data-ic-size="13"><span>Delete</span></button>
         </div>
@@ -3186,10 +3252,18 @@ function wireMergedCard(card, m) {
   });
   card.querySelector('.finalRender').onclick = () => startFinalRender(m.name);
   card.querySelector('.finalStop').onclick = () => cancelFinalRender(m.name);
+  card.querySelector('.mergeQueue').onclick = () => queueForYoutube(m);
   card.querySelector('.mergeFolder').onclick = () => openFolder(MERGED.folder);
   card.querySelector('.mergeDelete').onclick = () => deleteMerged(m, false);
   const deleteFinal = card.querySelector('.finalDelete');
   if (deleteFinal) deleteFinal.onclick = () => deleteMerged(m, true);
+}
+
+async function queueForYoutube(m) {
+  const { ok, data } = await apiJson(projectApi('/youtube/queue'), 'POST', { merge: m.name });
+  if (!ok) { setStatus(data.error || 'Could not queue the video.', true); return; }
+  const parts = data.items.length > 1 ? `${data.items.length} parts` : 'The video';
+  showToast(`${parts} waiting for your approval on the Publishing page.`, null, null, 'ok');
 }
 
 function toggleBrandPreview(row, kind) {
@@ -3674,23 +3748,123 @@ function chapterCardHtml(ch) {
     `<div class="chacts">${chapterActionsHtml(ch)}</div></article>`;
 }
 
-async function showMoreChapters() {
-  const btn = $('chMoreBtn');
-  btnBusy(btn, true);
-  chaptersShown += CHAPTER_PAGE;
-  try {
-    await loadCurrentProject(CURRENT_PROJECT.slug);
-    renderChapterList();
-  } catch (e) {
-    chaptersShown -= CHAPTER_PAGE;
-    btnBusy(btn, false);
-    setStatus('Could not load more chapters: ' + e.message, true);
-  }
+// --- Chapter list paging: pages of CHAPTER_PAGE over the visible chapters (all, or the range being viewed) ---
+function visibleChapters() {
+  const all = CURRENT_PROJECT.chapters || [];
+  return viewRange ? all.filter(c => c.n >= viewRange.from && c.n <= viewRange.to) : all;
+}
+const pageCount = () => Math.max(1, Math.ceil(visibleChapters().length / CHAPTER_PAGE));
+function pageChapters() {
+  chPage = Math.min(Math.max(chPage || 0, 0), pageCount() - 1);
+  return visibleChapters().slice(chPage * CHAPTER_PAGE, (chPage + 1) * CHAPTER_PAGE);
+}
+// The page holding chapter n (or the first chapter after it); the last page when there is none.
+function pageOfChapter(n) {
+  const i = n == null ? -1 : visibleChapters().findIndex(c => c.n >= n);
+  return i < 0 ? pageCount() - 1 : Math.floor(i / CHAPTER_PAGE);
+}
+function pageLabel(p) {
+  const visible = visibleChapters(), first = visible[p * CHAPTER_PAGE], last = visible[Math.min(visible.length, (p + 1) * CHAPTER_PAGE) - 1];
+  return !first ? '-' : first.n === last.n ? `${first.n}` : `${first.n}-${last.n}`;
 }
 
-function renderChapterList() {
+// The last chapter with a finished video and the chapter to run next (the first unfinished one after it).
+function chapterProgress() {
+  const chapters = CURRENT_PROJECT.chapters || [];
+  const last = chapters.filter(c => c.status === 'complete').reduce((m, c) => (!m || c.n > m.n ? c : m), null);
+  const next = chapters.find(c => c.status !== 'complete' && (!last || c.n > last.n)) || null;
+  return { last, next, done: chapters.filter(c => c.status === 'complete').length };
+}
+
+function pagerHtml() {
+  const total = pageCount();
+  const wanted = new Set([0, total - 1, chPage - 1, chPage, chPage + 1]);
+  if (total <= 9) for (let i = 0; i < total; i++) wanted.add(i);
+  const pages = [...wanted].filter(i => i >= 0 && i < total).sort((a, b) => a - b);
+  const items = [];
+  pages.forEach((p, i) => {
+    if (i && p - pages[i - 1] > 1) items.push('<span class="pgGap">…</span>');
+    items.push(`<button class="small ${p === chPage ? 'primary' : 'ghost'}" data-page="${p}" ${p === chPage ? 'aria-current="page"' : ''}>${pageLabel(p)}</button>`);
+  });
+  return `<button class="small ghost" data-page="${chPage - 1}" ${chPage === 0 ? 'disabled' : ''} aria-label="Previous page">‹</button>${items.join('')}` +
+    `<button class="small ghost" data-page="${chPage + 1}" ${chPage >= total - 1 ? 'disabled' : ''} aria-label="Next page">›</button>`;
+}
+
+let selectNextCount = 10;
+
+function paintChapterNav() {
+  const nav = $('chNav');
+  const { last, next, done } = chapterProgress();
+  const total = (CURRENT_PROJECT.chapters || []).length;
+  const bits = [`<span><b>${done}</b> of ${total} have a finished video</span>`,
+    last ? `<span>Last done: <a href="#" data-goto="${last.n}">#${last.n}</a></span>` : '<span>No finished video yet</span>',
+    next ? `<span>Next up: <a href="#" data-goto="${next.n}">#${next.n}</a></span>` : '<span>Nothing left to run</span>'];
+  const pick = next ? `<span class="chpick"><button id="selNextBtn" class="small" data-icon="checkbox" data-ic-size="13"><span>Select next</span></button>` +
+    `<input id="selNextCount" type="number" min="1" step="1" value="${selectNextCount}" aria-label="How many chapters to select"><span>from #${next.n}</span></span>` : '';
+  const view = viewRange ? `<span class="chview">Showing chapters ${viewRange.from}-${viewRange.to} <button id="viewClearBtn" class="small ghost">Show all</button></span>` : '';
+  const goto = `<span class="chgo"><input id="gotoCh" type="number" min="0" step="1" placeholder="Go to #" aria-label="Go to chapter"></span>`;
+  nav.innerHTML = `<div class="chsummary">${bits.join('')}${pick}${view}${goto}</div>` +
+    (pageCount() > 1 ? `<div class="chpager">${pagerHtml()}<span class="hint">${visibleChapters().length} chapters, ${CHAPTER_PAGE} per page</span></div>` : '');
+  paintIcons(nav);
+}
+
+function goToPage(page) {
+  chPage = page;
+  renderChapterList();
+  $('chNav').scrollIntoView({ block: 'start' });
+}
+
+function goToChapter(n) {
+  if (viewRange && (n < viewRange.from || n > viewRange.to)) viewRange = null;
+  chPage = pageOfChapter(n);
+  renderChapterList().then(() => {
+    const row = $('chList').querySelector(`[data-n="${n}"]`);
+    if (row) { row.scrollIntoView({ block: 'center' }); row.classList.add('flash'); setTimeout(() => row.classList.remove('flash'), 1500); }
+  });
+}
+
+// Show (and optionally select) the chapters from..to, wherever they are in the project.
+function showRange(a, b, select) {
+  const [from, to] = a <= b ? [a, b] : [b, a];
+  viewRange = { from, to };
+  chPage = 0;
+  if (select) {
+    CURRENT_PROJECT.chapters.filter(c => c.n >= from && c.n <= to).forEach(c => SELECTION.add(c.n));
+    selectionAnchor = to;
+  }
+  renderChapterList();
+}
+
+$('chNav').addEventListener('click', e => {
+  const pageBtn = e.target.closest('[data-page]');
+  if (pageBtn) { if (!pageBtn.disabled) goToPage(+pageBtn.dataset.page); return; }
+  const go = e.target.closest('[data-goto]');
+  if (go) { e.preventDefault(); goToChapter(+go.dataset.goto); return; }
+  if (e.target.closest('#viewClearBtn')) { viewRange = null; chPage = pageOfChapter((chapterProgress().next || {}).n); renderChapterList(); return; }
+  if (e.target.closest('#selNextBtn')) {
+    const count = Math.max(1, parseInt($('selNextCount').value, 10) || 1), { next } = chapterProgress();
+    selectNextCount = count;
+    CURRENT_PROJECT.chapters.filter(c => c.n >= next.n && c.status !== 'complete').slice(0, count)
+      .forEach(c => { SELECTION.add(c.n); selectionAnchor = c.n; });
+    goToChapter(next.n);
+  }
+});
+$('chNav').addEventListener('keydown', e => {
+  if (e.key === 'Enter' && e.target.id === 'gotoCh' && e.target.value !== '') goToChapter(parseInt(e.target.value, 10));
+});
+
+let renderToken = 0;
+async function renderChapterList() {
+  const token = ++renderToken;
   const list = $('chList');
   const chapters = CURRENT_PROJECT.chapters || [];
+  const page = pageChapters();
+  const missing = page.filter(c => !hasDetail(c.n)).map(c => c.n);
+  if (missing.length) {
+    list.innerHTML = '<div class="empty">Loading…</div>';
+    try { await ensureChapterDetails(missing); } catch (e) { setStatus('Could not load chapters: ' + e.message, true); return; }
+    if (token !== renderToken) return;
+  }
   SELECTION.forEach(n => { if (!chapterByNumber(n)) SELECTION.delete(n); });
   const cards = CHAPTER_VIEW === 'cards';
   list.classList.toggle('cards', cards);
@@ -3698,13 +3872,8 @@ function renderChapterList() {
   $('viewCardsBtn').setAttribute('aria-pressed', String(cards));
   $('viewListBtn').classList.toggle('on', !cards);
   $('viewCardsBtn').classList.toggle('on', cards);
-  const page = chapters.slice(0, chaptersShown);
-  list.innerHTML = chapters.length ? page.map(cards ? chapterCardHtml : chapterRowHtml).join('') : '<div class="empty">No chapters yet.</div>';
-  if (chapters.length > page.length) {
-    const more = Math.min(CHAPTER_PAGE, chapters.length - page.length);
-    list.insertAdjacentHTML('beforeend', `<div class="chmore"><button id="chMoreBtn" class="small ghost">Show ${more} more <span class="hint">(${page.length} of ${chapters.length} shown)</span></button></div>`);
-    $('chMoreBtn').onclick = showMoreChapters;
-  }
+  list.innerHTML = page.length ? page.map(cards ? chapterCardHtml : chapterRowHtml).join('') : '<div class="empty">No chapters yet.</div>';
+  paintChapterNav();
   paintIcons(list);
   const counts = { not_started: 0, in_progress: 0, complete: 0 };
   chapters.forEach(c => {
@@ -3786,15 +3955,17 @@ $('chList').addEventListener('click', e => {
 
 $('viewListBtn').onclick = () => setChapterView('list');
 $('viewCardsBtn').onclick = () => setChapterView('cards');
-$('selAllBtn').onclick = () => toggleSelection(CURRENT_PROJECT.chapters.map(c => c.n));
+$('selAllBtn').onclick = () => toggleSelection(visibleChapters().map(c => c.n));
+$('selPageBtn').onclick = () => toggleSelection(pageChapters().map(c => c.n));
 $('selCompleteBtn').onclick = () => toggleSelection(CURRENT_PROJECT.chapters.filter(c => c.status === 'complete').map(c => c.n));
+const rangeInputs = () => [parseInt($('selFrom').value, 10), parseInt($('selTo').value, 10)];
 $('selRangeBtn').onclick = () => {
-  const a = parseInt($('selFrom').value, 10), b = parseInt($('selTo').value, 10);
-  if (Number.isNaN(a) || Number.isNaN(b)) return;
-  const [from, to] = a <= b ? [a, b] : [b, a];
-  CURRENT_PROJECT.chapters.filter(c => c.n >= from && c.n <= to).forEach(c => SELECTION.add(c.n));
-  selectionAnchor = to;
-  paintSelection();
+  const [a, b] = rangeInputs();
+  if (!Number.isNaN(a) && !Number.isNaN(b)) showRange(a, b, true);
+};
+$('showRangeBtn').onclick = () => {
+  const [a, b] = rangeInputs();
+  if (!Number.isNaN(a) && !Number.isNaN(b)) showRange(a, b, false);
 };
 $('selClearBtn').onclick =() => { SELECTION.clear(); selectionAnchor = null; paintSelection(); };
 
@@ -4207,6 +4378,7 @@ function fillSettingsForm() {
   const sh = s.shorts;
   document.querySelector(`input[name=shLayout][value="${sh.layout}"]`).checked = true;
   $('shCoverHint').hidden = sh.layout !== 'cover';
+  $('shAutoMake').checked = sh.auto_make;
   $('shOwnLook').checked = sh.own_look;
   $('shLookBody').hidden = !sh.own_look;
   $('shWmEnabled').checked = !!sh.watermark.enabled;
@@ -4226,6 +4398,8 @@ function fillSettingsForm() {
   $('shMusicFileName').textContent = sh.music.file ? sh.music.file.split('/').pop() : '';
   $('shNarrVol').value = Math.round(sh.audio.narration_vol * 100);
   $('shMusicVol').value = Math.round(sh.audio.music_vol * 100);
+  $('shMusicShare').value = Math.round(sh.music_share * 100);
+  renderShortsLibrary();
 
   document.querySelector(`input[name=animStyle][value="${s.animation.style}"]`).checked = true;
   $('animDirection').value = s.animation.direction || 'left';
@@ -4254,6 +4428,15 @@ function fillSettingsForm() {
   $('batchOffloadGb').value = bt.offload_below_gb || 10;
   $('batchFiveHour').value = bt.five_hour_pct || 70;
   $('batchSevenDay').value = bt.seven_day_pct || 60;
+  const yt = s.youtube;
+  $('ytTitle').value = yt.title;
+  $('ytDescription').value = yt.description;
+  $('ytTags').value = yt.tags.join(', ');
+  $('ytThumbName').textContent = yt.thumbnail ? yt.thumbnail.split('/').pop() : '';
+  $('ytAutoShorts').checked = yt.auto_shorts;
+  document.querySelectorAll('#planDays input').forEach(box => { box.checked = s.plan.days.includes(+box.dataset.day); });
+  $('planMinutes').value = s.plan.min_minutes;
+  loadYoutubeChannels(yt.channel || '');
   loadClaudeStatus();
 
   updateSliderLabels();
@@ -4262,6 +4445,22 @@ function fillSettingsForm() {
   refreshShortsLookPreview();
   settingsDirty = false;
   setSettingsSaveState('ok', 'Saved');
+}
+
+// The channel list comes from the publishing module; until it arrives the select holds only the saved choice,
+// so a save made in between keeps it.
+async function loadYoutubeChannels(saved) {
+  const select = $('ytChannel');
+  const fill = (channels, chosen) => {
+    select.replaceChildren(new Option('No channel (nothing is uploaded)', ''), ...channels.map(c => new Option(c.title, c.id)));
+    if (chosen && !channels.some(c => c.id === chosen)) select.append(new Option('Disconnected channel', chosen));
+    select.value = chosen;
+  };
+  fill([], saved);
+  try {
+    const { channels } = await (await fetch('/api/publishing')).json();
+    fill(channels, select.value);
+  } catch (e) { /* the saved choice stays */ }
 }
 
 // settings save indicator - this badge always reflects the current state
@@ -4289,6 +4488,7 @@ function updateSliderLabels() {
   $('shBgDimLbl').textContent = $('shBgDim').value + '%';
   $('shNarrVolLbl').textContent = $('shNarrVol').value + '%';
   $('shMusicVolLbl').textContent = $('shMusicVol').value + '%';
+  $('shMusicShareLbl').textContent = $('shMusicShare').value + '% music / ' + (100 - $('shMusicShare').value) + '% narration';
   $('animDurationLbl').textContent = (+$('animDuration').value / 100).toFixed(2) + 's';
 }
 
@@ -4361,6 +4561,7 @@ function currentSettingsFromForm() {
     },
     shorts: {
       layout: document.querySelector('input[name=shLayout]:checked').value,
+      auto_make: $('shAutoMake').checked,
       own_look: $('shOwnLook').checked,
       watermark: {
         enabled: $('shWmEnabled').checked,
@@ -4375,6 +4576,7 @@ function currentSettingsFromForm() {
         mode: document.querySelector('input[name=shBgMode]:checked').value,
         dim: (+$('shBgDim').value) / 100,
       },
+      music_share: (+$('shMusicShare').value) / 100,
       own_audio: $('shOwnAudio').checked,
       music: { mode: document.querySelector('input[name=shMusicMode]:checked').value },
       audio: { narration_vol: (+$('shNarrVol').value) / 100, music_vol: (+$('shMusicVol').value) / 100 },
@@ -4407,6 +4609,17 @@ function currentSettingsFromForm() {
       offload_below_gb: parseInt($('batchOffloadGb').value, 10) || 10,
       five_hour_pct: parseInt($('batchFiveHour').value, 10) || 70,
       seven_day_pct: parseInt($('batchSevenDay').value, 10) || 60,
+    },
+    youtube: {
+      channel: $('ytChannel').value || null,
+      title: $('ytTitle').value,
+      description: $('ytDescription').value,
+      tags: $('ytTags').value.split(',').map(t => t.trim()).filter(Boolean),
+      auto_shorts: $('ytAutoShorts').checked,
+    },
+    plan: {
+      days: [...document.querySelectorAll('#planDays input:checked')].map(box => +box.dataset.day),
+      min_minutes: parseInt($('planMinutes').value, 10) || 30,
     },
   };
 }
@@ -4605,6 +4818,7 @@ const ASSET_UI = {
   background: { name: 'bgFileName', browse: 'bgBrowseBtn' },
   shorts_watermark: { name: 'shWmFileName', browse: 'shWmBrowseBtn' },
   shorts_background: { name: 'shBgFileName', browse: 'shBgBrowseBtn' },
+  thumbnail: { name: 'ytThumbName', browse: 'ytThumbBrowseBtn' },
 };
 let uploadsInFlight = 0;
 window.addEventListener('beforeunload', e => { if (uploadsInFlight) e.preventDefault(); });
@@ -4668,6 +4882,7 @@ async function uploadAsset(kind, file) {
     setSettingsSaveState('ok', 'Uploaded ' + new Date().toLocaleTimeString());
     showToast(kind + ' uploaded.', null, null, 'ok');
     if (kind === 'voice') { CURRENT_PROJECT.settings.voice.file = d.path; refreshVoiceActive(); }
+    if (kind === 'thumbnail') CURRENT_PROJECT.settings.youtube.thumbnail = d.path;
     if (kind === 'watermark') refreshWatermarkPreview();
     if (kind === 'background') refreshBackgroundPreview();
     if (kind === 'shorts_watermark' || kind === 'shorts_background') refreshShortsLookPreview();
@@ -4677,6 +4892,61 @@ async function uploadAsset(kind, file) {
     setStatus('Upload error: ' + e.message, true);
   }
 }
+
+// --- the shorts' music library ------------------------------------------------
+const LIB_THEMES = ['comedic', 'aura', 'emotional', 'serious', 'dramatic', 'op', 'action', 'mystery', 'sad', 'hype'];
+const libUrl = (...p) => `/api/projects/${encodeURIComponent(CURRENT_PROJECT.slug)}/shorts_music` + p.map(x => '/' + encodeURIComponent(x)).join('');
+const themeOptions = (current) => [...new Set([...LIB_THEMES, current].filter(Boolean))]
+  .map(t => `<option value="${escAttr(t)}"${t === current ? ' selected' : ''}>${escHtml(t)}</option>`).join('');
+
+function renderShortsLibrary() {
+  const lib = CURRENT_PROJECT.settings.shorts.library || [];
+  const pick = $('shLibTheme');
+  if (!pick.options.length) pick.innerHTML = themeOptions('comedic');
+  $('shLibList').innerHTML = lib.map(t => `<div class="libtrack" data-id="${escAttr(t.id)}">
+      <span class="libname" title="${escAttr(t.name)}">${escHtml(t.name)}</span>
+      <span class="hint">${t.duration_s.toFixed(0)}s</span>
+      <input class="libdrop" type="number" min="0" step="0.1" placeholder="drop (s)" title="Drop point in seconds" style="width:84px" value="${t.drop_s ?? ''}" />
+      <select class="libtheme">${themeOptions(t.theme)}</select>
+      <audio controls preload="none" src="${libUrl(t.id, 'audio')}"></audio>
+      <button type="button" class="small ghost libdel">Delete</button></div>`).join('');
+}
+
+async function addLibraryTracks(files) {
+  const theme = $('shLibCustom').value.trim() || $('shLibTheme').value;
+  for (const file of files) {
+    const fd = new FormData();
+    fd.append('file', file); fd.append('theme', theme); fd.append('drop', $('shLibDrop').value);
+    const res = await fetch(libUrl(), { method: 'POST', body: fd });
+    const d = await res.json().catch(() => ({}));
+    if (!res.ok) { showToast(d.error || 'Upload failed', null, null, 'err'); continue; }
+    CURRENT_PROJECT.settings.shorts.library.push(d.track);
+    renderShortsLibrary();
+  }
+  $('shLibCustom').value = ''; $('shLibDrop').value = '';
+  refreshShortsSample();
+}
+
+$('shLibAddBtn').onclick = () => $('shLibFile').click();
+$('shLibFile').onchange = async e => { await addLibraryTracks([...e.target.files]); e.target.value = ''; };
+$('shLibList').onchange = async e => {
+  const isDrop = e.target.classList.contains('libdrop');
+  if (!isDrop && !e.target.classList.contains('libtheme')) return;
+  const id = e.target.closest('.libtrack').dataset.id;
+  const body = isDrop ? { drop_s: e.target.value === '' ? null : +e.target.value } : { theme: e.target.value };
+  const { ok, data } = await apiJson(libUrl(id), 'PATCH', body);
+  if (ok) Object.assign(CURRENT_PROJECT.settings.shorts.library.find(t => t.id === id), data.track);
+  else { showToast(data.error || 'Not saved', null, null, 'err'); renderShortsLibrary(); }
+};
+$('shLibList').onclick = async e => {
+  if (!e.target.classList.contains('libdel')) return;
+  const id = e.target.closest('.libtrack').dataset.id;
+  const { ok } = await apiJson(libUrl(id), 'DELETE');
+  if (ok) {
+    CURRENT_PROJECT.settings.shorts.library = CURRENT_PROJECT.settings.shorts.library.filter(t => t.id !== id);
+    renderShortsLibrary();
+  }
+};
 
 // --- opening a chapter in the editor ------------------------------------------
 function resetEditorState() {
@@ -4964,6 +5234,7 @@ $('npCacheBtn').onclick = saveModelCache;
 $('mergeBtn').onclick = startMerge;
 $('backupBtn').onclick = openBackup;
 $('bkRun').onclick = runBackup;
+$('bkBoth').onclick = async () => { if ($('bkRun').disabled === false) await runBackup(); await clearBackedUp(); };
 $('bkClear').onclick = clearBackedUp;
 $('bkClose').onclick = () => { if (!bkRunning) $('backupModal').classList.remove('on'); };
 $('bkAll').onclick = () => { BK.selected = new Set(BK.chapters.map(c => c.n)); renderBackup(); };
@@ -5001,6 +5272,7 @@ loadKokoroVoices();
 $('wmEnabled').onchange = saveSettingsDebounced;
 document.querySelectorAll('input[name=shLayout]').forEach(el =>
   el.addEventListener('change', () => { $('shCoverHint').hidden = el.value !== 'cover' || !el.checked; }));
+$('shAutoMake').onchange = saveSettingsDebounced;
 $('shOwnLook').onchange = () => { $('shLookBody').hidden = !$('shOwnLook').checked; saveSettingsDebounced(); };
 $('shOwnAudio').onchange = () => { $('shSoundBody').hidden = !$('shOwnAudio').checked; saveSettingsDebounced(); };
 $('shSampleBtn').onclick = playShortsSample;
@@ -5015,7 +5287,7 @@ $('animZoomAmount').oninput = () => {
 };
 $('framingBlur').onchange = saveSettingsDebounced;
 ['wmOpacity', 'wmSize', 'wmSpacing', 'wmAngle', 'bgDim', 'shWmOpacity', 'shWmSize', 'shWmSpacing', 'shWmAngle', 'shBgDim',
- 'animDuration', 'narrVol', 'musicVol', 'shNarrVol', 'shMusicVol'].forEach(id => { $(id).oninput = saveSettingsDebounced; });
+ 'animDuration', 'narrVol', 'musicVol', 'shNarrVol', 'shMusicVol', 'shMusicShare'].forEach(id => { $(id).oninput = saveSettingsDebounced; });
 $('scriptTone').onchange = saveSettingsDebounced;
 $('scriptNarrationType').onchange = saveSettingsDebounced;
 $('scriptStyleRef').oninput = saveSettingsDebounced;
@@ -5031,6 +5303,18 @@ $('batchOffload').onchange = saveSettingsDebounced;
 $('batchOffloadGb').oninput = saveSettingsDebounced;
 $('batchFiveHour').oninput = saveSettingsDebounced;
 $('batchSevenDay').oninput = saveSettingsDebounced;
+['ytChannel', 'ytAutoShorts'].forEach(id => { $(id).onchange = saveSettingsDebounced; });
+document.querySelectorAll('#planDays input').forEach(box => { box.onchange = saveSettingsDebounced; });
+$('planMinutes').oninput = saveSettingsDebounced;
+['ytTitle', 'ytDescription', 'ytTags'].forEach(id => { $(id).oninput = saveSettingsDebounced; });
+$('ytThumbFile').onchange = e => uploadAsset('thumbnail', e.target.files[0]);
+$('ytThumbBrowseBtn').onclick = () => $('ytThumbFile').click();
+$('ytThumbClearBtn').onclick = async () => {
+  const { ok, data } = await apiJson(projectApi('/asset/thumbnail'), 'DELETE');
+  if (!ok) { setStatus(data.error || 'Could not remove the thumbnail.', true); return; }
+  CURRENT_PROJECT.settings.youtube.thumbnail = null;
+  $('ytThumbName').textContent = '';
+};
 $('musicFile').onchange = e => uploadAsset('music', e.target.files[0]);
 $('voiceFile').onchange = e => uploadAsset('voice', e.target.files[0]);
 $('wmFile').onchange = e => uploadAsset('watermark', e.target.files[0]);

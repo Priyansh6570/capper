@@ -22,6 +22,8 @@
       </div>
       <nav class="appnav">
         <a href="javascript:void(0)" class="on" data-icon="layout" data-ic-size="14"><span>Projects</span></a>
+        <a href="/overview" target="_blank" rel="noopener" data-icon="film" data-ic-size="14"><span>Live overview</span></a>
+        <a href="/publishing" target="_blank" rel="noopener" data-icon="upload" data-ic-size="14"><span>Publishing</span></a>
       </nav>
       <div>
         <div class="navlabel">Recent</div>
@@ -216,22 +218,25 @@
           <div class="chaptercardhead">
             <div class="foldtitle">
               <button class="ghost icon small chev" data-fold="chaptersCard" data-icon="chevdown" data-ic-size="14" aria-expanded="true" title="Collapse the chapters"></button>
-              <div><h2>Chapters</h2><span class="workingnote" data-working hidden></span><p class="hint">Select chapters to run the pipeline or merge their videos; shift-click selects a range. Tracker order: download, split, stitch, script, export, audio, video. Filled is done, striped is out of date, pulsing is running.</p></div>
+              <div><h2>Chapters</h2><span class="workingnote" data-working hidden></span><p class="hint">Select chapters to run the pipeline or merge their videos; shift-click selects a range, or type a range to show it. Tracker order: download, split, stitch, script, export, audio, video. Filled is done, striped is out of date, pulsing is running.</p></div>
             </div>
             <div class="viewtoggle" role="group" aria-label="Chapter view">
               <button id="viewListBtn" class="small" data-icon="list" data-ic-size="13" aria-pressed="true"><span>List</span></button>
               <button id="viewCardsBtn" class="small" data-icon="grid" data-ic-size="13" aria-pressed="false"><span>Cards</span></button>
             </div>
           </div>
+          <div class="chnav" id="chNav"></div>
           <div class="chbulk">
             <span class="selcount" id="selCount" aria-live="polite">0 selected</span>
             <button id="selAllBtn" class="small ghost" data-icon="checkbox" data-ic-size="13"><span>Select all</span></button>
+            <button id="selPageBtn" class="small ghost" data-icon="checkbox" data-ic-size="13"><span>Select page</span></button>
             <button id="selCompleteBtn" class="small ghost" data-icon="checkbox" data-ic-size="13"><span>Select all complete</span></button>
             <span class="selrange" title="Select every chapter from the first number to the last, inclusive">
               <input id="selFrom" type="number" min="0" step="1" placeholder="From" aria-label="Range start chapter">
               <span>to</span>
               <input id="selTo" type="number" min="0" step="1" placeholder="To" aria-label="Range end chapter">
-              <button id="selRangeBtn" class="small ghost"><span>Select range</span></button>
+              <button id="showRangeBtn" class="small ghost" title="Show only these chapters, without selecting them"><span>Show</span></button>
+              <button id="selRangeBtn" class="small ghost" title="Show these chapters and select them"><span>Select range</span></button>
             </span>
             <button id="selClearBtn" class="small ghost"><span>Clear</span></button>
             <button id="backupBtn" class="small ghost" data-icon="upload" data-ic-size="13" title="Copy chapter files to this project's Drive folder"><span>Back up to Drive</span></button>
@@ -407,6 +412,7 @@
           <span class="navlabel">Script</span>
           <a href="#s-script" class="on">Script generation</a>
           <a href="#s-batch">Batch automation</a>
+          <a href="#s-youtube">YouTube upload</a>
           <span class="navlabel" style="margin-top:14px">Output</span>
           <a href="#s-video">Video size</a>
           <a href="#s-music">Background music</a>
@@ -504,6 +510,46 @@
                   <input id="batchSevenDay" type="number" min="1" max="100" step="1" />
                 </label>
               </div>
+            </div>
+          </div>
+
+          <div class="setcard" id="s-youtube">
+            <div class="setlabel"><b>YouTube upload</b><span>How this project's videos are uploaded. Channels are connected on the <a href="/publishing" target="_blank" rel="noopener">Publishing</a> page. Full videos wait for your approval and always upload as private; shorts upload by themselves.</span></div>
+            <div class="setbody">
+              <label class="field" style="margin:0"><span class="lbl" style="text-transform:none;letter-spacing:0;font-weight:400;color:var(--muted)">Channel</span>
+                <select id="ytChannel"></select>
+              </label>
+              <label class="field" style="margin:0"><span class="lbl" style="text-transform:none;letter-spacing:0;font-weight:400;color:var(--muted)">Title of full videos</span>
+                <input id="ytTitle" type="text" maxlength="300" />
+              </label>
+              <label class="field" style="margin:0"><span class="lbl" style="text-transform:none;letter-spacing:0;font-weight:400;color:var(--muted)">Description of full videos</span>
+                <textarea id="ytDescription" style="width:100%;height:90px"></textarea>
+              </label>
+              <span class="hint">In the title and description, {series} is the series name, {chapters} the chapters (like 22-45) and {part} the part number when a video is longer than 11 h 55 min and is split.</span>
+              <label class="field" style="margin:0"><span class="lbl" style="text-transform:none;letter-spacing:0;font-weight:400;color:var(--muted)">Tags (separated by commas)</span>
+                <input id="ytTags" type="text" />
+              </label>
+              <b>Thumbnail of full videos</b>
+              <div class="filerow">
+                <button type="button" id="ytThumbBrowseBtn" class="small ghost" data-icon="folder" data-ic-size="14"><span>Browse&hellip;</span></button>
+                <span class="swatch" id="ytThumbName"></span>
+                <button type="button" id="ytThumbClearBtn" class="small ghost" data-icon="trash" data-ic-size="13"><span>Remove</span></button>
+                <input id="ytThumbFile" type="file" accept="image/*" class="filehidden" tabindex="-1" />
+              </div>
+              <label class="togglesw"><input type="checkbox" id="ytAutoShorts" style="position:absolute;opacity:0;width:1px;height:1px" /><span class="tk"></span>Upload finished shorts automatically</label>
+              <span class="hint">Shorts are written up by Claude from their script and go out public on the channel's schedule (set on the Publishing page).</span>
+              <b>Upload plan</b>
+              <span class="hint">How often this project uploads. The Telegram planner uses it to work out how many chapters an upload needs and how many days of video are ready (/plan).</span>
+              <div id="planDays" style="display:flex;flex-wrap:wrap;gap:6px 14px">
+                <label><input type="checkbox" data-day="0" /> Mon</label><label><input type="checkbox" data-day="1" /> Tue</label>
+                <label><input type="checkbox" data-day="2" /> Wed</label><label><input type="checkbox" data-day="3" /> Thu</label>
+                <label><input type="checkbox" data-day="4" /> Fri</label><label><input type="checkbox" data-day="5" /> Sat</label>
+                <label><input type="checkbox" data-day="6" /> Sun</label>
+              </div>
+              <span class="hint">All seven days ticked is a daily upload.</span>
+              <label class="field" style="margin:0"><span class="lbl" style="text-transform:none;letter-spacing:0;font-weight:400;color:var(--muted)">Minimum minutes per upload</span>
+                <input id="planMinutes" type="number" min="1" max="600" step="1" />
+              </label>
             </div>
           </div>
 
@@ -655,6 +701,8 @@
           <div class="setcard" id="s-shorts">
             <div class="setlabel">
               <b>Shorts</b><span>The vertical videos made from the best moments of your chapters. They use the main video's animation and video size; the look and the sound can be their own.</span>
+              <label class="togglesw" style="margin-top:6px"><input type="checkbox" id="shAutoMake" style="position:absolute;opacity:0;width:1px;height:1px" /><span class="tk"></span>Make shorts automatically</label>
+              <span class="hint">When a pipeline run has rendered chapters, shorts are made for them right after.</span>
               <label class="togglesw" style="margin-top:6px"><input type="checkbox" id="shOwnLook" style="position:absolute;opacity:0;width:1px;height:1px" /><span class="tk"></span>Own watermark and background</label>
               <label class="togglesw" style="margin-top:6px"><input type="checkbox" id="shOwnAudio" style="position:absolute;opacity:0;width:1px;height:1px" /><span class="tk"></span>Own music and volume</label>
             </div>
@@ -730,6 +778,20 @@
               </div>
             </section>
             </div>
+            <section class="shsec">
+              <h4 class="shsechead">Music library</h4>
+              <div class="hint">Upload as many tracks as you like and mark each with a theme. For every short, Claude picks the theme that fits its scene and the matching track plays under it; the short runs as long as the track. Give a track its drop point (the second the build-up ends) and the short's biggest moment lands exactly on it. While the library has tracks, they replace the music below.</div>
+              <div class="filerow">
+                <select id="shLibTheme" aria-label="Theme of the next track"></select>
+                <input id="shLibCustom" type="text" placeholder="or a new theme" maxlength="24" style="width:130px" />
+                <input id="shLibDrop" type="number" min="0" step="0.1" placeholder="drop at (s)" title="Where the music drops, in seconds - leave empty if it has no drop" style="width:100px" />
+                <button type="button" id="shLibAddBtn" class="small ghost" data-icon="folder" data-ic-size="14"><span>Add music…</span></button>
+                <input id="shLibFile" type="file" accept="audio/*" multiple class="filehidden" tabindex="-1" />
+              </div>
+              <div id="shLibList" class="shlib"></div>
+              <label class="slider"><div class="slbl"><span>Music share of the mix (narration gets the rest)</span><span id="shMusicShareLbl"></span></div>
+                <input id="shMusicShare" type="range" min="10" max="70" step="5" value="40" /></label>
+            </section>
             <div id="shSoundBody">
             <section class="shsec">
               <h4 class="shsechead">Music</h4>
@@ -1076,33 +1138,43 @@
       folder (set the Projects folder in the New project dialog) to use this.
     </div>
     <div class="pipebody" id="bkMain" hidden>
-      <p class="pipehint">Copies chapter files into this project's Drive folder (<span id="bkFolder"></span>). Only files that are
-        new or changed are copied.</p>
+      <p class="pipehint" id="bkScope"></p>
       <div class="bksec">
-        <b class="bkh">What to back up</b>
+        <b class="bkh">What is in Drive (<span id="bkFolder"></span>) and what is not</b>
+        <div class="bkcols"><span></span><span>On this PC</span><span>Already in Drive</span><span>Not in Drive</span></div>
         <div id="bkKinds"></div>
+        <p class="pipehint">Only files that are already in Drive can be cleared: tick a kind and press Back up first (or use Back up, then clear). Page images are large and rebuildable, so they are not backed up by default; you can still clear them below.</p>
+      </div>
+      <div class="bkactions">
+        <div class="bkact">
+          <b>1. Clear from this PC</b>
+          <div id="bkClearKinds"></div>
+          <label class="bkforce"><input type="checkbox" id="bkForce" /> <span>Also delete files that are not in Drive (they cannot be restored from Drive)</span></label>
+          <p class="pipehint" id="bkFreeText"></p>
+          <button type="button" class="small danger" id="bkClear"><span>Clear from this PC</span></button>
+        </div>
+        <div class="bkact">
+          <b>2. Back up what is missing</b>
+          <p class="pipehint" id="bkSummary2"></p>
+          <div class="macts"><button id="bkRun" class="small primary" data-icon="upload" data-ic-size="14"><span>Back up to Drive</span></button>
+          <button id="bkBoth" class="small" title="Copy what is missing, then clear everything that is in Drive"><span>Back up, then clear</span></button></div>
+        </div>
       </div>
       <div class="bksec">
         <div class="bkhead"><b class="bkh">Chapters</b><span class="grow"></span>
           <button type="button" class="small ghost" id="bkAll"><span>All</span></button>
-          <button type="button" class="small ghost" id="bkPending"><span>Not backed up</span></button>
+          <button type="button" class="small ghost" id="bkPending"><span>Not fully in Drive</span></button>
           <button type="button" class="small ghost" id="bkNone"><span>None</span></button>
         </div>
         <div class="bklist" id="bkChapters"></div>
       </div>
       <div class="bkinfo" id="bkMerged"></div>
       <div class="bkprog" id="bkProg" hidden><div class="bkbar"><span id="bkBar"></span></div><span id="bkProgText"></span></div>
-      <div class="bksec bkfree">
-        <b class="bkh">Free up space on this PC</b>
-        <p class="pipehint" id="bkFreeText"></p>
-        <div><button type="button" class="small danger" id="bkClear"><span>Clear from this PC</span></button></div>
-      </div>
     </div>
     <div class="pipefoot">
       <div class="pipesummary" id="bkSummary" aria-live="polite"></div>
       <div class="macts">
         <button id="bkClose" class="small ghost"><span>Close</span></button>
-        <button id="bkRun" class="primary" data-icon="upload" data-ic-size="14"><span>Back up</span></button>
       </div>
     </div>
   </div>

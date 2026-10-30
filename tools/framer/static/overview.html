@@ -1,0 +1,313 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ReCapper - Overview</title>
+<link rel="icon" href="/assets/ReCapper.png">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/css/shell.css">
+<style>
+  .hero { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); gap: 16px; }
+  .hero-main { display: flex; flex-direction: column; gap: 20px; padding: 24px 26px; }
+  .hero-main .label { font-size: 11.5px; }
+  .hero-time { display: flex; align-items: baseline; gap: 18px; flex-wrap: wrap; margin-top: -8px; }
+  .hero-time b { font: 600 64px/1 'IBM Plex Mono', monospace; letter-spacing: -.04em; }
+  .hero-time span { font: 500 17px 'IBM Plex Mono', monospace; color: var(--text2); }
+  .total-bar { position: relative; display: flex; gap: 2px; height: 10px; border-radius: 6px; overflow: hidden; background: var(--track); }
+  .total-bar > span { transition: width .4s; }
+  .total-bar .run { position: relative; overflow: hidden; background: var(--blue); }
+  .total-bar .run i { position: absolute; inset: 0; width: 40%; background: linear-gradient(90deg, transparent, oklch(1 0 0 / 0.35), transparent); animation: rcsheen 2.4s ease-in-out infinite; }
+  .legend { display: flex; align-items: center; gap: 20px; font-size: 13px; color: var(--text2); margin-top: 10px; }
+  .legend .key { display: flex; align-items: center; gap: 7px; }
+  .legend .key i { width: 8px; height: 8px; border-radius: 2px; }
+  .legend .key b { font: 600 13px 'IBM Plex Mono', monospace; color: var(--text); }
+  .legend .grow { flex: 1; }
+  .legend .note { font: 12.5px 'IBM Plex Mono', monospace; color: var(--text3); }
+  .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .stat { display: flex; flex-direction: column; justify-content: space-between; gap: 10px; padding: 18px 20px; }
+  .stat .label { display: flex; align-items: center; gap: 8px; font-size: 11.5px; letter-spacing: .12em; }
+  .stat b { font: 600 34px/1 'IBM Plex Mono', monospace; letter-spacing: -.02em; }
+
+  .cols { display: grid; grid-template-columns: minmax(0, 1fr) minmax(300px, 360px); gap: 16px; align-items: start; }
+  .stack { display: flex; flex-direction: column; gap: 16px; }
+  .project { display: flex; flex-direction: column; overflow: hidden; }
+  .project-head { display: flex; align-items: center; gap: 14px; padding: 18px 22px; }
+  .project-head .name { flex: 1; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .project-head .name b { font-size: 18px; font-weight: 700; letter-spacing: -.01em; }
+  .project-head .name span { font-size: 13px; color: var(--text2); }
+  .project-head .done { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; }
+  .project-head .done b { font: 600 15px 'IBM Plex Mono', monospace; }
+  .project-head .done span { font: 12.5px 'IBM Plex Mono', monospace; color: var(--text3); }
+  .hold { margin: 0 22px 12px; padding: 8px 12px; border-radius: 9px; background: var(--amber-soft); color: var(--amber); font-size: 13px; }
+  .running { display: flex; flex-direction: column; gap: 2px; padding: 0 10px 10px; }
+  .running > .label { padding: 6px 12px 8px; }
+  .now { display: flex; flex-direction: column; gap: 12px; padding: 14px 16px 15px; border-radius: 12px; background: var(--field); box-shadow: inset 0 0 0 1px var(--run-line); }
+  .now + .now { margin-top: 6px; }
+  .now-head { display: flex; align-items: baseline; gap: 14px; }
+  .now-head .ch { flex: none; font: 600 18px 'IBM Plex Mono', monospace; }
+  .now-head .step { flex: none; display: flex; align-items: center; gap: 6px; font: 500 12.5px 'IBM Plex Mono', monospace; color: var(--blue); white-space: nowrap; }
+  .now-head .grow { flex: 1; }
+  .now-head .eta { flex: none; font: 600 20px 'IBM Plex Mono', monospace; letter-spacing: -.02em; white-space: nowrap; }
+  .now-body { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+  .now-foot { display: flex; align-items: baseline; gap: 14px; min-width: 0; }
+  .now-foot .detail { flex: 1; min-width: 0; font: 12.5px 'IBM Plex Mono', monospace; color: var(--text2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .now-foot .left { flex: none; font: 12px 'IBM Plex Mono', monospace; color: var(--text3); white-space: nowrap; }
+  .warn-line { font: 12.5px 'IBM Plex Mono', monospace; color: var(--amber); }
+  .segs { display: grid; gap: 4px; }
+  .seg { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+  .seg .bar { position: relative; height: 6px; border-radius: 3px; overflow: hidden; background: var(--track); box-shadow: inset 0 0 0 1px transparent; }
+  .seg .bar i { display: block; height: 100%; background: var(--blue); transition: width .8s linear; }
+  .seg .name { font: 500 11.5px 'IBM Plex Mono', monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .bar.done, .mbar.done { background: var(--done-step) !important; }
+  .bar.wait, .mbar.wait { box-shadow: inset 0 0 0 1px var(--wait-ring) !important; }
+  .bar.fail, .mbar.fail { background: var(--red) !important; }
+  .bar.skip, .mbar.skip { opacity: .4; }
+  .batch-head { display: flex; align-items: center; gap: 16px; padding: 16px 24px 10px; border-top: 1px solid var(--line); }
+  .batch-head .label { flex: 1; }
+  .batch-head .key { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text3); }
+  .batch-head .key i { width: 14px; height: 5px; border-radius: 3px; }
+  .map { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 8px; padding: 6px 20px 22px; }
+  .cell { display: flex; flex-direction: column; gap: 9px; padding: 11px 12px 12px; border-radius: 11px; background: var(--field); box-shadow: inset 0 0 0 1px transparent; }
+  .cell.run { background: var(--run-bg); box-shadow: inset 0 0 0 1px var(--run-line); }
+  .cell-top { display: flex; align-items: baseline; gap: 6px; }
+  .cell-top b { flex: 1; font: 600 14px 'IBM Plex Mono', monospace; }
+  .cell-top span { font: 11.5px 'IBM Plex Mono', monospace; color: var(--text3); }
+  .msegs { display: grid; gap: 2px; }
+  .mbar { height: 4px; border-radius: 2px; overflow: hidden; background: var(--track); box-shadow: inset 0 0 0 1px transparent; }
+  .mbar i { display: block; height: 100%; background: var(--blue); transition: width .8s linear; }
+  .cell-state { display: flex; align-items: center; gap: 6px; font: 500 11.5px 'IBM Plex Mono', monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  .side-card { display: flex; flex-direction: column; overflow: hidden; }
+  .side-card > .label { padding: 16px 20px 10px; }
+  .feed { display: flex; flex-direction: column; padding: 0 8px 10px; }
+  .feed-row { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 8px 12px; border-radius: 9px; }
+  .feed-row:hover { background: oklch(0.5 0.01 300 / 0.1); }
+  .feed-row .tick { width: 18px; height: 18px; border-radius: 50%; display: grid; place-items: center; background: var(--green-soft); color: var(--green); }
+  .feed-row .tick.bad { background: oklch(0.62 0.17 25 / 0.16); color: var(--red-text); font: 700 11px 'IBM Plex Mono', monospace; }
+  .feed-row .what { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+  .feed-row .what b { font-size: 14px; font-weight: 600; }
+  .feed-row .what span { font-size: 13px; color: var(--text2); }
+  .feed-row .at { font: 12.5px 'IBM Plex Mono', monospace; color: var(--text3); }
+  .other { display: flex; flex-direction: column; gap: 8px; padding: 12px; border-radius: 10px; }
+  .other:hover { background: oklch(0.5 0.01 300 / 0.1); color: var(--text); }
+  .other-top { display: flex; align-items: center; gap: 10px; min-width: 0; }
+  .other-top b { flex: 1; min-width: 0; font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .other-top em { flex: none; font: 500 11.5px 'IBM Plex Mono', monospace; font-style: normal; padding: 2px 7px; border-radius: 6px; background: var(--field); color: var(--text3); }
+  .other .track { display: flex; height: 4px; border-radius: 3px; overflow: hidden; background: var(--track); }
+  .other .track span { background: var(--green); }
+  .other small { font: 12px 'IBM Plex Mono', monospace; color: var(--text3); }
+  .job { display: flex; flex-direction: column; gap: 6px; padding: 8px 12px; }
+  .job-top { display: flex; align-items: baseline; gap: 8px; }
+  .job-top b { flex: 1; min-width: 0; font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .job-top span { font: 12px 'IBM Plex Mono', monospace; color: var(--text3); }
+  .job .track { height: 4px; border-radius: 3px; overflow: hidden; background: var(--track); }
+  .job .track i { display: block; height: 100%; background: var(--blue); }
+  .empty { padding: 4px 20px 18px; font-size: 13px; color: var(--text3); }
+  .idle { padding: 40px; text-align: center; color: var(--text3); }
+</style>
+</head>
+<body>
+<div class="shell">
+  <aside class="side" id="side"></aside>
+  <main class="main">
+    <div class="topbar">
+      <h1>Pipeline overview</h1>
+      <span class="pill" id="live"><span class="dot pulse" style="background:var(--green)"></span><span id="liveText">connecting</span></span>
+      <div class="grow"></div>
+      <span class="clock" id="clock"></span>
+    </div>
+    <div class="page" id="page"><div class="idle">Loading...</div></div>
+  </main>
+</div>
+<script src="/static/js/shell.js"></script>
+<script>
+const { esc, icon, dot } = Shell;
+const PIPELINE_STAGES = ['download', 'stitch', 'script', 'export', 'audio', 'video'];
+const SHORTS_STAGES = ['shorts_find', 'shorts_render'];
+const STAGE_LABEL = {download:'Download', stitch:'Stitch', script:'Script', export:'Export', review:'Review',
+                     audio:'Audio', video:'Video', shorts_find:'Find shorts', shorts_render:'Render shorts'};
+const WHAT_LABEL = {both:'Audio + video', voice:'Audio', video:'Video', brand:'Branding', script:'Script',
+                    shorts_find:'Find shorts', shorts_render:'Render shorts'};
+const ACTIVE = ['running', 'paused'];
+const CHECK = ['M5 12l5 5 9-10'];
+let data = null, fetchedAt = 0;
+
+const pct = f => Math.round(Math.max(0, Math.min(1, f)) * 100);
+const nowS = () => data.now + (Date.now() - fetchedAt) / 1000;
+const iso = t => t ? Date.parse(t) / 1000 : null;
+const clock = epoch => epoch ? new Date(epoch * 1000).toLocaleTimeString('en-US', {hour: '2-digit', minute: '2-digit'}) : '-';
+
+function dur(s) {
+  if (s == null || !isFinite(s)) return '-';
+  s = Math.max(0, Math.round(s));
+  const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), sec = s % 60;
+  return h ? `${h}h ${String(m).padStart(2, '0')}m` : `${m}m ${String(sec).padStart(2, '0')}s`;
+}
+function short(s) {
+  s = Math.max(0, Math.round(s));
+  const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60);
+  return h ? `${h}h${String(m).padStart(2, '0')}` : `${m}m`;
+}
+
+const stagesOf = kind => kind === 'shorts' ? SHORTS_STAGES : PIPELINE_STAGES;
+// The index of the step a chapter is at; the review pause sits just before audio.
+function stepIndex(ch, stages) {
+  const at = ch.stage === 'review' ? 'audio' : ch.stage;
+  return at ? stages.indexOf(at) : stages.length;
+}
+function chapterProgress(ch) {
+  const total = ch.plan.length || 1;
+  const done = ch.plan.filter(s => ch.completed.includes(s)).length;
+  return ch.state === 'done' ? 1 : (done + (ch.state === 'running' && ch.job ? ch.job.progress || 0 : 0)) / total;
+}
+function stepBars(ch, stages, cls) {
+  const at = stepIndex(ch, stages);
+  return stages.map((s, i) => {
+    const current = i === at && ch.state !== 'done';
+    let state = '', fill = 0;
+    if (ch.state === 'done' || ch.completed.includes(s)) state = 'done';
+    else if (current && ch.state === 'running') fill = ch.job ? ch.job.progress || 0 : 0;
+    else if (current && ch.state === 'failed') state = 'fail';
+    else if (current) state = 'wait';
+    else if (!ch.plan.includes(s)) state = i < at ? 'done' : 'skip';
+    return {label: STAGE_LABEL[s], state, fill, running: current && ch.state === 'running'};
+  }).map(b => ({...b, html: `<div class="${cls} ${b.state}"><i style="width:${pct(b.fill)}%"></i></div>`}));
+}
+const stepColor = b => b.running ? 'var(--blue)' : b.state === 'done' ? 'var(--text2)' : b.state === 'fail' ? 'var(--red-text)' : b.state === 'wait' ? 'var(--text2)' : 'var(--text3)';
+
+function nowCard(ch, kind) {
+  const stages = stagesOf(kind), job = ch.job, frac = job ? job.progress || 0 : 0;
+  const bits = [];
+  if (job && job.total_beats && ['both', 'voice', 'video'].includes(job.what))
+    bits.push(`audio ${job.audio}/${job.total_beats}`, `video ${job.video}/${job.total_beats}`);
+  if (job && job.short_count) bits.push(`short ${job.short_no}/${job.short_count}`);
+  if (job && job.downloading_model) bits.push('downloading voice model');
+  const text = (ch.message || ch.last_log || '').replace(/^\d\d:\d\d:\d\d /, '');
+  const detail = [...bits, text].filter(Boolean).join(' · ') || `${STAGE_LABEL[ch.stage]}…`;
+  const jobLeft = job && job.eta_s != null ? `step ${dur(job.eta_s)} left · ` : '';
+  const bars = stepBars(ch, stages, 'bar');
+  return `<div class="now">
+    <div class="now-head"><span class="ch">Ch ${ch.n}</span>
+      <span class="step">${dot('var(--blue)', true)}${esc(STAGE_LABEL[ch.stage])} · ${pct(frac)}%</span><div class="grow"></div>
+      <span class="eta">${ch.finish_at ? dur(ch.finish_at - nowS()) : '-'}</span></div>
+    <div class="now-body">
+      <div class="segs" style="grid-template-columns:repeat(${stages.length},minmax(0,1fr))">${bars.map(b => `<div class="seg">${b.html}<span class="name" style="color:${stepColor(b)}">${b.label}</span></div>`).join('')}</div>
+      <div class="now-foot"><span class="detail" title="${esc(detail)}">${esc(detail)}</span>
+        <span class="left">${jobLeft}done ~${clock(ch.finish_at)}</span></div>
+      ${(ch.warnings || []).map(w => `<div class="warn-line">&#9888; ${esc(w)}</div>`).join('')}
+    </div></div>`;
+}
+
+function cellState(ch) {
+  const label = STAGE_LABEL[ch.stage] || '';
+  if (ch.state === 'running') return [`${label} ${pct(ch.job ? ch.job.progress || 0 : 0)}%`, 'var(--blue)', dot('var(--blue)', true)];
+  if (ch.state === 'done') return [`done ${clock(iso(ch.finished_at))}`, 'var(--green)', icon(CHECK, 11, 2.2)];
+  if (ch.state === 'failed') return [`${label} failed`, 'var(--red-text)', ''];
+  if (ch.state === 'waiting') return ['review', 'var(--amber)', ''];
+  if (ch.state === 'cancelled') return ['cancelled', 'var(--text3)', ''];
+  return [`waits · ${label}`, 'var(--text3)', ''];
+}
+function cell(ch, kind) {
+  const stages = stagesOf(kind), [state, color, mark] = cellState(ch);
+  const eta = ch.state === 'done' || ch.state === 'cancelled' || !ch.finish_at ? '' : short(ch.finish_at - nowS());
+  return `<div class="cell${ch.state === 'running' ? ' run' : ''}" title="${esc(ch.error || `Chapter ${ch.n}`)}">
+    <div class="cell-top"><b style="color:${ch.state === 'done' ? 'var(--text2)' : 'var(--text)'}">${ch.n}</b><span>${eta}</span></div>
+    <div class="msegs" style="grid-template-columns:repeat(${stages.length},minmax(0,1fr))">${stepBars(ch, stages, 'mbar').map(b => b.html).join('')}</div>
+    <span class="cell-state" style="color:${color}">${mark}${esc(state)}</span></div>`;
+}
+
+const rank = c => ({running: 0, waiting: 1, failed: 2, queued: 3, cancelled: 4, done: 5}[c.state] ?? 6);
+function batchMap(title, b, kind) {
+  const chapters = b.chapters.slice().sort((a, z) => a.n - z.n);
+  return `<div class="batch-head"><span class="label">${esc(title)} · ${chapters.length} CHAPTERS</span>
+      <span class="key"><i style="background:var(--done-step)"></i>done</span><span class="key"><i style="background:var(--blue)"></i>running</span>
+      <span class="key"><i style="background:var(--track);box-shadow:inset 0 0 0 1px var(--wait-ring)"></i>waiting</span></div>
+    <div class="map">${chapters.map(c => cell(c, kind)).join('')}</div>`;
+}
+
+function projectPanel(p) {
+  const batches = [['PIPELINE', p.pipeline, 'pipeline'], ['SHORTS', p.shorts, 'shorts']].filter(([, b]) => b && ACTIVE.includes(b.status));
+  const all = batches.flatMap(([, b]) => b.chapters);
+  const done = all.filter(c => c.state === 'done').length;
+  const running = batches.flatMap(([, b, kind]) => b.chapters.filter(c => c.state === 'running').map(c => [c, kind]));
+  const finish = Math.max(...batches.map(([, b]) => b.finish_at || 0));
+  const holds = batches.filter(([, b]) => b.hold).map(([, b]) => `<div class="hold">Claude usage limit reached — ${b.hold.choice === 'wait' ? 'waiting until ' + clock(b.hold.resume_at) : 'waiting for your choice'}</div>`).join('');
+  return `<section class="panel project">
+    <div class="project-head"><div class="name"><b>${esc(p.name)}</b><span>${p.chapters} chapters · batch of ${all.length}</span></div>
+      <div class="done"><b>${done} / ${all.length} done</b><span>${finish ? 'finishes ' + clock(finish) : ''}</span></div></div>
+    ${holds}
+    ${running.length ? `<div class="running"><span class="label">NOW RUNNING</span>${running.map(([c, kind]) => nowCard(c, kind)).join('')}</div>` : ''}
+    ${batches.map(([title, b, kind]) => batchMap(title, b, kind)).join('')}
+  </section>`;
+}
+
+function feedRow(job) {
+  const n = /_ch(\d+)$/.exec(job.chapter_id);
+  const mark = job.status === 'done' ? `<span class="tick">${icon(CHECK, 10, 2.2)}</span>` : `<span class="tick bad">${job.status === 'failed' ? '!' : '–'}</span>`;
+  return `<div class="feed-row">${mark}<span class="what"><b>${n ? 'Ch ' + n[1] : esc(job.chapter_id)}</b><span>${esc(WHAT_LABEL[job.what] || job.what)}${job.status === 'done' ? '' : ' ' + job.status}</span></span>
+    <span class="at">${clock(iso(job.finished_at))}</span></div>`;
+}
+function looseRow(job) {
+  return `<div class="job"><div class="job-top"><b>${esc(job.chapter_id)}</b><span>${esc(WHAT_LABEL[job.what] || job.what)} · ${dur(job.eta_s)}</span></div>
+    <div class="track"><i style="width:${pct(job.progress)}%"></i></div></div>`;
+}
+function otherProject(p) {
+  const last = p.pipeline || p.shorts, complete = (p.counts.complete || 0) + (p.counts.rendered || 0);
+  const badge = !p.chapters ? 'empty' : last ? last.status : 'idle';
+  return `<a class="other" href="/?project=${encodeURIComponent(p.slug)}"><span class="other-top"><b>${esc(p.name)}</b><em>${badge}</em></span>
+    <span class="track"><span style="width:${p.chapters ? complete / p.chapters * 100 : 0}%"></span></span>
+    <small>${p.chapters ? `${complete} of ${p.chapters} chapters complete` : 'No chapters yet'}</small></a>`;
+}
+
+function render() {
+  if (!data) return;
+  const busy = data.projects.filter(p => [p.pipeline, p.shorts].some(b => b && ACTIVE.includes(b.status)));
+  const rest = data.projects.filter(p => !busy.includes(p));
+  const chs = busy.flatMap(p => [p.pipeline, p.shorts].filter(b => b && ACTIVE.includes(b.status)).flatMap(b => b.chapters));
+  const count = st => chs.filter(c => c.state === st).length;
+  const nDone = count('done'), nRun = count('running'), nQ = count('queued');
+  const runFrac = chs.filter(c => c.state === 'running').reduce((sum, c) => sum + chapterProgress(c), 0);
+  const finishes = busy.flatMap(p => [p.pipeline, p.shorts].filter(b => b && ACTIVE.includes(b.status) && b.finish_at).map(b => b.finish_at));
+  const last = finishes.length ? Math.max(...finishes) : null;
+  const tiles = [['RUNNING', nRun, nRun ? 'var(--blue)' : 'var(--text3)', nRun ? dot('var(--blue)', true) : ''], ['QUEUED', nQ, nQ ? 'var(--text)' : 'var(--text3)', ''],
+                 ['IN REVIEW', count('waiting'), count('waiting') ? 'var(--amber)' : 'var(--text3)', ''],
+                 ['FAILED', count('failed'), count('failed') ? 'var(--red-text)' : 'var(--text3)', '']];
+  const total = chs.length || 1;
+  const hero = `<div class="hero"><div class="panel hero-main">
+      <span class="label">ALL WORK DONE IN</span>
+      <div class="hero-time"><b>${last ? dur(last - nowS()) : '–'}</b><span>${last ? 'around ' + clock(last) : 'nothing is running'}</span></div>
+      <div><div class="total-bar"><span style="width:${nDone / total * 100}%;background:var(--green)"></span><span class="run" style="width:${runFrac / total * 100}%"><i></i></span></div>
+        <div class="legend"><span class="key"><i style="background:var(--green)"></i><b>${nDone}</b>done</span><span class="key"><i style="background:var(--blue)"></i><b>${nRun}</b>running</span>
+          <span class="key"><i style="background:var(--track)"></i><b>${nQ}</b>queued</span><div class="grow"></div>
+          <span class="note">${busy.length} of ${data.projects.length} projects busy</span></div></div></div>
+    <div class="stats">${tiles.map(([label, v, color, mark]) => `<div class="panel stat"><span class="label">${mark}${label}</span><b style="color:${color}">${v}</b></div>`).join('')}</div></div>`;
+
+  const left = busy.length ? busy.map(projectPanel).join('') : '<div class="panel idle">Nothing is running right now.</div>';
+  const feed = `<section class="panel side-card"><span class="label">RECENTLY FINISHED</span>
+    ${data.finished.length ? `<div class="feed">${data.finished.map(feedRow).join('')}</div>` : '<div class="empty">Nothing has finished yet.</div>'}</section>`;
+  const loose = data.loose_jobs.length ? `<section class="panel side-card"><span class="label">OTHER JOBS</span><div class="feed">${data.loose_jobs.map(looseRow).join('')}</div></section>` : '';
+  const others = rest.length ? `<section class="panel side-card"><span class="label" style="padding-bottom:6px">OTHER PROJECTS</span><div class="feed">${rest.map(otherProject).join('')}</div></section>` : '';
+  document.getElementById('page').innerHTML = `${hero}<div class="cols"><div class="stack">${left}</div><div class="stack">${feed}${loose}${others}</div></div>`;
+}
+
+async function poll() {
+  const live = document.getElementById('live');
+  try {
+    data = await (await fetch('/api/overview', {cache: 'no-store'})).json();
+    fetchedAt = Date.now();
+    live.className = 'pill';
+    live.innerHTML = `${dot('var(--green)', true)}live`;
+    render();
+  } catch (e) {
+    live.className = 'pill bad';
+    live.innerHTML = `${dot('var(--red-text)')}offline — retrying`;
+  }
+}
+Shell.init('Overview');
+poll();
+setInterval(poll, 2000);
+setInterval(render, 1000);   // ETAs count down between polls
+</script>
+</body>
+</html>

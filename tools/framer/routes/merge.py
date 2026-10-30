@@ -2,19 +2,15 @@
 from __future__ import annotations
 
 import subprocess
-from datetime import datetime, timezone
-from pathlib import Path
 
 from flask import Blueprint, Response, jsonify, request, send_from_directory
 
 import branding
-import chapter_backup
-import gpu
 import projects
 from config import NO_CONSOLE, ROOT
-from services.common import sse
+from services.common import Refused, sse
 from services.jobs import Job, _enqueue
-from services.merging import MERGE_JOBS, MERGE_LOCK, _busy, brand_key, build_merge_cmd_copy, build_merge_cmd_reencode, write_concat_list
+from services.merging import MERGE_JOBS, MERGE_LOCK, _busy, brand_key, merge_slot, prepare_merge
 
 bp = Blueprint("merge", __name__)
 
@@ -43,90 +39,31 @@ def merge_stream(slug):
             yield sse({"type": "error", "message": "Select at least 2 chapters with a video to merge."})
             return
 
-        with MERGE_LOCK:
-            busy = slug in MERGE_JOBS
-            if not busy:
-                MERGE_JOBS[slug] = None
-        if busy:
-            yield sse({"type": "error", "message": "A merge is already running for this project."})
-            return
-
         proc = None
         try:
-            yield sse({"type": "start", "message": f"Checking {len(chapters)} chapter(s)…"})
-            paths: list[Path] = []
-            for n in chapters:
-                ch = projects.get_chapter(projects.load(slug), n)
-                if ch is None:
-                    yield sse({"type": "error", "message": f"No chapter {n} in this project."})
-                    return
-                try:
-                    chapter_backup.restore(slug, n, ["video"])   # a video cleared after a Drive backup comes back
-                except chapter_backup.BackupUnavailable as e:
-                    yield sse({"type": "error", "message": str(e)})
-                    return
-                video = projects.chapter_video_path(slug, n)
-                if not video.is_file():
-                    yield sse({"type": "error", "message": f"Chapter {n} has no rendered recap.mp4."})
-                    return
-                paths.append(video)
+            with merge_slot(slug):
+                yield sse({"type": "start", "message": f"Checking {len(chapters)} chapter(s)…"})
+                plan = prepare_merge(slug, chapters)
+                for note in plan.notes:
+                    yield sse({"type": "log", "line": note})
+                yield sse({"type": "log", "line": "$ " + " ".join(plan.cmd)})
+                proc = subprocess.Popen(plan.cmd, cwd=str(ROOT), stdout=subprocess.PIPE,
+                                        stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                                        text=True, bufsize=1, encoding="utf-8", errors="replace",
+                                        **NO_CONSOLE)
+                with MERGE_LOCK:
+                    MERGE_JOBS[slug] = proc
+                for line in proc.stdout:
+                    yield sse({"type": "log", "line": line.rstrip("\n")})
+                proc.wait()
 
-            yield sse({"type": "log", "line": f"Probing {len(paths)} video(s)…"})
-            infos = []
-            for n, p in zip(chapters, paths):
-                info = branding.probe(p)
-                if info is None:
-                    yield sse({"type": "error", "message": f"Could not read video info for chapter {n}."})
-                    return
-                infos.append(info)
-                v, a = info["video"], info.get("audio") or {}
-                yield sse({"type": "log",
-                            "line": f"  ch {n}: {v.get('width')}x{v.get('height')} {v.get('codec_name')} "
-                                    f"/ audio {a.get('codec_name', '?')}@{a.get('sample_rate', '?')}"})
-
-            uniform = (
-                len({(i["video"].get("width"), i["video"].get("height"), i["video"].get("codec_name"))
-                     for i in infos}) == 1
-                and len({(i.get("audio") or {}).get("codec_name") for i in infos}) == 1
-                and len({(i.get("audio") or {}).get("sample_rate") for i in infos}) == 1
-            )
-            out_dir = projects.merged_dir(slug)
-            stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-            name = f"merged_{stamp}_ch" + "-".join(str(n) for n in chapters) + ".mp4"
-            out = out_dir / name
-            ffmpeg = gpu.ffmpeg_path()
-
-            if uniform:
-                yield sse({"type": "log", "line": "All inputs share one size and codec - "
-                                                    "fast stream-copy merge (no re-encode)."})
-                list_file = out_dir / "_concat_list.txt"
-                write_concat_list(paths, list_file)
-                cmd = build_merge_cmd_copy(ffmpeg, list_file, out)
-            else:
-                size = (infos[0]["video"]["width"], infos[0]["video"]["height"])
-                yield sse({"type": "log",
-                            "line": f"Inputs differ in resolution/codec - normalizing every clip to "
-                                    f"{size[0]}x{size[1]}@24fps before merging (slower)."})
-                cmd = build_merge_cmd_reencode(ffmpeg, size, paths, out)
-
-            yield sse({"type": "log", "line": "$ " + " ".join(cmd)})
-            proc = subprocess.Popen(cmd, cwd=str(ROOT), stdout=subprocess.PIPE,
-                                    stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
-                                    text=True, bufsize=1, encoding="utf-8", errors="replace",
-                                    **NO_CONSOLE)
-            with MERGE_LOCK:
-                MERGE_JOBS[slug] = proc
-            for line in proc.stdout:
-                yield sse({"type": "log", "line": line.rstrip("\n")})
-            proc.wait()
-
-            if proc.returncode == 0 and out.is_file():
-                url = f"/projects/{slug}/merged/{name}"
-                yield sse({"type": "done", "ok": True, "video": url,
-                            "message": f"Merged {len(chapters)} chapter(s) -> {name}"})
-            else:
-                yield sse({"type": "done", "ok": False,
-                            "message": f"ffmpeg exited {proc.returncode}."})
+                if proc.returncode == 0 and plan.out.is_file():
+                    yield sse({"type": "done", "ok": True, "video": f"/projects/{slug}/merged/{plan.out.name}",
+                               "message": f"Merged {len(chapters)} chapter(s) -> {plan.out.name}"})
+                else:
+                    yield sse({"type": "done", "ok": False, "message": f"ffmpeg exited {proc.returncode}."})
+        except Refused as e:
+            yield sse({"type": "error", "message": str(e)})
         except GeneratorExit:                              # client disconnected / Stop
             if proc and proc.poll() is None:
                 proc.terminate()
@@ -135,12 +72,7 @@ def merge_stream(slug):
             yield sse({"type": "error", "message": f"{type(e).__name__}: {e}"})
         finally:
             if proc and proc.poll() is None:
-                try:
-                    proc.terminate()
-                except Exception:  # noqa: BLE001
-                    pass
-            with MERGE_LOCK:
-                MERGE_JOBS.pop(slug, None)
+                proc.terminate()
 
     return Response(stream(), mimetype="text/event-stream",
                     headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})

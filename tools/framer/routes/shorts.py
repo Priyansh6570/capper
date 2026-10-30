@@ -7,11 +7,10 @@ from pathlib import Path
 
 from flask import Blueprint, jsonify, request, send_file
 
-import batch
 import projects
 import shorts
-from services.batching import (BATCH_LOCK, SHORTS_BATCHES, batch_do, job_summary, shorts_batch_path, shorts_blocker,
-                               shorts_env)
+from services.batching import SHORTS_BATCHES, batch_do, job_summary, start_shorts
+from services.common import Refused
 
 bp = Blueprint("shorts", __name__)
 
@@ -107,21 +106,10 @@ def api_shorts_start(slug):
         numbers, max_shorts = set(), None
     if not numbers or not known.issuperset(numbers) or (max_shorts is not None and max_shorts < 1):
         return jsonify(error="Choose chapters of this project, and a number of shorts of 1 or more."), 400
-    numbers = sorted(numbers)
-    skipped = [{"n": n, "reason": reason} for n in numbers if (reason := shorts_blocker(slug, n))]
-    eligible = [n for n in numbers if n not in {s["n"] for s in skipped}]
-    if not eligible:
-        return jsonify(error="None of these chapters can have shorts yet: " +
-                             "; ".join(f"chapter {s['n']} {s['reason']}" for s in skipped) + "."), 409
-    with BATCH_LOCK:
-        previous = SHORTS_BATCHES.get(slug)
-        if previous and previous.active:
-            return jsonify(error="Shorts are already being made for this project; wait for them or stop them first."), 409
-        if previous:
-            previous.close()
-        SHORTS_BATCHES[slug] = batch.Batch.create(
-            shorts_batch_path(slug), shorts_env(slug), {eligible[0]: list(batch.SHORTS_STAGES)},
-            meta={"find": {"chapters": eligible, "max_shorts": max_shorts, "skipped": skipped}})
+    try:
+        eligible, skipped = start_shorts(slug, sorted(numbers), max_shorts)
+    except Refused as e:
+        return jsonify(error=str(e)), e.status
     return jsonify(ok=True, started=eligible, skipped=skipped)
 
 
@@ -131,3 +119,16 @@ def api_shorts_control(slug, control):
     if control not in ("pause", "resume", "cancel"):
         return jsonify(error="Unknown control."), 404
     return batch_do(slug, lambda b: getattr(b, control)(), SHORTS_BATCHES)
+
+
+@bp.post("/api/projects/<slug>/shorts/batch/chapters/<int:n>/retry")
+def api_shorts_retry(slug, n):
+    """Run failed chapter n of the Shorts batch again (body {from_start: true}: from its first step)."""
+    from_start = bool((request.get_json(silent=True) or {}).get("from_start"))
+    return batch_do(slug, lambda b: b.retry(n, from_start=from_start), SHORTS_BATCHES)
+
+
+@bp.post("/api/projects/<slug>/shorts/batch/chapters/<int:n>/skip")
+def api_shorts_skip(slug, n):
+    """Give up on failed chapter n of the Shorts batch."""
+    return batch_do(slug, lambda b: b.skip(n), SHORTS_BATCHES)

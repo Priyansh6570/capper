@@ -49,9 +49,12 @@ from flask import Flask, jsonify  # noqa: E402
 import chapter_backup  # noqa: E402 - cleared chapters are restored on first use
 import config  # noqa: E402 - module import so chapter_scope()/set_/clear_ are reachable
 import projects  # noqa: E402 - the project system (this package: tools/framer/projects.py)
+from publishing import telegram, worker  # noqa: E402
 from routes import register_blueprints  # noqa: E402
 from services.batching import resume_batches  # noqa: E402
 from services.common import scope_params  # noqa: E402
+from services import advisor  # noqa: E402
+from services.remote import CONTROLS  # noqa: E402
 from services.ports import resolve_port  # noqa: E402
 
 app = Flask(__name__)
@@ -95,6 +98,15 @@ def make_server(host: str, port: int):
                                   channel_timeout=SERVER_IDLE_TIMEOUT_S)
 
 
+def start_background() -> None:
+    """Everything that runs beside the web server: batches resumed, the YouTube uploader and the Telegram bot.
+    Both launchers (main() and the tray) call it."""
+    resume_batches()
+    worker.start()
+    telegram.start(CONTROLS)
+    advisor.start()
+
+
 def main() -> None:
     host, port = "127.0.0.1", 5005
     port = resolve_port(host, port)
@@ -118,7 +130,7 @@ def main() -> None:
     if not os.environ.pop("RECAPPER_SKIP_BROWSER_OPEN", None):
         threading.Thread(target=lambda: (time.sleep(1.0), webbrowser.open(url)),
                           daemon=True).start()
-    resume_batches()
+    start_background()
     # Threaded: a generate job holds an SSE connection open for minutes; other
     # requests (thumbnails, the result video, a second tab) must still be served.
     make_server(host, port).run()

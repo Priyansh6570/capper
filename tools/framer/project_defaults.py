@@ -22,7 +22,7 @@ DEFAULTS_DIR = ROOT / "defaults"
 SETTINGS_FILE = DEFAULTS_DIR / "settings.json"
 ASSETS_DIR = DEFAULTS_DIR / "assets"
 
-NOT_SHARED = (("claude", "series_brief"),)
+NOT_SHARED = (("claude", "series_brief"), ("shorts", "library"))
 VIDEO_EXTS = {".mp4", ".mov", ".webm", ".mkv", ".m4v"}
 OPTION_PREFIX = "bg_"
 ASSET_FIELDS = {
@@ -35,7 +35,7 @@ GROUP_LABELS = {
     "background": "Video background", "animation": "Frame animation", "video": "Video size",
     "branding": "Intro / outro", "script": "Script tone and style",
     "claude": "Claude script settings", "batch": "Batch automation", "framing": "Frame text blur",
-    "shorts": "Shorts",
+    "shorts": "Shorts", "plan": "Upload plan",
 }
 
 

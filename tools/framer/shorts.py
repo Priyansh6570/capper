@@ -217,10 +217,28 @@ _LINE = {"type": "object", "required": ["text", "pace", "source_lines"],
          "properties": {"text": {"type": "string"}, "pace": {"type": "string"},
                         "source_lines": {"type": "array", "items": {"type": "integer"}}}}
 SCRIPT_SCHEMA = {"type": "object", "required": ["lines", "closing"],
-                 "properties": {"lines": {"type": "array", "items": _LINE}, "closing": _LINE}}
+                 "properties": {"lines": {"type": "array", "items": _LINE}, "closing": _LINE,
+                                "track": {"type": "string"}, "peak_line": {"type": "integer"}}}
 
 
-def _script_prompt(short: dict, scene: list[Panel], after: list[Panel], brief: str) -> str:
+def _track_rule(tracks: list[dict] | None) -> str:
+    if not tracks:
+        return ""
+    menu = "\n".join(f"  {t['id']} | {t['theme']} | {t['duration_s']:.0f}s | "
+                     f"{('drop at %.0fs' % t['drop_s']) if t.get('drop_s') else 'no drop'}" for t in tracks)
+    return (
+        "\n- `track`: the id of the background music for this short, chosen for the scene's mood at its peak "
+        f"and for a length the story fits (`id | theme | seconds | drop`):\n{menu}\n"
+        "  The short runs exactly as long as its track, so write the narration to fit it: about "
+        f"{WORDS_PER_S:g} words per second of the track in all (lines and closing together), done about a second before "
+        "the track ends; this replaces the word count above.\n"
+        "- `peak_line`: when the chosen track has a drop, the 0-based index in `lines` of the scene's single biggest "
+        "moment (the strongest panel, the blow, the reveal). That line starts exactly at the drop, so the lines before "
+        "it must take about as many seconds to say as the drop's time (the build-up), and the lines from it on plus "
+        "the closing the rest of the track. Without a drop, or without a track, use -1.")
+
+
+def _script_prompt(short: dict, scene: list[Panel], after: list[Panel], brief: str, tracks: list[dict] | None = None) -> str:
     return (
         "You are writing the narration of a YouTube Short / TikTok that retells ONE scene of a manhwa, from the "
         "narration of a longer recap video. The short is voiced and shown over the scene's panels.\n\n"
@@ -242,7 +260,8 @@ def _script_prompt(short: dict, scene: list[Panel], after: list[Panel], brief: s
         "alone: stop on the question it leaves open (never answer it), and tell the viewer that to find out what "
         "happens next they should watch this manhwa on our channel or subscribe, and that the playlist link is in "
         "the description and the pinned comment. Word it freshly for this scene, in the narrator's voice; it "
-        "must not read like a generic ad. Its `source_lines` are the scene's most intriguing panels.")
+        "must not read like a generic ad. Its `source_lines` are the scene's most intriguing panels."
+        f"{_track_rule(tracks)}")
 
 
 def _script_entries(items: list[dict], orders: list[int], closing: bool = False) -> list[dict]:
@@ -261,18 +280,28 @@ def _script_entries(items: list[dict], orders: list[int], closing: bool = False)
 
 
 def write_script(short: dict, scene: list[Panel], after: list[Panel], *, brief: str, model: str, work: Path,
-                 usage: dict, **callbacks) -> list[dict]:
+                 usage: dict, tracks: list[dict] | None = None, **callbacks) -> list[dict]:
     """The recap narration for one picked moment: lines, then the closing teaser (flagged `closing`), each with
-    the scene's line numbers whose panels to show. Raises ValueError when the answer has no usable script."""
-    answer = claude_cli.call([{"type": "text", "text": _script_prompt(short, scene, after, brief)}], SCRIPT_SCHEMA,
+    the scene's line numbers whose panels to show. Raises ValueError when the answer has no usable script.
+    With `tracks` (the project's music library) the model also picks the track to play, written to fit its length
+    and its drop: stored as `short["track"]` (its id), `short["theme"]` and, for a track with a drop, `short["peak"]`
+    (the 0-based index of the script line that starts at the drop)."""
+    answer = claude_cli.call([{"type": "text", "text": _script_prompt(short, scene, after, brief, tracks)}], SCRIPT_SCHEMA,
                              model, work, usage=usage, mention_event="read", panel_ids=set(), **callbacks)
     orders = [b.order for b in scene]
     body = _script_entries(answer.get("lines") or [], orders)
     end = _script_entries([answer.get("closing") or {}], orders, closing=True)
     if not body or not end:
         raise ValueError("the answer had no script or no closing")
-    while len(body) > 1 and sum(len(e["text"].split()) for e in body + end) > MAX_WORDS:
+    track = next((t for t in tracks or [] if t["id"] == str(answer.get("track") or "").strip()), None)
+    max_words = round(track["duration_s"] * WORDS_PER_S) if track else MAX_WORDS
+    while len(body) > 1 and sum(len(e["text"].split()) for e in body + end) > max_words:
         body.pop()   # too long for a minute: the recap loses its last lines, the teaser stays
+    if track:
+        short.update(track=track["id"], theme=track["theme"])
+        peak = answer.get("peak_line")
+        if track.get("drop_s") and isinstance(peak, int) and 0 <= peak < len(body):
+            short["peak"] = peak
     return body + end
 
 

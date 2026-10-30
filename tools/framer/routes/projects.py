@@ -16,6 +16,7 @@ import config
 import project_defaults
 import projects
 import series_meta
+import short_music
 import sites
 import totals
 from services.batching import BATCHES, SHORTS_BATCHES, chapter_thumb, has_active_batch
@@ -154,13 +155,27 @@ def api_set_app_settings():
 def api_get_project(slug):
     """The project with every chapter's stored fields and status. The per-chapter detail (tone,
     narration estimate, video length, steps, thumbnail) is costly to gather from disk, so it is added
-    only to the first `limit` chapters - the page of the chapter list being shown."""
+    only to the chapters being shown: those numbered `from`..`to`, the page the screen opens on
+    (`auto`), or the first `limit`."""
     if not projects.exists(slug):
         return jsonify(error=f"No such project: {slug}"), 404
     project = projects.derive_all(slug)
-    limit = request.args.get("limit", type=int)
-    project["detail_limit"] = limit if limit is not None else len(project["chapters"])
-    add_chapter_details(project, project["chapters"][:project["detail_limit"]])
+    chapters = project["chapters"]
+    if request.args.get("auto"):
+        # the page of 50 holding the next chapter to run (what the project screen opens on)
+        done = [c["n"] for c in chapters if c["status"] == "complete"]
+        index = next((i for i, c in enumerate(chapters) if c["status"] != "complete" and (not done or c["n"] > max(done))),
+                     len(chapters) - 1)
+        start = max(index, 0) // 50 * 50
+        wanted = chapters[start:start + 50]
+    elif request.args.get("from", type=int) is not None:
+        low, high = request.args.get("from", type=int), request.args.get("to", type=int, default=10 ** 9)
+        wanted = [c for c in chapters if low <= c["n"] <= high]
+    else:
+        limit = request.args.get("limit", type=int)
+        wanted = chapters[:limit] if limit is not None else chapters
+    project["detail_limit"] = len(wanted)
+    add_chapter_details(project, wanted)
     project["claude_usage"] = totals.claude_usage(slug)
     return jsonify(project=project)
 
@@ -360,7 +375,65 @@ def api_set_settings(slug):
         return jsonify(error=f"No such project: {slug}"), 404
     data = request.get_json(silent=True) or {}
     project = projects.update_settings(slug, data)
+    if "auto_shorts" in (data.get("youtube") or {}) and not project["settings"]["youtube"]["auto_shorts"]:
+        from publishing import uploads
+        uploads.drop_unsent_shorts(slug)
     return jsonify(ok=True, settings=project["settings"])
+
+
+@bp.get("/api/projects/<slug>/shorts_music")
+def api_shorts_music(slug):
+    if not projects.exists(slug):
+        return jsonify(error=f"No such project: {slug}"), 404
+    return jsonify(tracks=short_music.library(projects.load(slug)), themes=list(short_music.THEMES))
+
+
+@bp.post("/api/projects/<slug>/shorts_music")
+def api_add_shorts_music(slug):
+    """Multipart: {file, theme}. Adds one track to the project's shorts music library."""
+    if not projects.exists(slug):
+        return jsonify(error=f"No such project: {slug}"), 404
+    file_storage = request.files.get("file")
+    if not file_storage or not file_storage.filename:
+        return jsonify(error="file required"), 400
+    try:
+        track = short_music.add(slug, file_storage.filename, file_storage, request.form.get("theme"), request.form.get("drop"))
+    except short_music.LibraryError as e:
+        return jsonify(error=str(e)), 400
+    return jsonify(ok=True, track=track)
+
+
+@bp.patch("/api/projects/<slug>/shorts_music/<track_id>")
+def api_update_shorts_music(slug, track_id):
+    if not projects.exists(slug):
+        return jsonify(error=f"No such project: {slug}"), 404
+    data = request.get_json(silent=True) or {}
+    try:
+        return jsonify(ok=True, track=short_music.update(slug, track_id, data.get("theme"), data.get("name"),
+                                                   **({"drop_s": data["drop_s"]} if "drop_s" in data else {})))
+    except short_music.LibraryError as e:
+        return jsonify(error=str(e)), 400
+
+
+@bp.delete("/api/projects/<slug>/shorts_music/<track_id>")
+def api_delete_shorts_music(slug, track_id):
+    if not projects.exists(slug):
+        return jsonify(error=f"No such project: {slug}"), 404
+    try:
+        short_music.remove(slug, track_id)
+    except short_music.LibraryError as e:
+        return jsonify(error=str(e)), 404
+    return jsonify(ok=True)
+
+
+@bp.get("/api/projects/<slug>/shorts_music/<track_id>/audio")
+def api_shorts_music_audio(slug, track_id):
+    """The track itself, for the settings page to play."""
+    track = next((t for t in short_music.library(projects.load(slug)) if t["id"] == track_id), None) if projects.exists(slug) else None
+    path = projects.resolve_asset_path(slug, track["file"]) if track else None
+    if path is None:
+        return jsonify(error="No such track."), 404
+    return send_from_directory(str(path.parent), path.name)
 
 
 @bp.post("/api/projects/<slug>/defaults")
@@ -449,6 +522,8 @@ def api_upload_asset(slug):
         project["settings"]["background"]["file"] = rel_path
     elif kind.startswith("shorts_"):
         project["settings"]["shorts"][kind.removeprefix("shorts_")]["file"] = rel_path
+    elif kind == "thumbnail":
+        project["settings"]["youtube"]["thumbnail"] = rel_path
     else:
         project["settings"]["branding"][kind]["file"] = rel_path
     projects.save(project)
@@ -479,6 +554,8 @@ def api_delete_asset(slug, kind):
         project["settings"]["shorts"]["watermark"]["file"] = None
     elif kind == "shorts_music":
         project["settings"]["shorts"]["music"] = {"mode": "default", "file": None}
+    elif kind == "thumbnail":
+        project["settings"]["youtube"]["thumbnail"] = None
     else:
         project["settings"]["branding"][kind]["file"] = None
     projects.save(project)

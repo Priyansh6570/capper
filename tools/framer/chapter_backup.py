@@ -39,6 +39,7 @@ class Kind:
     clearable: bool
     paths: tuple[str, ...]    # relative to the chapter folder; a folder means everything under it
     default: bool = True      # ticked by default in the backup dialog
+    flat: bool = False        # the drive copy sits directly in the chapter folder, by file name (the stored PDF); only PDFs
 
 
 KINDS: dict[str, Kind] = {k.key: k for k in (
@@ -47,9 +48,11 @@ KINDS: dict[str, Kind] = {k.key: k for k in (
           "work/manifest.json.bak", "work/media_settings.json", "work/media_settings.json.bak")),
     Kind("frames", "Frames", "The cropped frames shown in the video.", True, ("work/frames",)),
     Kind("audio", "Narration audio", "The voiced lines.", True, ("work/audio",)),
-    Kind("pages", "Page images", "The stitched strip, panels and editor tiles. Large, and can be rebuilt from the PDF.", True,
+    Kind("pages", "Page images", "The stitched strip, panels and editor tiles. Very large (most of a chapter's size).", True,
          ("work/pages", "work/panels", "work/framer/tiles"), default=False),
     Kind("video", "Chapter video", "The rendered recap.mp4.", True, ("output",)),
+    Kind("download", "Downloaded PDF", "The chapter PDF. Its copy in the project folder is made when it is downloaded.", True,
+         ("work/download",), flat=True),
 )}
 
 _LOCKS: dict[tuple[str, str], threading.Lock] = {}
@@ -84,6 +87,19 @@ def _files(root: Path, kind: Kind) -> list[Path]:
             found.extend(p.relative_to(root) for p in sorted(target.rglob("*"))
                          if p.is_file() and not p.name.endswith(".part"))
     return found
+
+
+def _pairs(kind: Kind, local: Path) -> list[tuple[Path, Path]]:
+    """(local, drive) relative paths of the kind's local files. They are the same, except for a `flat` kind."""
+    return [(rel, Path(rel.name) if kind.flat else rel) for rel in _files(local, kind)
+            if not kind.flat or rel.suffix.lower() == ".pdf"]
+
+
+def _drive_pairs(kind: Kind, drive: Path) -> list[tuple[Path, Path]]:
+    """(drive, local) relative paths of the kind's files in the drive copy."""
+    if kind.flat:
+        return [(Path(p.name), Path(kind.paths[0]) / p.name) for p in sorted(drive.glob("*.pdf"))]
+    return [(rel, rel) for rel in _files(drive, kind)]
 
 
 def _size(path: Path) -> Optional[int]:
@@ -156,11 +172,11 @@ def kind_status(slug: str, n, kind: Kind) -> dict:
     """{local_bytes, files, backed_up, cleared}. `backed_up` means: there are local files and every one
     has a same-size copy in the drive folder."""
     local, drive = _local_root(slug, n), _drive_root(slug, n)
-    files = _files(local, kind)
-    total = sum(_size(local / rel) or 0 for rel in files)
+    pairs = _pairs(kind, local)
+    total = sum(_size(local / rel) or 0 for rel, _ in pairs)
     cleared = kind.key in cleared_kinds(slug, n)
-    backed_up = bool(files) and all(_same(local / rel, drive / rel) for rel in files)
-    return {"local_bytes": total, "files": len(files), "backed_up": backed_up or (cleared and not files),
+    backed_up = bool(pairs) and all(_same(local / rel, drive / remote) for rel, remote in pairs)
+    return {"local_bytes": total, "files": len(pairs), "backed_up": backed_up or (cleared and not pairs),
             "cleared": cleared}
 
 
@@ -194,17 +210,17 @@ def backup_kind(slug: str, n, kind_key: str, progress: Callable[[int, int], None
     """Copy the kind's files that are missing or different in the drive folder. Returns {copied, bytes}."""
     kind = KINDS[kind_key]
     local, drive = _local_root(slug, n), _drive_root(slug, n)
-    files = _files(local, kind)
+    pairs = _pairs(kind, local)
     copied = copied_bytes = 0
-    for i, rel in enumerate(files, 1):
+    for i, (rel, remote) in enumerate(pairs, 1):
         if stop is not None and stop.is_set():
             break
-        if not _same(local / rel, drive / rel):
-            _copy(local / rel, drive / rel)
+        if not _same(local / rel, drive / remote):
+            _copy(local / rel, drive / remote)
             copied += 1
             copied_bytes += _size(local / rel) or 0
-        progress(i, len(files))
-    _record(slug, n, kind_key, files)
+        progress(i, len(pairs))
+    _record(slug, n, kind_key, [rel for rel, _ in pairs])
     return {"copied": copied, "bytes": copied_bytes}
 
 
@@ -231,6 +247,9 @@ def clear_kind(slug: str, n, kind_key: str) -> int:
     status = kind_status(slug, n, kind)
     if status["cleared"] or not status["files"]:
         return 0
+    if kind_key == "download" and not ((_local_root(slug, n) / "output" / "recap.mp4").is_file()
+                                       or "video" in cleared_kinds(slug, n)):
+        raise ValueError("its video isn't rendered yet, so its PDF may still be needed.")
     if not status["backed_up"]:
         raise ValueError(f"{kind.label} isn't fully backed up yet.")
     local = _local_root(slug, n)
@@ -239,7 +258,7 @@ def clear_kind(slug: str, n, kind_key: str) -> int:
         import branding
         duration = branding.duration_of(local / "output" / "recap.mp4") or None
     freed = 0
-    for rel in _files(local, kind):
+    for rel, _ in _pairs(kind, local):
         freed += _size(local / rel) or 0
         (local / rel).unlink()
     for rel in kind.paths:                                  # drop the now-empty folders
@@ -255,6 +274,40 @@ def clear_kind(slug: str, n, kind_key: str) -> int:
             except OSError:
                 pass
     _write_cleared(slug, n, [*cleared_kinds(slug, n), kind_key], duration)
+    return freed
+
+
+def purge_kind(slug: str, n, kind_key: str) -> int:
+    """Delete the kind's files from this PC whether or not Drive has them (the user asked for the space).
+    A kind that is fully verified in Drive is cleared as usual and comes back when the chapter is used; otherwise
+    the files are simply gone and no restore is recorded. The PDF is the source everything else is rebuilt from,
+    so it is only ever cleared when Drive has it. Returns the bytes freed."""
+    kind = KINDS[kind_key]
+    if not kind.clearable:
+        raise ValueError(f"{kind.label} stays on this PC.")
+    status = kind_status(slug, n, kind)
+    if status["cleared"] or not status["files"]:
+        return 0
+    if status["backed_up"]:
+        return clear_kind(slug, n, kind_key)
+    if kind.flat:
+        raise ValueError("it isn't in the project folder yet, and it is what the chapter is rebuilt from.")
+    local, freed = _local_root(slug, n), 0
+    for rel, _ in _pairs(kind, local):
+        freed += _size(local / rel) or 0
+        (local / rel).unlink()
+    for rel in kind.paths:
+        target = local / rel
+        if target.is_dir():
+            for folder in sorted((p for p in target.rglob("*") if p.is_dir()), reverse=True):
+                try:
+                    folder.rmdir()
+                except OSError:
+                    pass
+            try:
+                target.rmdir()
+            except OSError:
+                pass
     return freed
 
 
@@ -286,15 +339,15 @@ def restore(slug: str, n, kinds: Optional[Iterable[str]] = None,
         if not wanted:
             return 0
         local, drive = _local_root(slug, n), _drive_root(slug, n)
-        jobs = [(kind, rel) for kind in wanted for rel in _files(drive, KINDS[kind])]
+        jobs = [(kind, remote, rel) for kind in wanted for remote, rel in _drive_pairs(KINDS[kind], drive)]
         if not jobs and not drive.exists():
             raise BackupUnavailable(f"Chapter {n} was cleared from this PC and backed up to {drive}, "
                                     "but that folder can't be reached. Connect the drive and try again.")
         restored = 0
         try:
-            for i, (kind, rel) in enumerate(jobs, 1):
-                if not _same(drive / rel, local / rel):
-                    _copy(drive / rel, local / rel)
+            for i, (kind, remote, rel) in enumerate(jobs, 1):
+                if not _same(drive / remote, local / rel):
+                    _copy(drive / remote, local / rel)
                 restored += _size(local / rel) or 0
                 progress(i, len(jobs))
         except OSError as e:

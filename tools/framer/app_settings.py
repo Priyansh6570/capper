@@ -57,6 +57,13 @@ def set_project_folder(slug: str, folder: str) -> Path | None:
     return path
 
 
+def site_session(site: str) -> dict:
+    """Browser session for a site behind a Cloudflare check: {"cookie": "cf_clearance=...", "user_agent": "..."}.
+    The cookie only works with the user agent of the browser it came from. Empty when none is saved."""
+    found = _read().get("site_sessions", {}).get(site)
+    return {k: str(found.get(k) or "").strip() for k in ("cookie", "user_agent")} if isinstance(found, dict) else {}
+
+
 def model_cache() -> Path | None:
     """The Hugging Face cache folder the voice model is stored in (applied as HF_HOME, see config.py), or
     None for the Windows default under the user profile."""

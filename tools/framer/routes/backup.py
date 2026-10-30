@@ -46,7 +46,9 @@ def api_backup_status(slug):
     project = projects.load(slug)
     shared = chapter_backup.is_shared(slug)
     titles = {c["n"]: c.get("title") or f"Chapter {c['n']}" for c in project["chapters"]}
-    chapters = chapter_backup.overview(slug, list(titles)) if shared else []
+    wanted = _numbers(request.args.get("chapters")) if request.args.get("chapters") else None
+    scope = [n for n in titles if wanted is None or n in wanted]     # a range scans far less of the drive than the whole project
+    chapters = chapter_backup.overview(slug, scope) if shared else []
     for entry in chapters:
         entry["title"] = titles[entry["n"]]
     merges = branding.list_merges(slug) if shared else []
@@ -55,7 +57,7 @@ def api_backup_status(slug):
         shared=shared, folder=str(projects.project_dir(slug)), busy=sorted(_busy_chapters(slug)),
         kinds=[{"key": k.key, "label": k.label, "hint": k.hint, "clearable": k.clearable, "default": k.default}
                for k in chapter_backup.KINDS.values()],
-        chapters=chapters, merged={"count": len(merges), "bytes": merged_bytes})
+        scoped=wanted is not None, chapters=chapters, merged={"count": len(merges), "bytes": merged_bytes})
 
 
 @bp.get("/api/projects/<slug>/backup_stream")
@@ -87,7 +89,8 @@ def api_backup_stream(slug):
 
 @bp.post("/api/projects/<slug>/backup_clear")
 def api_backup_clear(slug):
-    """Body: JSON {chapters, kinds}. Deletes the verified, backed-up files from this PC."""
+    """Body: JSON {chapters, kinds, force?}. Deletes the verified, backed-up files from this PC; with `force` also the
+    files Drive does not have (never the chapter PDF)."""
     if not projects.exists(slug) or not chapter_backup.is_shared(slug):
         return jsonify(error="This project isn't stored in a Drive folder."), 400
     data = request.get_json(silent=True) or {}
@@ -100,7 +103,7 @@ def api_backup_clear(slug):
                 skipped.append({"n": n, "kind": kind, "reason": "it is being processed right now"})
                 continue
             try:
-                freed += chapter_backup.clear_kind(slug, n, kind)
+                freed += (chapter_backup.purge_kind if data.get("force") else chapter_backup.clear_kind)(slug, n, kind)
             except ValueError as e:
                 skipped.append({"n": n, "kind": kind, "reason": str(e)})
     return jsonify(ok=True, freed=freed, skipped=skipped)

@@ -134,3 +134,33 @@ class ClearedChapterStateTest(ChapterBackupTest):
         chapter_backup.restore(self.slug, 1, ["video"])
         self.assertTrue((self.local_ch / "output" / "recap.mp4").exists())
         self.assertEqual(sorted(chapter_backup.cleared_kinds(self.slug, 1)), ["audio", "frames"])
+
+    def test_the_downloaded_pdf_matches_the_copy_stored_in_the_project_folder(self):
+        touch(self.local_ch / "work" / "download" / "ch1.pdf", b"p" * 300)
+        touch(self.drive_ch / "ch1.pdf", b"p" * 300)              # made when the chapter was downloaded
+        status = chapter_backup.kind_status(self.slug, 1, chapter_backup.KINDS["download"])
+        self.assertTrue(status["backed_up"])
+        video = self.local_ch / "output" / "recap.mp4"
+        video.rename(video.with_name("held.mp4"))
+        with self.assertRaises(ValueError):                       # no video yet: the PDF may still be needed
+            chapter_backup.clear_kind(self.slug, 1, "download")
+        video.with_name("held.mp4").rename(video)
+        self.assertEqual(chapter_backup.clear_kind(self.slug, 1, "download"), 300)
+        self.assertFalse((self.local_ch / "work" / "download" / "ch1.pdf").exists())
+        projects.chapter_work_dir(self.slug, 1)                   # using the chapter brings it back
+        self.assertEqual((self.local_ch / "work" / "download" / "ch1.pdf").read_bytes(), b"p" * 300)
+
+    def test_purge_deletes_what_drive_does_not_have_without_recording_a_restore(self):
+        touch(self.local_ch / "work" / "pages" / "strip_001.png", b"s" * 500)
+        self.assertEqual(chapter_backup.purge_kind(self.slug, 1, "pages"), 500)
+        self.assertFalse((self.local_ch / "work" / "pages").exists())
+        self.assertEqual(chapter_backup.cleared_kinds(self.slug, 1), [])      # nothing in Drive to come back from
+
+    def test_purge_still_restores_what_drive_has_and_keeps_an_unbacked_pdf(self):
+        chapter_backup.backup_kind(self.slug, 1, "audio")
+        self.assertEqual(chapter_backup.purge_kind(self.slug, 1, "audio"), 200)
+        self.assertEqual(chapter_backup.cleared_kinds(self.slug, 1), ["audio"])
+        touch(self.local_ch / "work" / "download" / "ch1.pdf", b"p" * 10)      # not in the project folder
+        with self.assertRaises(ValueError):
+            chapter_backup.purge_kind(self.slug, 1, "download")
+        self.assertTrue((self.local_ch / "work" / "download" / "ch1.pdf").exists())

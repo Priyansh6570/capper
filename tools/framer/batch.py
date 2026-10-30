@@ -3,8 +3,8 @@
 A batch holds an ordered list of chapters and one worker lane per stage. Chapters enter a
 stage in order, one at a time, and a chapter moves on to its next stage the moment it
 leaves one, so while chapter 1 is in audio chapter 2 can already be in Claude. Because
-every lane takes one chapter at a time, the stages that share hardware (Claude, audio,
-video) never run two chapters at once. A failed chapter stops only its own pipeline.
+a lane takes one chapter at a time (download and stitch have a few workers, see LANE_WORKERS), the stages
+that share hardware (Claude, audio, video) never run two chapters at once. A failed chapter stops only its own pipeline.
 
 The engine knows nothing about Flask or the stages' internals: `BatchEnv` supplies the
 stage runners and the few project lookups it needs. State lives in `batch.json`, so a
@@ -33,6 +33,9 @@ from atomic_io import atomic_write_json, read_json_with_backup_fallback
 
 LANE_STAGES = ("download", "stitch", "script", "export", "audio", "video")
 SHORTS_STAGES = ("shorts_find", "shorts_render")
+# Chapters a step works on at once. Download and stitch use no GPU and little Claude/CPU time per chapter, so a few
+# run side by side; every other step shares the GPU, the CLI or ffmpeg and stays at one.
+LANE_WORKERS = {"download": 3, "stitch": 2}
 REVIEW = "review"
 ACTIVE_STATES = ("queued", "running", "waiting")
 LOG_LINES = 3000
@@ -63,6 +66,8 @@ class BatchEnv:
     stages: tuple[str, ...] = LANE_STAGES                   # the steps this batch runs, one lane each
     space_low: Callable[[], bool] = lambda: False           # free disk space is under the project's limit
     offload: Callable[[set[int]], int] = lambda active: 0   # back finished chapters up and clear them from the PC
+    finished: Callable[["Batch"], None] = lambda batch: None  # the batch ran out of work (runs on the thread that noticed)
+    failed: Callable[["Batch", int, str, str], None] = lambda batch, n, stage, error: None   # a chapter failed at a stage
 
 
 def _now() -> str:
@@ -102,7 +107,8 @@ class Batch:
 
     def _start_lanes(self) -> None:
         for stage in self.env.stages:
-            threading.Thread(target=self._lane, args=(stage, self._generation), daemon=True).start()
+            for _ in range(LANE_WORKERS.get(stage, 1)):
+                threading.Thread(target=self._lane, args=(stage, self._generation), daemon=True).start()
 
     @classmethod
     def create(cls, path: Path, env: BatchEnv, plans: dict[int, list[str]], meta: dict | None = None) -> "Batch":
@@ -150,6 +156,12 @@ class Batch:
         except Exception:  # noqa: BLE001 - a notification problem must never disturb the pipeline
             pass
 
+    def _report_failure(self, n: int, stage: str, error: str) -> None:
+        try:
+            self.env.failed(self, n, stage, error)
+        except Exception:  # noqa: BLE001 - like a notification, reporting a failure must never disturb the pipeline
+            pass
+
     def _settle(self) -> None:
         if self.status in ("running", "paused") and not any(c["state"] in ACTIVE_STATES for c in self.chapters):
             self.status, self.finished_at = "finished", _now()
@@ -157,6 +169,7 @@ class Batch:
             failed = sum(c["state"] == "failed" for c in self.chapters)
             self._notify("Pipeline finished", f"{done} of {len(self.chapters)} chapters complete"
                          + (f", {failed} failed" if failed else "") + ".")
+            self.env.finished(self)
 
     def _chapter(self, n: int) -> dict:
         return next(c for c in self.chapters if c["n"] == n)
@@ -260,7 +273,7 @@ class Batch:
                 chapter["state"] = "cancelled"
             elif error:
                 chapter.update(state="failed", error=f"{stage}: {error}", finished_at=_now())
-                self._notify(f"Chapter {n} failed", f"{stage}: {error}")
+                self._report_failure(n, stage, error)
             else:
                 if self._hold_ended < started:
                     self._record_time(stage, seconds)
@@ -366,6 +379,35 @@ class Batch:
             self._save()
             self._cond.notify_all()
 
+    def retry(self, n: int, *, from_start: bool = False) -> None:
+        """Run a failed chapter again: from the step that failed, or (`from_start`) from its first step."""
+        with self._cond:
+            chapter = self._failed_chapter(n)
+            if from_start:
+                self.chapters[self.chapters.index(chapter)] = _new_chapter(self.env, n, chapter["plan"])
+            else:
+                chapter.update(state="queued", error=None, finished_at=None)
+            if self.status == "finished":
+                self.status, self.finished_at = "running", None
+            self.log(n, "== retrying from the first step ==" if from_start else f"== retrying {chapter['stage']} ==")
+            self._save()
+            self._cond.notify_all()
+
+    def skip(self, n: int) -> None:
+        """Give up on a failed chapter: it is marked cancelled and the batch goes on without it."""
+        with self._cond:
+            self._failed_chapter(n)["state"] = "cancelled"
+            self.log(n, "== skipped ==")
+            self._save()
+
+    def _failed_chapter(self, n: int) -> dict:
+        if self._stopped():
+            raise ValueError("This batch was cancelled or replaced; start it again instead.")
+        chapter = self._chapter(n)
+        if chapter["state"] != "failed":
+            raise ValueError(f"Chapter {n} has not failed.")
+        return chapter
+
     def continue_review(self, n: int) -> None:
         with self._cond:
             chapter = self._chapter(n)
@@ -440,9 +482,9 @@ class Batch:
         a chapter enters a step once it has left the previous one and the step's lane is free."""
         now = time.time()
         step = self._step_estimates()
-        lane_free = {stage: now for stage in self.env.stages}
+        lane_free = {stage: [now] * LANE_WORKERS.get(stage, 1) for stage in self.env.stages}   # per worker
         if self.hold:
-            lane_free["script"] = self.hold["resume_at"]
+            lane_free["script"] = [self.hold["resume_at"]]
         finish = {}
         for chapter in self.chapters:
             if chapter["state"] not in ACTIVE_STATES:
@@ -450,12 +492,14 @@ class Batch:
             ready = now
             upcoming = [s for s in chapter["plan"] if s not in chapter["completed"]]
             for stage in upcoming:
+                workers = lane_free[stage]
+                soonest = min(range(len(workers)), key=workers.__getitem__)
                 if chapter["state"] == "running" and stage == chapter["stage"] and chapter["stage_started_at"]:
                     elapsed = now - datetime.fromisoformat(chapter["stage_started_at"]).timestamp()
                     end = now + max(step[stage] - elapsed, step[stage] * 0.1)
                 else:
-                    end = max(ready, lane_free[stage]) + step[stage]
-                lane_free[stage] = end
+                    end = max(ready, workers[soonest]) + step[stage]
+                workers[soonest] = end
                 ready = end
             finish[chapter["n"]] = ready
         return finish
@@ -479,6 +523,33 @@ class Batch:
             return {"status": self.status, "created_at": self.created_at, "finished_at": self.finished_at,
                     "hold": self.hold, "meta": self.meta, "disk_hold": None if self._pinned is None else
                     {"finishing": sorted(self._pinned), "offloading": self._offloading}, "ignore": dict(self.ignore), "chapters": chapters,
+                    "finish_at": max(finish.values(), default=None)}
+
+
+    def summary(self, job_of: Callable[[str], dict | None]) -> dict:
+        """`view` without the logs and Claude totals: small and cheap enough to poll every second or two
+        (the read-only overview). `last_log` is each chapter's newest log line."""
+        with self._cond:
+            now = time.time()
+            finish = self._estimate()
+            chapters = []
+            for chapter in self.chapters:
+                n = chapter["n"]
+                live = self._live.get(n, {})
+                job = job_of(live["job_id"]) if live.get("job_id") else None
+                warnings = list(self._warnings.get(n, []))
+                quiet = now - max(self._activity.get(n, 0), (job or {}).get("last_activity", 0))
+                if chapter["state"] == "running" and not self.hold and quiet > STALL_AFTER_S:
+                    warnings.append(f"No output for {quiet / 60:.0f} min - this step may be stuck.")
+                lines = self._logs.get(n)
+                chapters.append({"n": n, "state": chapter["state"], "stage": chapter["stage"], "plan": chapter["plan"],
+                                 "completed": chapter["completed"], "error": chapter["error"],
+                                 "started_at": chapter["started_at"], "finished_at": chapter["finished_at"],
+                                 "stage_started_at": chapter["stage_started_at"],
+                                 "message": live.get("message"), "last_log": lines[-1] if lines else None,
+                                 "job": job, "warnings": warnings, "finish_at": finish.get(n)})
+            return {"status": self.status, "created_at": self.created_at, "finished_at": self.finished_at,
+                    "hold": self.hold, "meta": self.meta, "chapters": chapters,
                     "finish_at": max(finish.values(), default=None)}
 
 

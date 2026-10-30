@@ -158,7 +158,7 @@ def _stitch_and_save(m: Manifest, sizes, load, what: str) -> Manifest:
     pages_dir = chapter_work_dir(m.chapter_id) / "pages"
     pages_dir.mkdir(parents=True, exist_ok=True)
 
-    width = max(w for w, _ in sizes)
+    sizes, load, width = _normalize_widths(sizes, load)
     total_h = sum(h for _, h in sizes)
     top, bottom = _edge_trim(sizes, load, width)
     height = total_h - top - bottom
@@ -187,6 +187,28 @@ def _stitch_and_save(m: Manifest, sizes, load, what: str) -> Manifest:
     print(f"  {what} -> strip {width}x{height} -> {strip_path}")
     m.stage = "pages"
     return m
+
+
+def _normalize_widths(sizes, load):
+    """Give every slice the strip's width, which is the one most of the chapter's rows have.
+
+    Exports often carry a cover or promo page of another width (e.g. 518/548 px among 331 px
+    slices). Padding every slice to the widest left white bars beside the real pages, so a
+    differing slice is scaled to the common width instead (aspect kept). Returns the new sizes,
+    a loader returning the scaled slices, and the width."""
+    by_width: dict[int, int] = {}
+    for w, h in sizes:
+        by_width[w] = by_width.get(w, 0) + h
+    width = max(by_width, key=lambda w: (by_width[w], w))
+    if all(w == width for w, _ in sizes):
+        return sizes, load, width
+    scaled = [(width, max(1, round(h * width / w))) for w, h in sizes]
+
+    def load_scaled(i: int) -> Image.Image:
+        img = load(i)
+        return img if img.size == scaled[i] else img.resize(scaled[i], Image.LANCZOS)
+
+    return scaled, load_scaled, width
 
 
 def _padded(img: Image.Image, width: int) -> np.ndarray:

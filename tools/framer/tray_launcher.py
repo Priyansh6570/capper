@@ -84,7 +84,6 @@ try:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import app as framer_app  # noqa: E402 - see sys.path insert above
     import pystray  # noqa: E402
-    from services.batching import resume_batches  # noqa: E402
     from services.jobs import JOBS, JOBS_LOCK  # noqa: E402
     from services.merging import MERGE_JOBS  # noqa: E402
     from services.ports import resolve_port  # noqa: E402
@@ -174,7 +173,7 @@ def main() -> None:
         return  # another instance is already running - see resolve_port()
     url = f"http://{HOST}:{port}/"
 
-    resume_batches()
+    framer_app.start_background()
     server_thread = threading.Thread(target=_serve, args=(port,), daemon=True)
     server_thread.start()
 

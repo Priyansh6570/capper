@@ -249,6 +249,12 @@ def final_path(raw: Path) -> Path:
     return raw.with_name(f"{raw.stem}{BRANDED_SUFFIX}.mp4")
 
 
+def chapters_of(name: str) -> list[int]:
+    """The chapter numbers a merged video's file name says it was made from."""
+    found = _CHAPTERS_IN_NAME.search(name)
+    return [int(n) for n in found.group(1).split("-")] if found else []
+
+
 def _describe(slug: str, path: Path) -> dict:
     stat = path.stat()
     return {"name": path.name, "url": f"/projects/{slug}/merged/{path.name}",
@@ -262,14 +268,19 @@ def list_merges(slug: str) -> list[dict]:
     for raw in projects.merged_dir(slug).glob("merged_*.mp4"):
         if raw.stem.endswith(BRANDED_SUFFIX):
             continue
-        found = _CHAPTERS_IN_NAME.search(raw.name)
         final = final_path(raw)
         merges.append({
             **_describe(slug, raw),
-            "chapters": [int(n) for n in found.group(1).split("-")] if found else [],
+            "chapters": chapters_of(raw.name),
             "final": _describe(slug, final) if final.is_file() else None,
         })
     return sorted(merges, key=lambda m: m["created_at"], reverse=True)
+
+
+def merged_chapters(slug: str) -> set[int]:
+    """Every chapter that is part of a merged video on disk."""
+    return {n for raw in projects.merged_dir(slug).glob("merged_*.mp4") if not raw.stem.endswith(BRANDED_SUFFIX)
+            for n in chapters_of(raw.name)}
 
 
 def delete_merge(slug: str, name: str, *, final_only: bool = False) -> None:

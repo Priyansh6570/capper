@@ -16,6 +16,7 @@ import collections
 import io
 import json
 import math
+import re
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -40,6 +41,19 @@ MAX_FRAMES = 3
 PANELS_PER_BLOCK = 2        # a scene gets at least one block for every this many story panels in it
 MAX_FRAME_OVERLAP = 0.6     # a frame covering more than this share of an earlier one in its block is dropped
 DEFAULT_CHARS_PER_SEC = 15  # speaking rate assumed until a project has generated audio to measure
+
+# The last panel or two of a chapter is often an advertisement for another series: one character illustration
+# (usually a girl or woman, often golden or glowing) that has nothing to do with the story. Both passes are told so.
+AD_RULE = (
+    "Advertisements: the last one to three panels of a chapter are very often a promotional illustration for a "
+    "DIFFERENT series, placed after the final story beat: a single stylish character (often a girl or woman, "
+    "often posed alone against a plain, glowing or golden backdrop) in a different art style, palette or "
+    "rendering from the rest of the chapter, with no speech bubble, no one reacting to her, no continuity with "
+    "the previous panel's place or action, and no one from the character sheet. That is an advertisement, "
+    "never part of the story. A real late reveal is different: the chapter's own characters react to it, speak "
+    "of it or move toward it, or the same art style and setting carry on. If you cannot tie a figure in the "
+    "final panels to the story that way, it is an advertisement.")
+AD_WORDS = re.compile(r"\b(teaser|adverts?|advertisements?|promo\w*|ads?)\b", re.I)   # in a character's description: its art was an ad
 
 _STRINGS = {"type": "array", "items": {"type": "string"}}
 
@@ -114,7 +128,12 @@ def load_memory(path: Path) -> dict:
         memory = read_json_with_backup_fallback(path)
     except (OSError, ValueError):
         memory = {}
-    return {"chapters": memory.get("chapters", {}), "characters": memory.get("characters", {})}
+    return {"chapters": memory.get("chapters", {}), "characters": _without_ads(memory.get("characters", {}))}
+
+
+def _without_ads(characters: dict) -> dict:
+    """The character sheet minus entries that only came from promotional art (an earlier run may have kept some)."""
+    return {name: text for name, text in characters.items() if not AD_WORDS.search(f"{name} {text}")}
 
 
 def _story_so_far(memory: dict, ch_no: int) -> str:
@@ -159,8 +178,8 @@ def _batch_content(panels: list[Panel], context: str, earlier: list[dict], ch_no
     text += (
         "Return a factual breakdown. `catalogue`: one entry for EVERY panel in this batch with its id, a "
         "one-line description, its kind (character, action, scene, sound_effect; dialogue_bubble when the "
-        "panel is mainly a speech bubble or text; junk for title cards, logos, credits, ads or anything "
-        "that is not story art), whether it contains a dialogue bubble, and its `subjects`: for every panel that is not a "
+        "panel is mainly a speech bubble or text; junk for title cards, logos, credits, advertisements or "
+        "anything that is not story art), whether it contains a dialogue bubble, and its `subjects`: for every panel that is not a "
         "dialogue_bubble or junk, one to four things worth showing on their own (a face, an action, an "
         "object, the whole scene), each with a label, its `box` as fractions of the panel [left, top, right, "
         "bottom] drawn tight around the subject and leaving speech bubbles outside where the art allows, "
@@ -175,7 +194,9 @@ def _batch_content(panels: list[Panel], context: str, earlier: list[dict], ch_no
         "shows (each empty when the chapter shows nothing). `characters`: everyone who appears, updating their sheet entry. "
         "`chapter_summary`: the whole chapter so far. Never guess. Anything you cannot establish from the "
         "panels and the context, such as a name, a relationship or what an object is, goes into "
-        "`uncertain` with its panel ids.")
+        "`uncertain` with its panel ids.\n\n" + AD_RULE + " Mark every advertisement panel `junk`, and leave it out of "
+        "`scenes`, `characters`, `uncertain` and `chapter_summary` completely: do not describe it, do not give "
+        "its figure a name or a place in the story, and do not note that it is unexplained.")
     content = [{"type": "text", "text": text}]
     for panel in panels:
         content += [{"type": "text", "text": f"{panel.id}:"}, _image_block(panel)]
@@ -253,7 +274,10 @@ def _narration_prompt(memory: dict, ch_no: int, brief: str, breakdown: dict, sty
         "who cannot see the panels: you add understanding and energy, you do not read the panels out.\n"
         "- Start with the chapter's first scene and narrate every scene in order; none may be skipped. "
         "Never narrate title cards, logos, credits, ads or chapter-end cards, and never mention that the "
-        "chapter or an episode ended.\n"
+        "chapter or an episode ended. " + AD_RULE + " Never end the narration on a mysterious figure, a "
+        "golden or glowing woman, or a new character appearing unless the notes show the story's own characters "
+        "reacting to her; if a figure at the very end is unnamed and nobody in the chapter reacts to her, leave "
+        "her out, and never write that nobody knows who she is or how she is connected.\n"
         f"- Cover the whole chapter. The notes list {art} panels with story art and every one of them belongs "
         "to a block: a block narrates one moment spanning one to three panels, and a panel that only continues "
         "the moment before it is folded into that block, never dropped. Each scene line gives its panel count "
@@ -503,7 +527,7 @@ def run_chapter(*, panels: list[Panel], work_dir: Path, state_path: Path, memory
     on_event({"type": "step", "pass": None, "label": "Updating the story so far"})
     breakdown = state["breakdown"]
     memory["chapters"][str(ch_no)] = breakdown["chapter_summary"]
-    memory["characters"].update({c["name"]: c["description"] for c in breakdown["characters"]})
+    memory["characters"].update(_without_ads({c["name"]: c["description"] for c in breakdown["characters"]}))
     atomic_write_json(memory_path, memory)
     state["memory_applied"] = True
     atomic_write_json(state_path, state)

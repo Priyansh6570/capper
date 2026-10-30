@@ -14,14 +14,17 @@ from flask import jsonify
 
 import batch
 import chapter_backup
+import claude_cli
 import claude_engine
 import config
 import gpu
 import notify
 import projects
 import shorts
+from publishing import enqueue, telegram
 from config import NO_CONSOLE, PROJECTS_DIR, chapter_output_dir, chapter_work_dir
 from manifest import Manifest
+from services import cards
 from services.chapter_files import downloaded_pdf, stitch_chapter
 from services.common import Refused
 from services.downloads import _download_chapter
@@ -91,7 +94,7 @@ def _stage_times(chapter_id: str) -> dict[str, float | None]:
 
 
 # steps whose output was cleared from this PC after a Drive backup: they still count as done
-_STAGE_OF_KIND = {"pages": "stitch", "audio": "audio", "video": "video"}
+_STAGE_OF_KIND = {"download": "download", "pages": "stitch", "audio": "audio", "video": "video"}
 
 
 def chapter_steps(slug: str, n: int) -> dict:
@@ -164,6 +167,31 @@ def _run_in_batch(b: batch.Batch, n: int, job: Job) -> None:
         raise RuntimeError(job.message or f"job {job.status}")
 
 
+def _failed(slug: str, shorts: bool) -> Callable[[batch.Batch, int, str, str], None]:
+    """What happens when a chapter fails at a stage: a desktop toast, and a Telegram card with the ways to go on."""
+    def failed(b: batch.Batch, n: int, stage: str, error: str) -> None:
+        if projects.load(slug)["settings"]["batch"]["notifications"]:
+            notify.toast(f"Chapter {n} failed", f"{stage}: {error}")
+        cards.announce_failure(slug, n, stage, error, shorts)
+    return failed
+
+
+def _pipeline_finished(slug: str, finished: batch.Batch) -> None:
+    """The batch ran out of work: make shorts for the chapters it rendered if the project does that by itself, then
+    offer to merge the project's finished chapters. Runs on its own thread: the batch is still locked."""
+    rendered = [c["n"] for c in finished.chapters if c["state"] == "done" and "video" in c["plan"]]
+
+    def after() -> None:
+        if rendered and projects.load(slug)["settings"]["shorts"]["auto_make"]:
+            try:
+                start_shorts(slug, rendered)
+            except Refused as e:
+                telegram.notify(f"{projects.load(slug)['name']}: shorts were not started - {e}.")
+        cards.propose_merge(slug)
+
+    threading.Thread(target=after, daemon=True).start()
+
+
 def batch_env(slug: str) -> batch.BatchEnv:
     def chapter_id(n: int) -> str:
         return f"{slug}_ch{n}"
@@ -196,6 +224,11 @@ def batch_env(slug: str) -> batch.BatchEnv:
         render("video")(b, n)
         projects.set_status(slug, str(n), "complete")
 
+    def announce(title: str, message: str) -> None:
+        telegram.notify(f"{projects.load(slug)['name']}: {title}\n{message}")
+        if batch_settings()["notifications"]:
+            notify.toast(title, message)
+
     def space_low() -> bool:
         bt = batch_settings()
         return (bool(bt.get("auto_offload")) and chapter_backup.is_shared(slug)
@@ -216,7 +249,8 @@ def batch_env(slug: str) -> batch.BatchEnv:
                             "seven_day": batch_settings()["seven_day_pct"]},
         auto_wait=lambda: batch_settings()["auto_wait_five_hour"],
         cancel_job=_cancel_job, space_low=space_low, offload=offload,
-        notify=lambda title, message: notify.toast(title, message) if batch_settings()["notifications"] else None,
+        notify=announce, finished=lambda finished: _pipeline_finished(slug, finished),
+        failed=_failed(slug, shorts=False),
         claude_total=lambda n: (claude_engine.read_usage(projects.chapter_work_path(slug, n) / "claude" / "state.json")
                                 or {}).get("total"))
 
@@ -248,17 +282,49 @@ def shorts_env(slug: str) -> batch.BatchEnv:
             b.log(n, "No segment was strong enough for a short, so nothing to render.")
             return
         _run_in_batch(b, n, new_shorts_job(chapter_id(n), "shorts_render", slug, str(n)))
+        if queued := enqueue.shorts_of_chapter(slug, n):
+            b.log(n, f"Queued {len(queued)} short(s) for upload.")
 
     return dataclasses.replace(
         batch_env(slug), runners={"shorts_find": find, "shorts_render": render}, stages=batch.SHORTS_STAGES,
         done_stages=lambda n: [], review_enabled=lambda: False, claude_total=lambda n: None,
-        space_low=lambda: False)
+        space_low=lambda: False, finished=lambda finished: None, failed=_failed(slug, shorts=True))
 
 
 def shorts_blocker(slug: str, n: int) -> str | None:
     """Why chapter n can't have shorts made yet, or None. Shorts reuse the chapter's script, frames and
     narration, which a finished video has all of."""
     return None if "video" in chapter_steps(slug, n)["done"] else "it has no finished video yet"
+
+
+def start_shorts(slug: str, numbers: list[int], max_shorts: int | None = None) -> tuple[list[int], list[dict]]:
+    """Run the Shorts pipeline over those of `numbers` that have a finished video. Returns the chapters it studies
+    and the ones skipped with the reason. Raises Refused when none can have shorts or shorts are being made already."""
+    skipped = [{"n": n, "reason": reason} for n in numbers if (reason := shorts_blocker(slug, n))]
+    eligible = [n for n in numbers if n not in {s["n"] for s in skipped}]
+    if not eligible:
+        raise Refused("None of these chapters can have shorts yet: " +
+                      "; ".join(f"chapter {s['n']} {s['reason']}" for s in skipped) + ".", 409)
+    with BATCH_LOCK:
+        previous = SHORTS_BATCHES.get(slug)
+        if previous and previous.active:
+            raise Refused("Shorts are already being made for this project; wait for them or stop them first.", 409)
+        if previous:
+            previous.close()
+        SHORTS_BATCHES[slug] = batch.Batch.create(
+            shorts_batch_path(slug), shorts_env(slug), {eligible[0]: list(batch.SHORTS_STAGES)},
+            meta={"find": {"chapters": eligible, "max_shorts": max_shorts, "skipped": skipped}})
+    return eligible, skipped
+
+
+def active_chapters(slug: str) -> set[int]:
+    """The chapters the project's pipeline is working on or has queued."""
+    current = BATCHES.get(slug)
+    return {c["n"] for c in current.chapters if c["state"] in batch.ACTIVE_STATES} if current and current.active else set()
+
+
+def pipeline_running() -> bool:
+    return any(b.active for running in (BATCHES, SHORTS_BATCHES) for b in running.values())
 
 
 def batch_path(slug: str) -> Path:
@@ -287,6 +353,26 @@ def resume_batches() -> None:
 def job_summary(job_id: str) -> dict | None:
     job = JOBS.get(job_id)
     return {**{k: v for k, v in job.public().items() if k != "log"}, "last_activity": job.last_activity} if job else None
+
+
+def start_batch(slug: str, plans: dict[int, list[str]]) -> None:
+    """Run `plans` (chapter -> steps) as the project's batch, or add them to the one already running.
+    Raises Refused when they cannot run."""
+    if any("script" in steps for steps in plans.values()):
+        status = claude_cli.cli_status()
+        if not status["ready"]:
+            raise Refused(status["message"], 409)
+    with BATCH_LOCK:
+        previous = BATCHES.get(slug)
+        if previous and previous.active:
+            try:
+                previous.enqueue(plans)
+            except ValueError as e:
+                raise Refused(str(e), 409) from e
+            return
+        if previous:
+            previous.close()
+        BATCHES[slug] = batch.Batch.create(batch_path(slug), batch_env(slug), plans)
 
 
 def batch_do(slug: str, action: Callable[[batch.Batch], None], store: dict[str, batch.Batch] = BATCHES):
