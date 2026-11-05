@@ -342,6 +342,16 @@ def api_set_chapter_tone(slug, n):
     return jsonify(ok=True, chapter=ch)
 
 
+@bp.post("/api/projects/<slug>/chapters/<int:n>/quality")
+def api_set_chapter_quality(slug, n):
+    """Body: JSON {quality}: one of quality.MODES, or null to follow the project's default mode."""
+    try:
+        ch = projects.set_chapter_quality(slug, n, (request.get_json(silent=True) or {}).get("quality"))
+    except (ValueError, KeyError) as e:
+        return jsonify(error=str(e)), 400
+    return jsonify(ok=True, chapter=ch)
+
+
 @bp.get("/api/tts/kokoro/voices")
 def api_kokoro_voices():
     return jsonify(voices=tts_kokoro.VOICES)

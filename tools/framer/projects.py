@@ -42,6 +42,7 @@ from typing import Optional
 
 import app_settings
 import claude_cli
+import quality
 import tones
 from config import OUTPUT_DIR, PROJECTS_DIR, WORK_DIR
 from stages import tts_kokoro
@@ -51,7 +52,7 @@ from atomic_io import atomic_write_text, read_json_with_backup_fallback
 
 # Status rank - forward-only transitions (never downgraded automatically).
 STATUS_RANK = {"not_started": 0, "downloaded": 1, "boxed": 2, "rendered": 3, "complete": 4}
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 CHAPTER_FILE = "chapter.json"
 
 _LOCK = threading.RLock()  # guards read-modify-write of project and chapter files; re-entrant because load() migrates
@@ -237,11 +238,12 @@ def default_settings() -> dict:
         # the watermark above.
         # `own_audio` gives them a music track and narration / music volumes of their own too (`music`, `audio`,
         # the same fields as the main ones).
-        # `auto_make`: the Shorts pipeline runs by itself for the chapters a pipeline run has rendered.
+        # `auto_make`: the Shorts pipeline runs by itself for the chapters a pipeline run has rendered. Off by
+        # default: shorts are only made when asked for.
         # `library`: the shorts' own music, tracks {id, name, theme, duration_s, drop_s, file} (short_music.py); stage 8 picks
         # the one that fits a short's theme, runs the short as long as it and mixes it in at `music_share` (the
         # narration gets the rest). With no tracks the music settings above apply.
-        "shorts": {"layout": "frame", "auto_make": True, "own_look": False, "watermark": _default_watermark(),
+        "shorts": {"layout": "frame", "auto_make": False, "own_look": False, "watermark": _default_watermark(),
                    "library": [], "music_share": 0.4,
                    "background": _default_background(),
                    "own_audio": False, "music": {"mode": "default", "file": None},
@@ -265,8 +267,11 @@ def default_settings() -> dict:
         # project's default; a chapter can override it.
         "script": {"tone": tones.DEFAULT_TONE, "narration_type": "first_person", "style_reference": ""},
         # min_frame_s: the least time any one frame stays on screen (caps frames per block).
+        # quality: how much of each panel the script step shows Claude (quality.py); a chapter can set its own.
+        # balanced_max_side: the long edge, in px, of the panel images Balanced sends.
         "claude": {"series_brief": "", "comprehension_model": "opus", "narration_model": "sonnet",
-                   "min_frame_s": 3},
+                   "min_frame_s": 3, "quality": quality.DEFAULT,
+                   "balanced_max_side": quality.DEFAULT_BALANCED_SIDE},
         # Batch automation (batch.py): wait for the user's review of each chapter's frames
         # before audio; Claude work is held once subscription usage reaches these percentages.
         # auto_wait_five_hour: wait out a reached five-hour limit and resume by itself (the weekly one
@@ -293,7 +298,8 @@ def _default_title(n: int) -> str:
 
 
 def _default_state() -> dict:
-    return {"status": "not_started", "pdf": None, "video": None, "updated_at": None, "tone": None}
+    return {"status": "not_started", "pdf": None, "video": None, "updated_at": None, "tone": None,
+            "quality": None, "script_mode": None}
 
 
 def _default_chapter(n: int, title: str = "") -> dict:
@@ -373,7 +379,7 @@ def _migrate_chapters(slug: str, data: dict) -> None:
     for ch in data["chapters"]:
         if not _chapter_state_path(slug, ch["n"]).exists():
             save_chapter(slug, {**_default_chapter(ch["n"]), **ch})
-    data["schema"] = SCHEMA_VERSION
+    data["schema"] = 2
     save(data)
 
 
@@ -406,6 +412,19 @@ def _migrate_settings(slug: str, data: dict) -> None:
     settings.pop("script_engine", None)
     settings["script"] = {**{k: voice[k] for k in ("tone", "narration_type", "style_reference") if k in voice},
                           **settings.get("script", {})}
+    data["schema"] = 3
+    _atomic_write(path, json.dumps(data, indent=2, ensure_ascii=False))
+
+
+def _migrate_auto_shorts(slug: str, data: dict) -> None:
+    """Schema 3 made shorts by themselves after a pipeline run. Schema 4 pauses that (settings.shorts.auto_make
+    is off by default), including in projects that had saved it on. The old file is kept once as project.json.v3."""
+    path = project_json_path(slug)
+    original = path.with_name(path.name + ".v3")
+    if not original.exists():
+        shutil.copy2(path, original)
+    if "shorts" in data.get("settings", {}):
+        data["settings"]["shorts"]["auto_make"] = False
     data["schema"] = SCHEMA_VERSION
     _atomic_write(path, json.dumps(data, indent=2, ensure_ascii=False))
 
@@ -426,6 +445,12 @@ def load(slug: str) -> dict:
             if _has_legacy_settings(data):
                 _migrate_settings(slug, data)
                 data = read_json_with_backup_fallback(project_json_path(slug))
+    if data.get("schema", SCHEMA_VERSION) < SCHEMA_VERSION:
+        with _LOCK:
+            data = read_json_with_backup_fallback(project_json_path(slug))
+            if data.get("schema", SCHEMA_VERSION) < SCHEMA_VERSION:
+                _migrate_auto_shorts(slug, data)
+                data = read_json_with_backup_fallback(project_json_path(slug))
     data["chapters"] = _chapters_from_index(slug, data)
     data.setdefault("schema", SCHEMA_VERSION)
     data.setdefault("site", None)
@@ -435,6 +460,8 @@ def load(slug: str) -> dict:
     data["settings"] = settings
     for ch in data["chapters"]:
         ch["tone"] = tones.normalize(ch.get("tone"))
+        ch["quality"] = quality.normalize(ch.get("quality"))
+        ch["script_mode"] = quality.normalize(ch.get("script_mode"))
     data["settings"]["script"]["tone"] = tones.normalize(data["settings"]["script"].get("tone")) or tones.DEFAULT_TONE
     return data
 
@@ -630,6 +657,33 @@ def set_chapter_tone(slug: str, n, tone: Optional[str]) -> dict:
     return ch
 
 
+def chapter_quality(project: dict, n) -> str:
+    """The quality mode chapter `n`'s script is written in: its own, else the project's default."""
+    return get_chapter(project, n)["quality"] or project["settings"]["claude"]["quality"]
+
+
+def set_chapter_quality(slug: str, n, mode: Optional[str]) -> dict:
+    """Store chapter `n`'s quality mode (None goes back to the project's default)."""
+    if mode is not None and quality.normalize(mode) is None:
+        raise ValueError(f"unknown quality mode: {mode}")
+    with _LOCK:
+        project = load(slug)
+        ch = get_chapter(project, n)
+        if ch is None:
+            raise KeyError(f"no chapter {n} in project {slug}")
+        ch["quality"] = mode
+        save_chapter(slug, ch)
+    return ch
+
+
+def record_script_mode(slug: str, n, mode: str) -> None:
+    """Remember the quality mode chapter `n`'s script was last generated with."""
+    with _LOCK:
+        ch = get_chapter(load(slug), n)
+        ch["script_mode"] = mode
+        save_chapter(slug, ch)
+
+
 def _apply_derived_status(slug: str, ch: dict) -> bool:
     """Set `ch`'s status from what's on disk (pdf -> downloaded, mapping.json -> boxed, recap.mp4 ->
     rendered), keeping the stored status when it ranks higher. A manually-set "complete" is kept only
@@ -754,6 +808,8 @@ def update_settings(slug: str, settings: dict) -> dict:
             if cl.get(key) not in claude_cli.MODELS:
                 cl[key] = default_settings()["claude"][key]
         cl["min_frame_s"] = max(1.0, min(10.0, float(cl.get("min_frame_s") or 3)))
+        cl["quality"] = quality.normalize(cl.get("quality")) or quality.DEFAULT
+        cl["balanced_max_side"] = quality.balanced_side(cl.get("balanced_max_side"))
         bt = project["settings"]["batch"]
         for key in ("review_before_audio", "auto_wait_five_hour", "notifications", "auto_offload"):
             bt[key] = bool(bt.get(key))

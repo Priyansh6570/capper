@@ -378,6 +378,7 @@ function syncScriptJobUI() {
     $('genScriptStatus').textContent = job.message + ' Fix any wrong boxes, then export.';
     showToast('Claude narration ready.', null, null, 'ok');
     loadEditorState(false, false, true);
+    loadCurrentProject(S.project).then(syncEditorQuality);
   } else if (job.status === 'failed') {
     $('genScriptStatus').innerHTML = escHtml(job.message) +
       ' <button type="button" class="small ghost" onclick="startClaudeScript()">Retry</button>';
@@ -3711,6 +3712,42 @@ function toneSelectHtml(ch) {
   return `<label class="chtone" title="Tone of this chapter's script and narration voice">Tone<select data-tone>${options.join('')}</select></label>`;
 }
 
+const QUALITY_LABELS = { full: 'Full', balanced: 'Balanced', lite: 'Lite' };
+
+function qualityOptionsHtml(ch) {
+  const inherited = QUALITY_LABELS[CURRENT_PROJECT.settings.claude.quality];
+  return [`<option value="" ${ch.quality ? '' : 'selected'}>Project default (${inherited})</option>`,
+    ...Object.entries(QUALITY_LABELS).map(([id, label]) => `<option value="${id}" ${ch.quality === id ? 'selected' : ''}>${label}</option>`)].join('');
+}
+
+function qualitySelectHtml(ch) {
+  return `<label class="chtone" title="How much of the panels Claude is shown for this chapter's script. Changing it and generating the script again redoes only this chapter.">Quality<select data-quality>${qualityOptionsHtml(ch)}</select></label>`;
+}
+
+function scriptModeHtml(ch) {
+  return ch.script_mode ? `<span class="chlen" title="The quality mode this chapter's script was last generated with">Script: ${QUALITY_LABELS[ch.script_mode]}</span>` : '';
+}
+
+async function setChapterQuality(ch, value) {
+  const res = await fetch(projectApi(`/chapters/${ch.n}/quality`), { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ quality: value || null }) });
+  if (res.ok) ch.quality = value || null;
+  return res.ok;
+}
+
+function syncEditorQuality() {
+  const ch = CURRENT_PROJECT && CURRENT_PROJECT.chapters.find(c => c.n === +S.ch_no);
+  $('genScriptMode').closest('label').hidden = !ch;
+  if (!ch) return;
+  $('genScriptMode').innerHTML = qualityOptionsHtml(ch);
+  $('genScriptMode').title = ch.script_mode ? `Last generated in ${QUALITY_LABELS[ch.script_mode]} mode` : 'Not generated yet';
+}
+
+$('genScriptMode').onchange = async e => {
+  const ch = CURRENT_PROJECT.chapters.find(c => c.n === +S.ch_no);
+  if (!(await setChapterQuality(ch, e.target.value))) syncEditorQuality();
+};
+
 function narrationHtml(ch) {
   if (!ch.narration) return '';
   return `<span class="chlen" title="Estimated from the script's length at this project's speaking pace">Narration ~${fmtVideoLength(ch.narration.seconds)} (${ch.narration.words.toLocaleString()} words)</span>`;
@@ -3729,7 +3766,7 @@ function chapterRowHtml(ch) {
   return `<div class="chrow ${SELECTION.has(ch.n) ? 'sel' : ''}" data-n="${ch.n}">${selectBox(ch)}<span class="chno">#${ch.n}</span>` +
     `<span class="chtexts"><span class="chtitle">${escHtml(ch.title)}</span><span class="chmeta">${chapterMeta(ch)}</span></span>` +
     `<div class="chstatus"><span class="stpill st-${ch.status}">${status}</span>` +
-    `${narrationHtml(ch)}${hasVideo(ch) ? `<span class="chlen">Video ${fmtVideoLength(ch.duration)}</span>` : ''}${toneSelectHtml(ch)}</div>` +
+    `${narrationHtml(ch)}${hasVideo(ch) ? `<span class="chlen">Video ${fmtVideoLength(ch.duration)}</span>` : ''}${scriptModeHtml(ch)}${toneSelectHtml(ch)}${qualitySelectHtml(ch)}</div>` +
     `<div class="chprogress" data-progress>${progressHtml(ch)}</div>` +
     `<div class="chacts">${chapterActionsHtml(ch)}</div></div>`;
 }
@@ -3744,7 +3781,7 @@ function chapterCardHtml(ch) {
     `<div class="chthumb">${thumb}</div>` +
     `<div class="chprogress" data-progress>${progressHtml(ch)}</div>` +
     `<div class="chcardmeta"><span class="stpill st-${ch.status}">${status}</span>` +
-    `${narrationHtml(ch)}${hasVideo(ch) ? `<span class="chlen">Video ${fmtVideoLength(ch.duration)}</span>` : ''}${toneSelectHtml(ch)}<span class="chmeta">${chapterMeta(ch)}</span></div>` +
+    `${narrationHtml(ch)}${hasVideo(ch) ? `<span class="chlen">Video ${fmtVideoLength(ch.duration)}</span>` : ''}${scriptModeHtml(ch)}${toneSelectHtml(ch)}${qualitySelectHtml(ch)}<span class="chmeta">${chapterMeta(ch)}</span></div>` +
     `<div class="chacts">${chapterActionsHtml(ch)}</div></article>`;
 }
 
@@ -3928,6 +3965,12 @@ function paintTrackers() {
 }
 
 $('chList').addEventListener('change', async e => {
+  const quality = e.target.closest('[data-quality]');
+  if (quality) {
+    const ch = chapterByNumber(+quality.closest('[data-n]').dataset.n);
+    if (!(await setChapterQuality(ch, quality.value))) quality.value = ch.quality || '';
+    return;
+  }
   const select = e.target.closest('[data-tone]');
   if (!select) return;
   const ch = chapterByNumber(+select.closest('[data-n]').dataset.n);
@@ -4418,6 +4461,8 @@ function fillSettingsForm() {
   $('claudeComprehensionModel').value = cl.comprehension_model || 'opus';
   $('claudeNarrationModel').value = cl.narration_model || 'sonnet';
   $('claudeMinFrame').value = cl.min_frame_s || 3;
+  $('claudeQuality').value = cl.quality || 'full';
+  $('claudeBalancedSide').value = cl.balanced_max_side || 512;
   const bt = s.batch || {};
   $('videoQuality').value = (s.video || {}).quality || 'tiny';
   document.querySelector(`input[name=vidLayout][value="${(s.video || {}).layout || 'frame'}"]`).checked = true;
@@ -4599,6 +4644,8 @@ function currentSettingsFromForm() {
       comprehension_model: $('claudeComprehensionModel').value,
       narration_model: $('claudeNarrationModel').value,
       min_frame_s: parseFloat($('claudeMinFrame').value) || 3,
+      quality: $('claudeQuality').value,
+      balanced_max_side: parseInt($('claudeBalancedSide').value, 10) || 512,
     },
     video: { quality: $('videoQuality').value, layout: document.querySelector('input[name=vidLayout]:checked').value },
     batch: {
@@ -4989,6 +5036,7 @@ async function openChapterEditor(slug, chNo, opts) {
   showScreen('editor');
   pollJobs();   // don't wait for the next 1.5s tick - this chapter may already have a job
   if (!CURRENT_PROJECT || CURRENT_PROJECT.slug !== slug) await loadCurrentProject(slug);
+  syncEditorQuality();
   loadClaudeStatus();
 
   if (opts.autoDownload) {
@@ -5295,6 +5343,8 @@ $('claudeBrief').oninput = saveSettingsDebounced;
 $('claudeComprehensionModel').onchange = saveSettingsDebounced;
 $('claudeNarrationModel').onchange = saveSettingsDebounced;
 $('claudeMinFrame').oninput = saveSettingsDebounced;
+$('claudeQuality').onchange = saveSettingsDebounced;
+$('claudeBalancedSide').oninput = saveSettingsDebounced;
 $('videoQuality').onchange = saveSettingsDebounced;
 $('batchReview').onchange = saveSettingsDebounced;
 $('batchAutoWait').onchange = saveSettingsDebounced;

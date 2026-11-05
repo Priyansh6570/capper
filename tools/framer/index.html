@@ -480,6 +480,18 @@
                   <input id="claudeMinFrame" type="number" min="1" max="10" step="0.5" />
                 </label>
               </div>
+              <div class="setgridpair" style="margin-top:10px">
+                <label class="field" style="margin:0"><span class="lbl" style="text-transform:none;letter-spacing:0;font-weight:400;color:var(--muted)">Script quality (each chapter can set its own)</span>
+                  <select id="claudeQuality">
+                    <option value="full">Full: every panel as an image</option>
+                    <option value="balanced">Balanced: smaller images + the text read from them</option>
+                    <option value="lite">Lite: only the text read from the panels, no images</option>
+                  </select>
+                </label>
+                <label class="field" style="margin:0"><span class="lbl" style="text-transform:none;letter-spacing:0;font-weight:400;color:var(--muted)">Balanced: longest side of a panel image (px)</span>
+                  <input id="claudeBalancedSide" type="number" min="256" max="2576" step="64" />
+                </label>
+              </div>
 
               <label class="field" style="margin:10px 0 0">
                 <span class="lbl" style="text-transform:none;letter-spacing:0;font-weight:400;color:var(--muted)">Style reference (optional)</span>
@@ -1071,6 +1083,7 @@
           <span id="saveState" class="hint"></span></div>
         <div class="rmeta" style="margin:0 0 8px">
           <button id="genScriptBtn" class="small primary" data-icon="text" data-ic-size="13" title="Have Claude read the chapter's panels and write the narration script"><span>Generate script with Claude</span></button>
+          <label class="chtone" title="How much of the panels Claude is shown for this chapter. Changing it and generating again redoes only this chapter.">Quality<select id="genScriptMode"></select></label>
           <span class="hint" id="genScriptStatus"></span>
         </div>
         <div id="genScriptResult"></div>

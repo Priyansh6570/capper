@@ -20,6 +20,7 @@ pystray>=0.19        # tools/framer/tray_launcher.py: system tray icon + Quit,
                      # it with no console window (see tray_launcher.py)
 python-dotenv>=1.0   # reads HF_TOKEN from .env
 opencv-python-headless>=4.10  # tools/framer/bubbles.py: speech-bubble detection (Claude script engine); no GUI calls used
+easyocr>=1.7.2       # tools/framer/ocr.py: offline text reading for the Balanced and Lite script modes; runs on torch (GPU or CPU)
 huggingface_hub      # stage 6 / tools/predownload_tts_models.py: model cache + download
 
 # --- Stage 6: Chatterbox TTS, runs locally (GPU with CPU fallback) --------

@@ -50,6 +50,7 @@ def add_chapter_details(project: dict, chapters: list[dict]) -> None:
     chars_per_sec = totals.speech_rate(slug) or claude_engine.DEFAULT_CHARS_PER_SEC
     for ch in chapters:
         ch["effective_tone"] = projects.chapter_tone(project, ch["n"])
+        ch["effective_quality"] = projects.chapter_quality(project, ch["n"])
         ch["narration"] = narration_estimate(slug, ch["n"], chars_per_sec)
         video = projects.chapter_video_path(slug, ch["n"])
         ch["duration"] = (branding.duration_of(video) if video.is_file()

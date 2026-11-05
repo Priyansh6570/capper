@@ -213,6 +213,7 @@ class Shorts(PlannerCase):
 
     def test_shorts_are_made_by_themselves_for_the_chapters_a_pipeline_rendered(self):
         slug = self.project()
+        projects.update_settings(slug, {"shorts": {"auto_make": True}})
         finished = mock.Mock(chapters=[{"n": 1, "state": "done", "plan": ["video"]}, {"n": 2, "state": "failed", "plan": ["video"]},
                                        {"n": 3, "state": "done", "plan": ["download"]}])
         with mock.patch.object(batching.threading, "Thread", ImmediateThread), \
@@ -224,17 +225,26 @@ class Shorts(PlannerCase):
 
     def test_a_refused_automatic_start_is_reported(self):
         slug = self.project()
+        projects.update_settings(slug, {"shorts": {"auto_make": True}})
         finished = mock.Mock(chapters=[{"n": 1, "state": "done", "plan": ["video"]}])
         with mock.patch.object(batching.threading, "Thread", ImmediateThread), mock.patch.object(batching.cards, "propose_merge"), \
                 mock.patch.object(batching, "start_shorts", side_effect=batching.Refused("Shorts are already being made")):
             batching._pipeline_finished(slug, finished)
         self.assertEqual(self.texts(), ["Plan Series: shorts were not started - Shorts are already being made."])
 
-    def test_the_setting_is_on_by_default_and_saved(self):
+    def test_nothing_is_made_by_itself_unless_the_setting_is_turned_on(self):
         slug = self.project()
-        self.assertTrue(projects.load(slug)["settings"]["shorts"]["auto_make"])
-        saved = self.client.post(f"/api/projects/{slug}/settings", json={"shorts": {"auto_make": False}}).get_json()
-        self.assertFalse(saved["settings"]["shorts"]["auto_make"])
+        finished = mock.Mock(chapters=[{"n": 1, "state": "done", "plan": ["video"]}])
+        with mock.patch.object(batching.threading, "Thread", ImmediateThread),                 mock.patch.object(batching, "start_shorts") as start, mock.patch.object(batching.cards, "propose_merge") as merge:
+            batching._pipeline_finished(slug, finished)
+        start.assert_not_called()
+        merge.assert_called_once_with(slug)
+
+    def test_the_setting_is_off_by_default_and_saved(self):
+        slug = self.project()
+        self.assertFalse(projects.load(slug)["settings"]["shorts"]["auto_make"])
+        saved = self.client.post(f"/api/projects/{slug}/settings", json={"shorts": {"auto_make": True}}).get_json()
+        self.assertTrue(saved["settings"]["shorts"]["auto_make"])
 
     def test_schedule_lists_shorts_with_their_upload_times(self):
         self.short_item(status="scheduled", title="Moment", series="Plan Series", publish_at="2030-01-05T09:30:00+00:00")

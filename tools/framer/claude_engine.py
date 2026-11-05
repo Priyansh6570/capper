@@ -1,8 +1,9 @@
 """Script engine that turns a chapter's panels into narration blocks with the local
 `claude` CLI.
 
-Pass 1 sends the panel images (downscaled copies, in batches carrying the previous
-breakdown forward) and returns a factual breakdown plus a per-panel catalogue whose entries
+Pass 1 sends the panels in batches carrying the previous breakdown forward, as downscaled
+images (Full), smaller images with the text read from them (Balanced) or that text alone (Lite;
+see quality.py), and returns a factual breakdown plus a per-panel catalogue whose entries
 list the subjects worth showing and roughly where they sit. Pass 2 is a fresh, text-only call
 that writes the narration from that breakdown and picks, per block, subjects to show, the
 play mode and any flop. The exact crops, bubble handling, frame limits and flop safety are
@@ -13,7 +14,6 @@ from __future__ import annotations
 
 import base64
 import collections
-import io
 import json
 import math
 import re
@@ -28,13 +28,12 @@ import bubbles
 import claude_cli
 import frame_crop
 import pacing
+import panel_inputs
 import panel_split
+import quality
 from atomic_io import atomic_write_json, read_json_with_backup_fallback
 from manifest import Panel
 
-SEND_MAX_SIDE = 1024        # longest side of the copy of a panel sent to the model, px
-JPEG_QUALITY = 80
-BATCH_PANELS = 40           # images per pass-1 call (the API allows 100 and caps request size)
 FRAME_KINDS = ("character", "action", "scene", "sound_effect")
 KINDS = FRAME_KINDS + ("dialogue_bubble", "junk")
 MAX_FRAMES = 3
@@ -151,31 +150,74 @@ def _context(memory: dict, ch_no: int, brief: str) -> str:
             f"Character sheet:\n{_character_sheet(memory)}")
 
 
-def _batches(ids: list[str]) -> list[list[str]]:
-    count = math.ceil(len(ids) / BATCH_PANELS)
+def _batches(ids: list[str], limit: int) -> list[list[str]]:
+    count = math.ceil(len(ids) / limit)
     size = math.ceil(len(ids) / count)
     return [ids[i:i + size] for i in range(0, len(ids), size)]
 
 
-def _image_block(panel: Panel) -> dict:
-    with Image.open(panel.crop) as image:
-        image = image.convert("RGB")
-        image.thumbnail((SEND_MAX_SIDE, SEND_MAX_SIDE))
-        buffer = io.BytesIO()
-        image.save(buffer, "JPEG", quality=JPEG_QUALITY)
+def _image_block(data: bytes) -> dict:
     return {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg",
-                                        "data": base64.b64encode(buffer.getvalue()).decode()}}
+                                        "data": base64.b64encode(data).decode()}}
 
 
-def _batch_content(panels: list[Panel], context: str, earlier: list[dict], ch_no: int,
-                   number: int, count: int) -> list[dict]:
+def _transcript(blocks: list[dict]) -> str:
+    """The text read from one panel, a line per block led by its [left, top, right, bottom] place in percent."""
+    return "\n".join(f"[{','.join(str(round(v * 100)) for v in b['box'])}] {b['text']}"
+                     for b in blocks) or "(no text)"
+
+
+TEXT_NOTE = (
+    "Each panel comes with the text read from it automatically: one line per speech bubble or caption, led by its "
+    "[left,top,right,bottom] place in the panel as percentages. The reading can have small errors, such as a split word "
+    "or a wrong letter, and sound effects appear as stray text.")
+
+BALANCED_RULES = (
+    "The images are reduced to save space, so small lettering is not legible in them: take every word of dialogue and "
+    "every caption from the text read from the panel, never from the image. The image shows the art; the text lines "
+    "show where each bubble sits.")
+
+LITE_RULES = (
+    "You have no images: you only have the dialogue and captions of each panel, and where they sit. Work from them "
+    "alone and never invent visual action, appearance, setting or anything else you cannot read. For the catalogue: "
+    "give each panel a one-line description of what its text says or does, set kind to dialogue_bubble when the "
+    "panel is only speech or captions and to scene otherwise (junk when its text is a title, credit, logo, link or "
+    "promotion), set has_bubble to whether the panel has any text, and leave `subjects` empty. In `scenes`, let "
+    "`what_happens` follow the dialogue and captions in order, and take feelings and stakes only from what the words "
+    "show. A panel with no text is art you cannot see: keep it in its scene and say nothing about it.")
+
+LITE_NARRATION_NOTE = (
+    "The notes were made from the chapter's dialogue and captions alone: nobody saw the art. Narrate from what the "
+    "characters say and what the captions state, and do not invent visual action, looks or settings the words do "
+    "not give. The frame candidates list no subjects, so give every frame `subject` -1, which shows the whole panel.")
+
+MODE_RULES = {quality.FULL: "", quality.BALANCED: BALANCED_RULES, quality.LITE: LITE_RULES}
+
+
+def _batch_content(panels: list[Panel], context: str, earlier: list[dict], ch_no: int, number: int, count: int,
+                   mode: str, cache: panel_inputs.PanelCache, side: int | None,
+                   texts: dict[str, list[dict]]) -> list[dict]:
     text = (f"You are preparing a recap of chapter {ch_no} of a manhwa. Below are panels "
             f"{panels[0].id} to {panels[-1].id} (batch {number} of {count}), each preceded by its id, in "
             "reading order.\n\n" + context + "\n\n")
+    if mode != quality.FULL:
+        text += TEXT_NOTE + "\n\n"
     if earlier:
         carried = {k: v for k, v in _merge(earlier).items() if k != "catalogue"}
         text += f"Earlier in this chapter (from the previous batches):\n{json.dumps(carried, ensure_ascii=False)}\n\n"
-    text += (
+    text += _breakdown_task() + (f"\n\n{MODE_RULES[mode]}" if MODE_RULES[mode] else "")
+    if mode == quality.LITE:
+        listing = "\n\n".join(f"{panel.id}:\n{_transcript(texts[panel.id])}" for panel in panels)
+        return [{"type": "text", "text": f"{text}\n\n{listing}"}]
+    content = [{"type": "text", "text": text}]
+    for panel in panels:
+        label = f"{panel.id}:" if mode == quality.FULL else f"{panel.id}:\n{_transcript(texts[panel.id])}"
+        content += [{"type": "text", "text": label}, _image_block(cache.image(panel, side))]
+    return content
+
+
+def _breakdown_task() -> str:
+    return (
         "Return a factual breakdown. `catalogue`: one entry for EVERY panel in this batch with its id, a "
         "one-line description, its kind (character, action, scene, sound_effect; dialogue_bubble when the "
         "panel is mainly a speech bubble or text; junk for title cards, logos, credits, advertisements or "
@@ -197,10 +239,6 @@ def _batch_content(panels: list[Panel], context: str, earlier: list[dict], ch_no
         "`uncertain` with its panel ids.\n\n" + AD_RULE + " Mark every advertisement panel `junk`, and leave it out of "
         "`scenes`, `characters`, `uncertain` and `chapter_summary` completely: do not describe it, do not give "
         "its figure a name or a place in the story, and do not note that it is unexplained.")
-    content = [{"type": "text", "text": text}]
-    for panel in panels:
-        content += [{"type": "text", "text": f"{panel.id}:"}, _image_block(panel)]
-    return content
 
 
 def _merge(results: list[dict]) -> dict:
@@ -253,7 +291,7 @@ def _catalogue_text(breakdown: dict, panels: dict[str, Panel]) -> str:
 
 
 def _narration_prompt(memory: dict, ch_no: int, brief: str, breakdown: dict, style: str,
-                      panels: dict[str, Panel]) -> str:
+                      panels: dict[str, Panel], mode: str) -> str:
     kinds = _kinds(breakdown)
     scenes = "\n".join(
         f"[{s['panel_ids'][0]}-{s['panel_ids'][-1]}] {_art_count(s, kinds)} story panels, at least "
@@ -270,6 +308,7 @@ def _narration_prompt(memory: dict, ch_no: int, brief: str, breakdown: dict, sty
         f"Chapter summary:\n{breakdown['chapter_summary']}\n\nScenes, in order:\n{scenes}\n\n"
         f"Uncertain (do not resolve these):\n{uncertain}\n\n"
         f"Frame candidates (the only panels you may use), each followed by its numbered subjects:\n{catalogue}\n\n{style}\n\n"
+        + (f"{LITE_NARRATION_NOTE}\n\n" if mode == quality.LITE else "") +
         "Return ordered blocks, written the way a skilled recap-channel narrator tells the story to a viewer "
         "who cannot see the panels: you add understanding and energy, you do not read the panels out.\n"
         "- Start with the chapter's first scene and narrate every scene in order; none may be skipped. "
@@ -408,7 +447,7 @@ def _finish_blocks(raw: list[dict], panels: dict[str, Panel], breakdown: dict, m
 
 def _write_narration(ask: Callable[[str], dict], on_event: Callable[[dict], None], *, memory: dict, ch_no: int,
                      brief: str, breakdown: dict, style: str, panels: dict[str, Panel], min_frame_s: float,
-                     chars_per_sec: float) -> list[dict]:
+                     chars_per_sec: float, mode: str) -> list[dict]:
     """Pass 2: write the narration, re-asking once when a scene got fewer blocks than its panels call
     for (coverage, not length: it is never padded, extended or trimmed afterwards)."""
     def log(line):
@@ -419,7 +458,7 @@ def _write_narration(ask: Callable[[str], dict], on_event: Callable[[dict], None
         return "; ".join(f"{s['panel_ids'][0]}-{s['panel_ids'][-1]} has {got} block(s) and needs at least "
                          f"{_min_blocks(s, kinds)}" for s, got in thin)
 
-    prompt = _narration_prompt(memory, ch_no, brief, breakdown, style, panels)
+    prompt = _narration_prompt(memory, ch_no, brief, breakdown, style, panels, mode)
     answer = ask(prompt)
     thin = _thin_scenes(breakdown, answer["blocks"])
     if thin:
@@ -455,12 +494,13 @@ def read_narration(state_path: Path) -> dict | None:
 
 def run_chapter(*, panels: list[Panel], work_dir: Path, state_path: Path, memory_path: Path, ch_no: int,
                 brief: str, style: str, models: dict, min_frame_s: float,
-                chars_per_sec: float, on_event: Callable[[dict], None],
+                chars_per_sec: float, mode: str, balanced_side: int, on_event: Callable[[dict], None],
                 on_limit: Callable[[datetime], None],
                 on_proc: Callable[[subprocess.Popen], None],
                 before_call: Callable[[], None] | None = None) -> dict:
-    """Run (or resume) both passes for one chapter and return its narration
-    ({blocks, saved_at}).
+    """Run (or resume) both passes for one chapter in quality `mode` and return its narration
+    ({blocks, saved_at}). A saved run in another mode is discarded; the text read from the panels
+    and the downscaled copies, kept beside `state_path`, are reused by every mode.
     `on_event` receives a plan event, a step event as each stage starts, and the stream
     events of each call, all tagged with their pass (None for the story update).
     `before_call` runs before every Claude call (see claude_cli.call)."""
@@ -468,14 +508,20 @@ def run_chapter(*, panels: list[Panel], work_dir: Path, state_path: Path, memory
         state = read_json_with_backup_fallback(state_path)
     except (OSError, ValueError):
         state = {}
-    if state.get("memory_applied"):
+    if state.get("memory_applied") or state.get("mode", quality.FULL) != mode:
         state = {}
+    state["mode"] = mode
     memory = load_memory(memory_path)
 
     dropped = [p.id for p in panels if panel_split.near_uniform(p.crop)]
     sent = [p for p in panels if p.id not in dropped]
     by_id = {p.id: p for p in sent}
     on_event({"type": "plan", "sent": list(by_id), "dropped": dropped})
+    cache, side = panel_inputs.PanelCache(work_dir), quality.image_side(mode, balanced_side)
+
+    def report_text(done: int, total: int) -> None:
+        if done % 25 == 0 or done == total:
+            on_event({"type": "log", "line": f"Read the text of {done} of {total} panels"})
 
     def call(number, content, schema, model, usage, mention, ids, prior=None):
         def forward(event):
@@ -488,7 +534,11 @@ def run_chapter(*, panels: list[Panel], work_dir: Path, state_path: Path, memory
                                before_call=before_call)
 
     if "breakdown" not in state:
-        batches = _batches(list(by_id))
+        texts = {}
+        if mode != quality.FULL:
+            on_event({"type": "step", "pass": 1, "label": "Reading the text in the panels"})
+            texts = cache.texts(sent, report_text)
+        batches = _batches(list(by_id), quality.BATCH_PANELS[mode])
         done = state.setdefault("batches", [])
         for number, ids in enumerate(batches, start=1):
             if number <= len(done):
@@ -498,7 +548,7 @@ def run_chapter(*, panels: list[Panel], work_dir: Path, state_path: Path, memory
             prior = claude_cli.sum_usage([b["usage"] for b in done])
             usage = claude_cli.empty_usage()
             content = _batch_content([by_id[i] for i in ids], _context(memory, ch_no, brief), earlier,
-                                     ch_no, number, len(batches))
+                                     ch_no, number, len(batches), mode, cache, side, texts)
 
             result = call(1, content, BREAKDOWN_SCHEMA, models["comprehension"], usage, "read", ids, prior)
             missing = [i for i in ids if i not in {e["id"] for e in result["catalogue"]}]
@@ -518,7 +568,7 @@ def run_chapter(*, panels: list[Panel], work_dir: Path, state_path: Path, memory
             lambda prompt: call(2, [{"type": "text", "text": prompt}], NARRATION_SCHEMA, models["narration"],
                                 usage, "cover", list(by_id)),
             on_event, memory=memory, ch_no=ch_no, brief=brief, breakdown=state["breakdown"], style=style,
-            panels={p.id: p for p in sent}, min_frame_s=min_frame_s, chars_per_sec=chars_per_sec)
+            panels={p.id: p for p in sent}, min_frame_s=min_frame_s, chars_per_sec=chars_per_sec, mode=mode)
         state["narration"] = {"blocks": blocks, "saved_at": _now()}
         passes = {**state["usage"], "pass2": usage}
         state["usage"] = {**passes, "total": claude_cli.sum_usage(list(passes.values()))}

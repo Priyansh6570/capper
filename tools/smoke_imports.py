@@ -19,7 +19,7 @@ SCRIPTS = {"tray_launcher"}     # exits the process when its own imports fail, s
 ENGINE_MODULES = (
     "chatterbox.tts", "chatterbox.tts_turbo", "kokoro", "espeakng_loader",
     "phonemizer.backend.espeak.wrapper", "torchaudio.functional",
-    "huggingface_hub",
+    "huggingface_hub", "easyocr",
 )
 
 

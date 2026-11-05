@@ -63,7 +63,7 @@ first four itself; it starts `orchestrator.py` as a subprocess for audio and vid
 ### torch must stay the CUDA build (+cu128)
 
 This project's torch must be the CUDA build (`+cu128`). Several packages
-(easyocr, torchvision, chatterbox-tts) try to pull a CPU or mismatched torch on
+(easyocr, torchvision, chatterbox-tts; torchvision is pinned `+cu128` in `requirements-gpu.txt`) try to pull a CPU or mismatched torch on
 install. After ANY pip install, re-check:
 
 ```bash
@@ -186,6 +186,17 @@ the narration from the resulting text-only breakdown (pass 2), then pre-fills th
 with narration boxed to full panels, bubble blur boxes included. It touches no pipeline stage; TTS/render still read
 the framer's export.
 
+Pass 1 has three **quality modes** (`quality.py`; `settings.claude.quality`, a per-chapter override in `chapter.json` as `quality`, and the
+mode a script was last made with as `script_mode`): **Full** sends every panel as a 1024px image (the original behaviour), **Balanced** sends
+`settings.claude.balanced_max_side` px images plus the text read from each panel, **Lite** sends only that text (with each bubble's place in the
+panel) and no images, and its prompts say Claude has only dialogue and captions. Pass 2 and every style rule are the same in all modes. The text
+comes from `ocr.py` (EasyOCR on torch: GPU when torch sees one, CPU otherwise or when the GPU runs out of memory; models in `models/easyocr`,
+fetched by `deps.py install` or on first use). `panel_inputs.PanelCache` keeps the OCR text (`ocr.json`) and the downscaled copies
+(`send_<side>/`) in the chapter's `claude/` folder, so another mode or a re-run reuses them; panel files are only read. A saved run in another
+mode is discarded and the chapter starts over, without touching other chapters. No image sent is longer than `quality.MAX_IMAGE_SIDE` (2576px,
+beyond which Claude would shrink it); panels are already cut at gutters by `panel_split`. Each finished run appends its tokens and mode to
+`projects/<slug>/script_usage.jsonl` (`script_usage.py`).
+
 The framer's **Shorts pipeline** (`shorts.py`, `routes/shorts.py`, `stages/s8_shorts.py`, `audio_sample.py`) is an add-on for chapters
 that already have a script and a video, in a batch of its own (`batch.SHORTS_STAGES`, `shorts_batch.json`; each step
 runs one chapter at a time, like the main batch). It works on a **range of chapters**, not per chapter: the batch is created
@@ -206,6 +217,8 @@ video; a project's `settings.shorts` (`layout` frame|cover, `own_look`, `waterma
 `sound` that overrides the main music and volumes); `cover` is passed to `prepare_render`; the stages stay connected only
 through those files. The settings page plays a **sample** of the mix (`/api/projects/<slug>/preview/audio.wav`,
 `audio_sample.py`): a few narration lines over the music built with `s7._audio_filters`, the same audio graph a render uses.
+Shorts are paused by default: `settings.shorts.auto_make` is off (project schema 4 turned it off in existing projects), so they are made only
+by the Shorts button or `/shorts`, and nothing in the long-video pipeline waits on them.
 
 The framer's **publishing** (`tools/framer/publishing/`, `routes/publishing.py`, `services/remote.py`) uploads to YouTube and is
 controlled from a Telegram bot. It touches no pipeline stage or manifest field: it reads finished merges and rendered shorts from

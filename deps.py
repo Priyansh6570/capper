@@ -28,7 +28,7 @@ import gpu
 GPU_FILE = "requirements-gpu.txt"
 MAIN_FILE = "requirements.txt"
 NODEPS_FILE = "requirements-nodeps.txt"
-TORCH_PACKAGES = ("torch", "torchaudio")
+TORCH_PACKAGES = ("torch", "torchaudio", "torchvision")
 
 _NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 
@@ -117,6 +117,18 @@ def _verify_cuda() -> Iterator[str]:
            "run on the CPU. Fix: .venv\\Scripts\\python -m pip install --force-reinstall -r requirements-gpu.txt")
 
 
+def _fetch_ocr_models() -> Iterator[str]:
+    """Download the text-reading models once, so the script step never needs the network."""
+    yield "Downloading the text-reading models (a one-time download)..."
+    code = (f"import sys; sys.path[:0] = [{str(ROOT)!r}, {str(ROOT / 'tools' / 'framer')!r}]; "
+            "import ocr; print('Text reading will run on the ' + ocr.ensure_models().upper() + '.')")
+    proc = subprocess.run([sys.executable, "-c", code], cwd=str(ROOT), capture_output=True, text=True,
+                          encoding="utf-8", errors="replace", **NO_CONSOLE)
+    yield proc.stdout.strip().splitlines()[-1] if proc.returncode == 0 else (
+        "[WARN] The text-reading models did not download; the Balanced and Lite script modes will fetch them "
+        "on first use.")
+
+
 def install() -> Iterator[str]:
     """Yields pip output and status lines; returns an InstallResult."""
     if _torch_needs_cuda_build():
@@ -139,6 +151,7 @@ def install() -> Iterator[str]:
             failed.append(requirement_name(spec))
             yield f"[WARN] {spec} did not install."
 
+    yield from _fetch_ocr_models()
     yield from _verify_cuda()
     return InstallResult(True, failed)
 

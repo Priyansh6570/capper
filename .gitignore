@@ -81,3 +81,6 @@ output/**/*.jpeg
 
 # --- publishing/: YouTube tokens, the Telegram bot token and the upload queue (this PC only) ---
 /publishing/
+
+# --- ocr.py: offline OCR models, fetched at install ---
+/models/

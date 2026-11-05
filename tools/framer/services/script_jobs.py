@@ -11,6 +11,8 @@ import claude_engine
 import config
 import panel_split
 import projects
+import quality
+import script_usage
 import tones
 import totals
 from config import chapter_work_dir
@@ -122,7 +124,8 @@ def run_script_job(job: "Job") -> None:
 
     try:
         with config.chapter_scope(projects.chapter_work_dir(slug, ch_no), projects.chapter_output_dir(slug, ch_no)):
-            settings = projects.load(slug)["settings"]
+            project = projects.load(slug)
+            settings = project["settings"]
             job.message = "Splitting the strip into panels"
             job.fraction = 0.02
             split_started = time.monotonic()
@@ -131,8 +134,10 @@ def run_script_job(job: "Job") -> None:
             job.claude = {"pass": None, "panels_read": 0, "panels_total": len(panels), "current": None,
                           "pass1": None, "pass2": None, "total": None}
             voice = settings["script"]
-            tone = projects.chapter_tone(projects.load(slug), ch_no)
-            job.note(f"Tone: {tones.TONES[tone]['label']}")
+            tone = projects.chapter_tone(project, ch_no)
+            mode = projects.chapter_quality(project, ch_no)
+            job.claude["mode"] = mode
+            job.note(f"Tone: {tones.TONES[tone]['label']}; quality: {quality.LABELS[mode]}")
             style = [narration_voice(tone, voice["narration_type"])]
             if voice["style_reference"].strip():
                 style.append(style_reference_directive(voice["style_reference"]))
@@ -153,12 +158,16 @@ def run_script_job(job: "Job") -> None:
                         "narration": settings["claude"]["narration_model"]},
                 min_frame_s=settings["claude"]["min_frame_s"],
                 chars_per_sec=rate or claude_engine.DEFAULT_CHARS_PER_SEC,
+                mode=mode, balanced_side=settings["claude"]["balanced_max_side"],
                 on_event=on_event, on_limit=lambda at: wait_out_usage_limit(job, at), on_proc=attach_proc(job),
                 before_call=job.before_claude_call)
             total = claude_engine.read_usage(state_path)["total"]
+        projects.record_script_mode(slug, ch_no, mode)
+        script_usage.record(projects.local_dir(slug) / "script_usage.jsonl", project=slug, chapter=chapter_id,
+                            mode=mode, panels=len(panels), usage=total)
         job.claude["total"] = total
         job.emit({"type": "total", "usage": total})
-        job.note(f"Chapter total: {total['input']:,} in, {total['output']:,} out, {total['cache_read']:,} cache read, "
+        job.note(f"Chapter total ({quality.LABELS[mode]}): {total['input']:,} in, {total['output']:,} out, {total['cache_read']:,} cache read, "
                  f"{total['cache_write']:,} cache write; estimated API cost ${total['cost_usd']:.2f} "
                  "(not charged on subscription)")
         blocks = narration["blocks"]

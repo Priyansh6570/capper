@@ -153,3 +153,17 @@ Run: `.venv\Scripts\python.exe -m unittest discover -s tests -t .`
   with it, the rest is deleted for good (`chapter_backup.purge_kind`, `POST .../backup_clear` with `force`). Page images deleted this way are
   rebuilt by stitching the PDF again. The chapter PDF is never deleted unless Drive has it. Scripts/key mappings always stay. Tests added.
 - Page images are unticked for *backup* by default again; the Clear card has them ticked, so they can be deleted without uploading.
+
+## 2026-11-02 - Shorts paused
+- Via the running app's API (`POST /api/projects/<slug>/settings`) set `shorts.auto_make=false` and `youtube.auto_shorts=false` for all 5 registered projects. Switching `auto_shorts` off runs `uploads.drop_unsent_shorts`, which removed all 23 scheduled shorts (and the 30 failed ones) from `publishing/queue.json`. Live shorts and the removed full video stay.
+- No code changed. To resume: re-enable "auto make" and "auto shorts" in each project's settings.
+
+## 2026-11-03 - Token-saving quality modes for the script step; automatic shorts off by default
+- **Modes** (`tools/framer/quality.py`): Full (unchanged), Balanced (images at `claude.balanced_max_side`, default 512, plus OCR text and bubble positions), Lite (OCR text and positions only, no images; its prompts say Claude only has dialogue and captions). Same pass-2 prompt and style rules in all three. Batches: 40 / 60 / 200 panels per pass-1 call. `claude_engine.py` (`_batch_content`, `run_chapter(mode=, balanced_side=)`), `services/script_jobs.py`.
+- **OCR** (`ocr.py`): EasyOCR on the existing CUDA torch, CPU fallback (also on GPU OOM), models in `models/easyocr` (git-ignored). `easyocr` added to `requirements.txt`, `torchvision==0.26.0+cu128` to `requirements-gpu.txt` and to the torch constraints in `deps.py`; `deps.py install` now downloads the models (covers setup.bat, the installer and the in-app updater). `tools/smoke_imports.py` imports easyocr.
+- **Cache** (`panel_inputs.py`): `work/<ch>/claude/ocr.json` and `send_<side>/P###.jpg`, keyed to the panel file, reused across modes and re-runs. A saved Claude run in another mode is discarded; OCR text and copies are kept.
+- **Scope**: `settings.claude.quality` per project; `quality` (override) and `script_mode` (last generated) per chapter in `chapter.json`; `POST /api/projects/<slug>/chapters/<n>/quality`. UI: project settings (Claude section), a Quality select and a "Script: <mode>" badge on each chapter row, and a Quality select next to "Generate script with Claude" in the editor. Changing it and generating again redoes only that chapter.
+- **Usage log**: `projects/<slug>/script_usage.jsonl`, a line per finished script run (project, chapter, mode, panels, input/output/cache tokens, cost, seconds); the job log's chapter total names the mode.
+- **Shorts**: `settings.shorts.auto_make` defaults to off; project schema 4 turns it off once in existing projects (`project.json.v3` keeps the old file). Shorts code is untouched; the long-video pipeline never waits on it. Tests updated.
+- **Measured** on return-of-the-mount-hua-sect ch 5 (180 panels), pass-1 input estimate: Full ~106k tokens in 5 requests, Balanced ~45k in 3, Lite ~4k in 1.
+- Tests: `tests/test_script_quality.py`. Run `.venv\Scripts\python.exe -m unittest discover -s tests -t .`; on other PCs `python deps.py install` fetches easyocr and the models.
