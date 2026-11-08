@@ -10,6 +10,7 @@ from pathlib import Path
 
 import branding
 import chapter_backup
+import cta
 import gpu
 import projects
 from config import NO_CONSOLE, ROOT
@@ -102,9 +103,19 @@ class MergePlan:
     notes: list[str]     # what was checked and how the videos will be joined, in order
 
 
-def prepare_merge(slug: str, chapters: list[int]) -> MergePlan:
+def _run_quietly(cmd: list, duration: float, on_fraction) -> None:
+    """branding.Runner for the short clips a merge prepares: run ffmpeg, raise on failure."""
+    done = subprocess.run(cmd, cwd=str(ROOT), capture_output=True, text=True, encoding="utf-8", errors="replace",
+                          stdin=subprocess.DEVNULL, **NO_CONSOLE)
+    if done.returncode:
+        raise RuntimeError(f"ffmpeg exited {done.returncode}: {done.stderr.strip()[-300:]}")
+    on_fraction(1.0)
+
+
+def prepare_merge(slug: str, chapters: list[int], cta_after: int | None = None) -> MergePlan:
     """Check that every chapter has its video (restoring it from a Drive backup when it was cleared) and
-    choose how to join them. Raises Refused naming what is wrong."""
+    choose how to join them. With `cta_after` (one of the chapters) the project's call-to-action clip is
+    placed right after that chapter's video. Raises Refused naming what is wrong."""
     paths: list[Path] = []
     for n in chapters:
         if projects.get_chapter(projects.load(slug), n) is None:
@@ -118,14 +129,37 @@ def prepare_merge(slug: str, chapters: list[int]) -> MergePlan:
             raise Refused(f"Chapter {n} has no rendered recap.mp4.")
         paths.append(video)
 
+    labels = [f"ch {n}" for n in chapters]
     notes, infos = [f"Probing {len(paths)} video(s)…"], []
-    for n, path in zip(chapters, paths):
+    for label, path in zip(labels, paths):
         info = branding.probe(path)
         if info is None:
-            raise Refused(f"Could not read video info for chapter {n}.")
+            raise Refused(f"Could not read video info for {label}.")
         infos.append(info)
+
+    if cta_after is not None:
+        if cta_after not in chapters:
+            raise Refused(f"Chapter {cta_after} is not in this merge, so the call-to-action video cannot go after it.")
+        clip = cta.clip_path(slug)
+        if not clip.is_file():
+            raise Refused("Make the call-to-action video first.")
+        position = chapters.index(cta_after) + 1
+        target = branding.target_format(infos[0])
+        try:      # in the chapters' own format, so the merge can still copy instead of re-encoding
+            clip = branding.normalized_clip(slug, clip, target, _run_quietly, lambda f: None)
+        except (RuntimeError, ValueError) as e:
+            raise Refused(f"Could not prepare the call-to-action video: {e}") from e
+        info = branding.probe(clip)
+        if info is None:
+            raise Refused("Could not read the call-to-action video.")
+        paths.insert(position, clip)
+        infos.insert(position, info)
+        labels.insert(position, "call-to-action")
+        notes.append(f"Call-to-action video goes after chapter {cta_after} ({info['duration']:.0f}s).")
+
+    for label, info in zip(labels, infos):
         v, a = info["video"], info.get("audio") or {}
-        notes.append(f"  ch {n}: {v.get('width')}x{v.get('height')} {v.get('codec_name')} "
+        notes.append(f"  {label}: {v.get('width')}x{v.get('height')} {v.get('codec_name')} "
                      f"/ audio {a.get('codec_name', '?')}@{a.get('sample_rate', '?')}")
     uniform = (
         len({(i["video"].get("width"), i["video"].get("height"), i["video"].get("codec_name")) for i in infos}) == 1
@@ -134,7 +168,8 @@ def prepare_merge(slug: str, chapters: list[int]) -> MergePlan:
     )
     folder = projects.merged_dir(slug)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    out = folder / (f"merged_{stamp}_ch" + "-".join(str(n) for n in chapters) + ".mp4")
+    marker = f"_cta{cta_after}" if cta_after is not None else ""
+    out = folder / (f"merged_{stamp}{marker}_ch" + "-".join(str(n) for n in chapters) + ".mp4")
     if uniform:
         notes.append("All inputs share one size and codec - fast stream-copy merge (no re-encode).")
         list_file = folder / "_concat_list.txt"
@@ -147,10 +182,10 @@ def prepare_merge(slug: str, chapters: list[int]) -> MergePlan:
     return MergePlan(out, cmd, notes)
 
 
-def merge_videos(slug: str, chapters: list[int]) -> str:
+def merge_videos(slug: str, chapters: list[int], cta_after: int | None = None) -> str:
     """Merge the chapters' videos and return the merged file's name. Raises Refused, or RuntimeError when ffmpeg fails."""
     with merge_slot(slug):
-        plan = prepare_merge(slug, chapters)
+        plan = prepare_merge(slug, chapters, cta_after)
         done = subprocess.run(plan.cmd, cwd=str(ROOT), capture_output=True, text=True, encoding="utf-8",
                               errors="replace", stdin=subprocess.DEVNULL, **NO_CONSOLE)
         if done.returncode or not plan.out.is_file():

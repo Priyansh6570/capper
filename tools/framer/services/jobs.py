@@ -114,6 +114,7 @@ class Job:
         self.cancel_requested = False
         self.claude: dict | None = None    # script: live pass / panel / token stats
         self.before_claude_call: Callable[[], None] | None = None   # script: a batch's usage-limit gate
+        self.after_prepare: Callable[[], None] | None = None        # script: runs once the panels and their inputs are ready
         self.mirror: Callable[[str], None] | None = None   # a batch's per-chapter log
         self.last_activity = time.time()   # when the job last logged or emitted anything
         self.render = 0.0                  # video: share of the frames encoded, read from ffmpeg's output

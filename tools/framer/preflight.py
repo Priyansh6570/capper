@@ -61,7 +61,7 @@ def _source(project: dict, numbers: list[int]) -> dict:
         return _result("Chapter source", "ok", "Every selected chapter is already downloaded.")
     if sites.detect(project["url"] or "") is None:
         return _result("Chapter source", "fail", f"{len(missing)} chapter(s) need downloading but the project has no "
-                       "supported series URL (webtoons.com or kingofshojo.com).")
+                       "supported series URL (webtoons.com, kingofshojo.com, mgeko.cc or roliascan.com).")
     return _result("Chapter source", "ok", f"{len(missing)} chapter(s) will be downloaded from {project['url']}.")
 
 

@@ -20,7 +20,7 @@ log = logging.getLogger(__name__)
 TICK_S = 20
 SYNC_EVERY_S = 1800
 RETRY_DELAYS_S = (300, 900, 3600, 4 * 3600, 12 * 3600)
-UPLOAD_NEEDS = COST_UPLOAD + 3 * COST_WRITE      # the upload, its thumbnail, and the playlist's creation and insert
+UPLOAD_NEEDS = COST_UPLOAD + 4 * COST_WRITE      # the upload, its thumbnail, the playlist's creation and insert, and a short's playlist comment
 PROBE_NEEDS = 2 * COST_WRITE
 CATEGORY_ENTERTAINMENT = "24"
 SUMMARY_HOUR = 20
@@ -40,10 +40,23 @@ def _due(item: dict) -> str:
     return item.get("publish_at") or item.get("approved_at") or item["created_at"]
 
 
+def _playlist_link(item: dict) -> str:
+    """The project's playlist link for a short ('' for a full video or a project without one)."""
+    if item["kind"] != uploads.SHORT:
+        return ""
+    try:
+        return projects.load(item["project"])["settings"]["youtube"].get("shorts_playlist") or ""
+    except Exception:  # noqa: BLE001 - a project that cannot be read has no link
+        return ""
+
+
 def _snippet(item: dict) -> dict:
     description = item["description"]
     if item["kind"] == uploads.SHORT and "#shorts" not in description.lower():
         description = f"{description}\n\n#Shorts".strip()
+    link = _playlist_link(item)
+    if link and link not in description:
+        description = f"{description}\n\nFull story playlist: {link}"
     return {"title": item["title"], "description": description, "tags": item["tags"], "categoryId": CATEGORY_ENTERTAINMENT}
 
 
@@ -115,6 +128,12 @@ def _finish(item: dict, channel: dict, client: Client, video: dict, requested: s
     if item["kind"] == uploads.FULL:
         uploads.update(item["id"], warnings=_thumbnail(client, done) + _playlist(client, channel, done))
     _note_visibility(channel, done, requested, actual)
+    if item["kind"] == uploads.SHORT and (playlist := _playlist_link(item)):
+        try:
+            client.comment(done["video_id"], f"Full story playlist: {playlist}")
+            uploads.update(item["id"], warnings=["Playlist comment posted: pin it in Studio (the API cannot pin)."])
+        except ApiError as e:
+            uploads.update(item["id"], warnings=[f"Playlist comment not posted: {e}"])
     link = uploads.url_of(done)
     if item["kind"] == uploads.FULL:
         telegram.notify(f"Uploaded as private: {item['title']}\n{link}")

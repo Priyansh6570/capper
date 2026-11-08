@@ -173,6 +173,7 @@ const SITE_HOME_URLS = {
   webtoons: 'https://www.webtoons.com/',
   kingofshojo: 'https://kingofshojo.com/',
   mgeko: 'https://www.mgeko.cc/',
+  roliascan: 'https://roliascan.com/',
 };
 function openSiteHome(site) {
   window.open(SITE_HOME_URLS[site], '_blank', 'noopener');
@@ -184,7 +185,7 @@ function openSiteHome(site) {
 async function doDownload() {
   const url = $('dlUrl').value.trim();
   const no = $('dlNo').value.trim();
-  if (!url) { setStatus('Paste a webtoons.com, kingofshojo.com or mgeko.cc chapter URL.', true); return; }
+  if (!url) { setStatus('Paste a webtoons.com, kingofshojo.com, mgeko.cc or roliascan.com chapter URL.', true); return; }
   const chap = $('chapId').value.trim() || no;   // reuse the chapter-id field; default to the number
   showOverlay('Downloading chapter');
   setGlobalProg(null, 'Downloading chapter');
@@ -1896,7 +1897,7 @@ async function saveModelCache() {
 // New project dialog
 // ---------------------------------------------------------------------------
 const NP_SOURCES = [{ name: 'Webtoons', host: 'webtoons.com' }, { name: 'King of Shojo', host: 'kingofshojo.com' },
-                    { name: 'MGeko', host: 'mgeko.cc' }];
+                    { name: 'MGeko', host: 'mgeko.cc' }, { name: 'Rolia Scan', host: 'roliascan.com' }];
 
 function npMatch(url) {
   const q = url.trim().toLowerCase();
@@ -4020,8 +4021,62 @@ function mergeBlocker() {
   return without.length ? `Merge needs a video for every selected chapter. No video for ${listNumbers(without)}.` : '';
 }
 
+// The call-to-action video (cta.py): state of the project's clip, and where a merge should put it.
+let CTA = null, ctaES = null, ctaSlug = null;
+
+async function refreshCta() {
+  if (!CURRENT_PROJECT) return;
+  const slug = CURRENT_PROJECT.slug;
+  try {
+    const r = await fetch(`/api/projects/${encodeURIComponent(slug)}/cta`);
+    if (slug === CURRENT_PROJECT.slug) { CTA = r.ok ? await r.json() : { ready: false }; ctaSlug = slug; }
+  } catch (_) { CTA = { ready: false }; ctaSlug = slug; }
+  updateMergeBar();
+}
+
+function paintCta() {
+  const select = $('mergeCtaAfter'), ready = !!(CTA && CTA.ready), kept = select.value;
+  const options = [...SELECTION].sort((a, b) => a - b);
+  select.innerHTML = `<option value="">none</option>` + options.map(n => `<option value="${n}">${n}</option>`).join('');
+  select.value = options.map(String).includes(kept) ? kept : '';
+  select.disabled = !ready || options.length < 2 || !!mergeES;
+  $('ctaBuildBtn').disabled = !!ctaES || !!mergeES;
+  $('ctaBuildBtn').firstElementChild.textContent = ctaES ? 'Making…' : ready ? 'Remake CTA video' : 'Make CTA video';
+  const play = $('ctaPlay');
+  play.style.display = ready ? '' : 'none';
+  if (ready) play.href = `/projects/${encodeURIComponent(CURRENT_PROJECT.slug)}/cta/cta.mp4`;
+  $('ctaHint').textContent = ctaES ? 'Making it: reading frames, voicing, rendering (a few minutes).'
+    : ready ? `${Math.round(CTA.duration_s || 0)}s, ready. Words: projects/${CURRENT_PROJECT.slug}/cta/script.txt`
+    : 'Not made yet. It takes frames without dialogue from your chapters and your voice.';
+}
+
+function startCtaBuild() {
+  if (ctaES) return;
+  mergeLines.length = 0;
+  $('mergeStatus').textContent = '';
+  const slug = CURRENT_PROJECT.slug;
+  ctaES = new EventSource(`/api/projects/${encodeURIComponent(slug)}/cta_stream`);
+  let finished = false;
+  const end = () => { finished = true; ctaES.close(); ctaES = null; refreshCta(); };
+  ctaES.onmessage = e => {
+    let ev; try { ev = JSON.parse(e.data); } catch (_) { return; }
+    if (ev.type === 'start') appendMergeLog(ev.message || 'Starting…');
+    else if (ev.type === 'log') appendMergeLog(ev.line || '');
+    else if (ev.type === 'done') { appendMergeLog('OK  ' + (ev.message || 'Done.')); showToast('Call-to-action video ready.', null, null, 'ok'); end(); }
+    else if (ev.type === 'error') { appendMergeLog('FAILED  ' + (ev.message || 'Error')); setStatus(ev.message || 'Could not make the video.', true); end(); }
+  };
+  ctaES.onerror = () => { if (!finished) { appendMergeLog('[connection lost]'); end(); } };
+  paintCta();
+}
+$('ctaBuildBtn').onclick = startCtaBuild;
+$('mergeCtaAfter').onchange = () => updateMergeBar();
+
 function updateMergeBar() {
-  const total = [...SELECTION].reduce((sum, n) => sum + (chapterByNumber(n).duration || 0), 0);
+  if (CURRENT_PROJECT && ctaSlug !== CURRENT_PROJECT.slug) { ctaSlug = CURRENT_PROJECT.slug; CTA = null; refreshCta(); }
+  paintCta();
+  const ctaAfter = $('mergeCtaAfter').value;
+  const total = [...SELECTION].reduce((sum, n) => sum + (chapterByNumber(n).duration || 0), 0)
+    + (ctaAfter && CTA ? CTA.duration_s || 0 : 0);
   const blocker = mergeBlocker();
   $('mergeSelHint').textContent = SELECTION.size === 0 ? blocker
     : `${SELECTION.size} chapter(s) selected: ${listNumbers(SELECTION)}. ${blocker || `The merged video will be ${fmtClock(total)} (before any intro/outro).`}`;
@@ -4235,9 +4290,9 @@ function startMerge() {
   mergeLines.length = 0; mergeDone = false;
   $('mergeStatus').textContent = ''; $('mergeResult').innerHTML = '';
   setMergeBusy(true); setMergeBar(0, true);
-  appendMergeLog(`Requesting merge of chapters ${chapters.join(', ')}…`);
+  appendMergeLog(`Requesting merge of chapters ${chapters.join(', ')}${$('mergeCtaAfter').value ? ` with the call-to-action video after chapter ${$('mergeCtaAfter').value}` : ''}…`);
 
-  const url = `/api/projects/${encodeURIComponent(CURRENT_PROJECT.slug)}/merge_stream?chapters=${chapters.join(',')}`;
+  const url = `/api/projects/${encodeURIComponent(CURRENT_PROJECT.slug)}/merge_stream?chapters=${chapters.join(',')}${$('mergeCtaAfter').value ? `&cta_after=${$('mergeCtaAfter').value}` : ''}`;
   mergeES = new EventSource(url);
   mergeES.onmessage = e => { try { handleMergeEvent(JSON.parse(e.data)); } catch (_) {} };
   mergeES.onerror = () => {

@@ -70,11 +70,38 @@ def probe(path: Path) -> Optional[dict]:
 
 def duration_of(path: Path) -> float:
     """Length in seconds, cached per file version."""
-    key = (str(path), path.stat().st_mtime_ns)
+    st = path.stat()
+    key = (str(path), st.st_mtime_ns)
+    if not _DURATIONS:
+        _load_durations()
     if key not in _DURATIONS:
         info = probe(path)
         _DURATIONS[key] = info["duration"] if info else 0.0
+        _save_durations()
     return _DURATIONS[key]
+
+
+_DURATIONS_FILE = ROOT / "cache" / "durations.json"   # survives restarts: ffprobe per video is slow
+
+
+def _load_durations() -> None:
+    try:
+        for k, v in json.loads(_DURATIONS_FILE.read_text(encoding="utf-8")).items():
+            name, _, mtime = k.rpartition("|")
+            _DURATIONS[(name, int(mtime))] = float(v)
+    except (OSError, ValueError):
+        pass
+    _DURATIONS.setdefault(("", 0), 0.0)   # mark loaded
+
+
+def _save_durations() -> None:
+    try:
+        _DURATIONS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = _DURATIONS_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps({f"{n}|{m}": d for (n, m), d in _DURATIONS.items() if n}), encoding="utf-8")
+        tmp.replace(_DURATIONS_FILE)
+    except OSError:
+        pass
 
 
 def target_format(info: dict) -> dict:

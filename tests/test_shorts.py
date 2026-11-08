@@ -648,8 +648,13 @@ class ScriptedShortTest(unittest.TestCase):
         panels, new_mapping = s8_shorts.script_beats(short, beat, mapping)
         self.assertEqual([(p.id, p.order, p.script_line, p.emotion) for p in panels],
                          [("short03_01", 1, "Hook.", "action"), ("short03_02", 2, "Watch on.", "tense")])
-        self.assertEqual([f["image"] for f in new_mapping[1]["frames"]], ["a.png", "crop3.png"])
-        self.assertEqual([f["image"] for f in new_mapping[2]["frames"]], ["crop4.png", "crop1.png", "a.png"])
+        self.assertEqual([f["image"] for f in new_mapping[1]["frames"]], ["a.png", "b.png", "crop3.png"])
+        self.assertEqual([f["image"] for f in new_mapping[2]["frames"]], ["crop4.png", "crop1.png", "a.png", "b.png"])
+        # voiced: ~1.6s per frame, so a 3.2s line keeps two of its frames and a 1s line one
+        panels[0].duration_s, panels[1].duration_s = 3.2, 1.0
+        s8_shorts.fit_frames(short, panels, new_mapping, beat, mapping)
+        self.assertEqual(len(new_mapping[1]["frames"]), 2)
+        self.assertEqual(len(new_mapping[2]["frames"]), 1)
 
     def test_the_logo_has_curved_corners_and_a_border(self):
         with tempfile.TemporaryDirectory() as tmp:

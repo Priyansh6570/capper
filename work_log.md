@@ -167,3 +167,70 @@ Run: `.venv\Scripts\python.exe -m unittest discover -s tests -t .`
 - **Shorts**: `settings.shorts.auto_make` defaults to off; project schema 4 turns it off once in existing projects (`project.json.v3` keeps the old file). Shorts code is untouched; the long-video pipeline never waits on it. Tests updated.
 - **Measured** on return-of-the-mount-hua-sect ch 5 (180 panels), pass-1 input estimate: Full ~106k tokens in 5 requests, Balanced ~45k in 3, Lite ~4k in 1.
 - Tests: `tests/test_script_quality.py`. Run `.venv\Scripts\python.exe -m unittest discover -s tests -t .`; on other PCs `python deps.py install` fetches easyocr and the models.
+
+## 2026-11-05 - Shorts: no gaps between lines, 70/30 mix, shorts paused (My Disciples Are All Big Villains)
+- `stages/s7_assemble.py`: a short with music no longer stretches its stills to the track length (`_pad_to`) nor holds the lines before the peak (`_hold_before`); both left silent gaps between lines. The video now ends with the narration, the track is started later (`music_seek`, `-ss`) so its drop lands on the peak line, and the music fades out over the last 1.5s (`MUSIC_FADE_OUT`).
+- Project settings (My Disciples...): `shorts.music_share` 0.3 (music 30% / narration 70%), `youtube.auto_shorts` off (shorts are not uploaded until reviewed). `shorts.auto_make` was already off.
+- Deleted every short and plan of the project; re-rendered 2 from the old chapter 346 plan: chapters/346/output/shorts/short_01.mp4, short_02.mp4 (37.8s and 34.7s, were 51.3s).
+- Run: `.venv\Scripts\python.exe -m unittest discover -s tests -t .` (tests of _pad_to/_hold_before still exist; helpers kept).
+
+## 2026-11-05 (2) - Shorts: fast-paced frames, playlist link, only action / big-reveal shorts
+- Black shorts: chapter 346's frames had been cleaned off the PC. Deleted them; found + rendered 2 shorts from chapters 401 and 402 (they still had frames): chapters/401|402/output/shorts/short_01.mp4.
+- `stages/s8_shorts.py`: a line now shows every panel of its source lines (not the first of each), cut to ~1.6s per frame (`FRAME_SECONDS`, `fit_frames`, after the line is voiced); neighbouring panels fill in when a line names too few.
+- `tools/framer/shorts.py`: the find prompt picks only ACTION (fights) and BIG REVEALS (mystery / emotional plot reveal); comedy and ordinary drama are excluded (applies to every project).
+- Playlist: new `settings.youtube.shorts_playlist` (projects.py). The uploader appends "Full story playlist: <url>" to a short's description (`worker._snippet`) and posts it as a comment (`youtube_api.Client.comment`, +1 write of quota). The YouTube API cannot pin comments: pin it in Studio. Restart the app so it knows the new setting, then set it for the project (the link is already written in its project.json).
+
+## 2026-11-06 - call-to-action (CTA) clip + "insert after chapter N" in merge
+- New add-on stage `stages/s9_cta.py` (outside STAGE_ORDER, like s8): reads `work/<ch>/cta/plan.json`, voices it with the chapter's voice (s6) and renders with s7 at >=1080p -> `output/<ch>/cta/cta.mp4`. Constants in `config.py` (CTA_*).
+- New `tools/framer/cta.py` + `routes/cta.py`: picks frames with no dialogue (EasyOCR finds no text AND no pure-white blanked-bubble boxes), writes the plan, runs s9, saves the clip to `projects/<slug>/cta/cta.mp4`. Words live in `projects/<slug>/cta/script.txt` (`pace: text` per row, created from DEFAULT_SCRIPT, edit freely). Routes: `GET /api/projects/<slug>/cta`, `/cta_stream` (SSE build), `/projects/<slug>/cta/cta.mp4`.
+- Merge: `prepare_merge/merge_videos(..., cta_after=N)` and `merge_stream?chapters=..&cta_after=N` place the clip right after chapter N, normalized to the chapters' format so the stream-copy merge is kept. Output name gets `_cta<N>`. UI: "Call-to-action video after chapter [..]" + "Make CTA video" in the merge bar (index.html, app.js).
+- Tests: `tests/test_cta.py` (full suite 426 OK). Built the clip for my-disciples-are-all-big-villains-2 (29s).
+- Run next: `git add` the new files (check_requirements only sees tracked files), restart the app, hard-refresh, then merge with the new dropdown. Telegram/auto merges do not add the CTA yet.
+
+- Wrote channel_analysis.docx (channel stats analysis + growth plan) in the project root.
+
+## 2026-11-06 (2) - Shorts music off, 5 shorts/day auto upload, channel_analysis.docx rewritten
+- `config.SHORTS_MUSIC = False`: gates the shorts music library in `projects._library_snapshot` (what stage 8 reads) and `services/shorts_jobs.py` (what the find/script step is given). Tracks/settings kept. "Music library" section hidden in `tools/framer/index.html`. Find prompt in `tools/framer/shorts.py` restored to the original (action / comedy / drama / mystery). Kept `fit_frames` (a new frame every ~1.6s, no repeats).
+- My Disciples Are All Big Villains: `shorts.auto_make` and `youtube.auto_shorts` on; channel shorts schedule `per_day` 5 (was 10), existing queue rescheduled. Playlist link (already set, verified against the channel's real playlist) goes in each short's description and first comment; pinning must be done in Studio.
+- Quota note: ~1,600 units per upload of 10,000/day; 5 shorts + 1 long video is at the limit.
+- `channel_analysis.docx` now holds only the answer about shorts changes and multi-channel expansion. Restart the app.
+
+## CTA script rewrite + reference frames
+- Created `cta_script/`: `script.txt` (new CTA script, same `pace: text` format as `projects/<slug>/cta/script.txt`), `frame_guide.txt` (what image to make per line), and `reference_frames/` (49 full-res frames from my-disciples-are-all-big-villains-2, ch 0/2/401/450, sorted by character and mood).
+- No code changed. The live script is still the old DEFAULT_SCRIPT in `tools/framer/cta.py`; when approved, copy `cta_script/script.txt` over `projects/my-disciples-are-all-big-villains-2/cta/script.txt`.
+
+## New CTA video from custom scenes
+- `tools/framer/cta.py`: new `own_frames(slug)`. If `<project>/cta/frames/` has pictures, `build()` skips the OCR frame search and the generated end card, and shows picture N on script line N (error if fewer pictures than lines). With no such folder behaviour is unchanged.
+- My Disciples project: `cta/script.txt` replaced with `cta_script/new/script.txt` (old kept as `script_old.txt`), the 6 scenes copied to `cta/frames/`, clip rebuilt -> `G:\My Drive\RECAPPER\bebe\my-disciples-are-all-big-villains-2\cta\cta.mp4` (27.7s, 1080p, chapter 500's voice/background/watermark). Restart the app to pick up cta.py.
+
+## Balanced script depth fix
+- `tools/framer/claude_engine.py`: `WORDS_PER_PANEL = 17`. The narration prompt (pass 2, all modes) now gives a length guide of about 17 words per story panel and says to use every beat/feeling/stake/world detail in the notes (it used to say "no target length"). `BALANCED_RULES` now asks pass 1 for the same depth of scene notes as Full.
+- `tests/test_script_quality.py`: two tests for the above.
+- Test on ch 500 (Balanced, 47 panels, scratch copies only, nothing in the project touched): narration step only 671 -> 904 words; full re-run 671 -> 832 words. Existing scripts are not changed; regenerate a chapter's script to get the new density.
+
+## 2026-11-07 - Cut Claude script token use (story context)
+- Problem: every pass-1/pass-2 call sent the whole series memory (520 chapter summaries + 1,267-entry character sheet, ~140k tokens), so a ~50-panel chapter cost ~730k cache-write tokens.
+- `tools/framer/claude_engine.py`: `_story_so_far` now sends only the last `RECENT_CHAPTERS` (15, a constant, not a setting) summaries; `_character_sheet` sends only characters mentioned in those summaries or in the current chapter's text (OCR / earlier batches in pass 1, the breakdown in pass 2); name words shared by >3 characters don't match. `_context` takes the new `relevant` text.
+- Measured on ch 522: context ~140k -> ~3k tokens, 48 of 1,268 characters kept. Tests: 428 OK.
+- Next: run one chapter and compare `script_usage.jsonl` cache_write (was ~730k); check narration still names characters correctly (Full mode has no OCR, so matching uses summaries only).
+
+## 2026-11-08 - Downloaded missing chapter 80 (The World's Best Engineer)
+- kingofshojo was missing ch80 of `the-world-s-best-engineer-2` (same series as "The Greatest Estate Developer"). Fetched it from roliascan.com (image list from `/auth/chapter-content?chapter_id=66851`, 99 webp pages) with a one-off script, retrying timeouts.
+- Wrote `<projects>/the-world-s-best-engineer-2/chapters/80/the-worlds-best-engineer-chapter-80.pdf` + `chapter.json` (status `downloaded`), matching neighbouring chapters. No repo code changed.
+- Next: open the project in the app and run Stitch -> script for chapter 80.
+
+## 2026-11-08 - Added roliascan.com as a download source
+- New adapter `tools/framer/sites/roliascan.py` (registered in `sites/__init__.py`): series metadata from `/manga/<slug>/` + `/auth/manga-chapters` (chapter list, whole numbers only), chapter images from `/auth/chapter-content`. Accepts a series URL or any `/read/...` chapter URL; the chapter's id is looked up by number.
+- `sites/images.py`: `fetch_pages` now retries each image up to 4 times (a slow image host had timed out a whole chapter). Applies to all adapters.
+- Site lists updated: `index.html` (new-project sources, download bar), `static/js/app.js`, `services/downloads.py`, `preflight.py` messages.
+- Tested live: series (223 chapters), ch80 download from a series URL = 99-page PDF. Tests: 428 OK. No stage/manifest change.
+- Next: restart the app; paste a roliascan.com series URL in New project. Old projects keep their own source.
+
+## 2026-11-08 - slow pages + engineer shorts
+- Slow pages: `projects._stored_states` re-read ~100 chapter.json per project load (~4ms/read on this disk, ~7s for the project list); now cached 30s per project (dropped on `save_chapter`). `branding.duration_of` ran one ffprobe per chapter per page load; durations now persist in `cache/durations.json`. Measured: project list 6s -> 0.1s warm, project page 3.4s -> 0.5s. Needs an app restart to take effect.
+- Started a Shorts batch for the-world-s-best-engineer-2, chapters 21-50, max 10 shorts. Rendered shorts are auto-queued into the next free upload slots (`enqueue.shorts_of_chapter`).
+
+## 2026-11-08 - script prefetch (no quality change)
+- `services/script_jobs.py`: new `prepare_inputs` (panels + OCR text + downscaled copies, the same cache files `claude_engine.run_chapter` makes) and `prefetch` (background thread, failures only logged). `run_script_job` now calls `prepare_inputs`, then `job.after_prepare`.
+- `services/batching.py`: once a chapter's inputs are ready, `_prefetch_next_script` prepares the next stitched chapter that needs a script while Claude works on the current one. `services/jobs.py`: `Job.after_prepare`.
+- Claude receives identical inputs; only timing moves. Measured prep for ch134: 118s cold, 2.4s cached. Takes effect after an app restart. Tests (script, batch) pass.

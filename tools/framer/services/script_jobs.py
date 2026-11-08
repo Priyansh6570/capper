@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import subprocess
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -9,6 +10,7 @@ from typing import TYPE_CHECKING, Callable
 
 import claude_engine
 import config
+import panel_inputs
 import panel_split
 import projects
 import quality
@@ -44,6 +46,60 @@ def _ensure_panels(chapter_id: str) -> list[Panel]:
     m.pages = [Page(index=1, image=str(strip_path), panels=panels)]
     m.save()
     return panels
+
+
+_PREP_LOCKS: dict[str, threading.Lock] = {}
+_PREP_GUARD = threading.Lock()
+
+
+def prepare_inputs(chapter_id: str, mode: str, balanced_side: int) -> list[Panel]:
+    """Everything the script step derives from the strip before Claude is called: the panels, the text
+    read from them (not in Full mode) and the downscaled copies sent. These are the very files
+    claude_engine.run_chapter would make itself, with the same calls, so it finds them cached; making them
+    ahead of time (see prefetch) changes only when the work happens, never what Claude is sent."""
+    with _PREP_GUARD:
+        lock = _PREP_LOCKS.setdefault(chapter_id, threading.Lock())
+    with lock:
+        panels = _ensure_panels(chapter_id)
+        sent = [p for p in panels if not panel_split.near_uniform(p.crop)]
+        cache = panel_inputs.PanelCache(claude_state_path(chapter_id).parent)
+        ensure_dir(cache.folder)
+        if mode != quality.FULL:
+            cache.texts(sent)
+        side = quality.image_side(mode, balanced_side)
+        if side:
+            for panel in sent:
+                cache.image(panel, side)
+        return panels
+
+
+_PREFETCHING: set[str] = set()
+
+
+def prefetch(slug: str, ch_no, log: Callable[[str], None] = lambda line: None) -> None:
+    """Prepare chapter `ch_no`'s script inputs on a background thread, while Claude works on another
+    chapter. Any failure is only logged: the chapter's own script job then does the work as before."""
+    chapter_id = f"{slug}_ch{ch_no}"
+    with _PREP_GUARD:
+        if chapter_id in _PREFETCHING:
+            return
+        _PREFETCHING.add(chapter_id)
+
+    def work() -> None:
+        started = time.monotonic()
+        try:
+            with config.chapter_scope(projects.chapter_work_dir(slug, ch_no), projects.chapter_output_dir(slug, ch_no)):
+                project = projects.load(slug)
+                prepare_inputs(chapter_id, projects.chapter_quality(project, ch_no),
+                               project["settings"]["claude"]["balanced_max_side"])
+            log(f"Chapter {ch_no}: script inputs prepared ahead ({time.monotonic() - started:.0f}s)")
+        except Exception as e:  # noqa: BLE001 - the chapter's own job redoes whatever is missing
+            log(f"Chapter {ch_no}: preparing ahead failed ({type(e).__name__}: {e}); it will run with its job")
+        finally:
+            with _PREP_GUARD:
+                _PREFETCHING.discard(chapter_id)
+
+    threading.Thread(target=work, daemon=True, name=f"prefetch-{chapter_id}").start()
 
 
 NARRATION_TYPES = {
@@ -129,8 +185,11 @@ def run_script_job(job: "Job") -> None:
             job.message = "Splitting the strip into panels"
             job.fraction = 0.02
             split_started = time.monotonic()
-            panels = _ensure_panels(chapter_id)
+            panels = prepare_inputs(chapter_id, projects.chapter_quality(project, ch_no),
+                                    settings["claude"]["balanced_max_side"])
             job.note(f"{len(panels)} panels ready ({time.monotonic() - split_started:.0f}s)")
+            if job.after_prepare:
+                job.after_prepare()
             job.claude = {"pass": None, "panels_read": 0, "panels_total": len(panels), "current": None,
                           "pass1": None, "pass2": None, "total": None}
             voice = settings["script"]

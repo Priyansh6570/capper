@@ -1,0 +1,14 @@
+NEW IMAGES TO CREATE (logo + characters), one per script line. 16:9, no speech bubbles, no text.
+Characters: Master = Ji Tiandao (white hair, long white beard). Yuan'er = brown hair in two buns. Ming Shiyin = long blond hair.
+
+1. calm   "Before the next chapter, a quick word..."      -> peaceful scene: Master at the pavilion at sunset, logo in the corner
+2. sad    "Every recap starts as raw pages... late nights" -> Yuan'er sad or tired at a desk, OR Master reading / writing at night by lamplight
+3. tense  "One chapter takes hours... no one pays but us"  -> Ming Shiyin thinking hard (hand on chin) / a working-at-the-desk frame
+4. reveal "No studio. No sponsor. Just a small team..."    -> the disciples together (Yuan'er, Ming Shiyin, Duan Musheng, Zhao Yue), logo behind them
+5. calm   "A like... Subscribe... comments..."             -> Yuan'er cheerful (like / subscribe / bell), 1-2 images
+6. calm   "Thank you for being here. Back to the story."   -> LOGO CARD (the closing card): Master peaceful + logo
+
+The script is one image per line (the app uses 2 frames per line except the last, which is the card),
+so about 10 images + the closing card. Extra reference frames for each character are in reference_frames/.
+Mood folders: yuaner_sad_scared, yuaner_happy_comic, thinking_working_calm, peaceful_scenery, group_the_disciples.
+Note: no clean "reading" or "working" frame exists in the chapters, so those two are new images.

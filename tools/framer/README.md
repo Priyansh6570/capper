@@ -36,7 +36,7 @@ with a mouse; treat phones/tablets as a review-and-manage surface first.
 ## Projects
 
 - **Projects landing screen** (shown first) — **New Project**: a name + a
-  webtoons.com or kingofshojo.com URL (auto-detected, see `tools/framer/sites/`).
+  webtoons.com, kingofshojo.com, mgeko.cc or roliascan.com URL (auto-detected, see `tools/framer/sites/`).
   On create, the backend tries to **auto-fetch** the series' title and chapter
   count by scraping the series page - webtoons.com's `/list?title_no=` page,
   kingofshojo.com's `/manga/<slug>/` page (best-effort, `requests`+`bs4`,

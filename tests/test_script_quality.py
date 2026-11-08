@@ -109,6 +109,19 @@ class BatchContentTest(IsolatedProjects):
         self.assertIn("You have no images", content[0]["text"])
         self.assertIn("P003:\n[10,20,60,40] Hello there", content[0]["text"])
 
+    def test_balanced_asks_for_full_depth_notes_and_full_never_does(self):
+        self.assertIn("as if you saw every panel at full size", texts_of(self.content(quality.BALANCED, 512)))
+        self.assertNotIn("as if you saw every panel at full size", texts_of(self.content(quality.FULL, 1024)))
+
+    def test_narration_prompt_gives_a_length_guide_from_the_panel_count(self):
+        breakdown = {"catalogue": [{"id": f"P{i:03d}", "kind": "scene", "has_bubble": False, "description": "d",
+                                    "subjects": []} for i in range(1, 11)],
+                     "scenes": [], "uncertain": [], "chapter_summary": "s", "characters": []}
+        memory = {"chapters": {}, "characters": {}}
+        for mode in quality.MODES:
+            prompt = claude_engine._narration_prompt(memory, 1, "", breakdown, "style", {}, mode)
+            self.assertIn(f"about {10 * claude_engine.WORDS_PER_PANEL:,} words", prompt)
+
     def test_no_image_exceeds_the_cap(self):
         panels = make_panels(self.tmp / "tall", count=1, size=(900, 4000))
         sent = claude_engine._image_block(panel_inputs.PanelCache(self.tmp / "c").image(panels[0], quality.balanced_side(9000)))

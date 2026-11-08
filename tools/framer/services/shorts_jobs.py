@@ -55,7 +55,7 @@ def run_shorts_find_job(job: "Job") -> None:
         for note in found["notes"]:
             job.note(note)
         picked = sum(len(plan) for plan in found["shorts"].values())
-        music_tracks = short_music.library(projects.load(slug))
+        music_tracks = short_music.library(projects.load(slug)) if config.SHORTS_MUSIC else []
         done = 0
         for n, plan in list(found["shorts"].items()):
             beats = scripts[n]

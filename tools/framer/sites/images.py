@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import io
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Callable
@@ -12,6 +13,7 @@ from PIL import Image
 from config import PAGE_DPI
 
 DOWNLOAD_WORKERS = 8
+FETCH_ATTEMPTS = 4  # a slow image host times out now and then; one bad read must not fail a chapter
 
 
 def fetch_pages(urls: list[str], headers: dict, timeout: tuple[int, int],
@@ -22,9 +24,15 @@ def fetch_pages(urls: list[str], headers: dict, timeout: tuple[int, int],
         session.headers.update(headers)
 
         def fetch(url: str) -> Image.Image:
-            response = session.get(url, timeout=timeout)
-            response.raise_for_status()
-            return Image.open(io.BytesIO(response.content)).convert("RGB")
+            for attempt in range(FETCH_ATTEMPTS):
+                try:
+                    response = session.get(url, timeout=timeout)
+                    response.raise_for_status()
+                    return Image.open(io.BytesIO(response.content)).convert("RGB")
+                except requests.RequestException:
+                    if attempt == FETCH_ATTEMPTS - 1:
+                        raise
+                    time.sleep(1.5 * (attempt + 1))
 
         pages = []
         with ThreadPoolExecutor(max_workers=DOWNLOAD_WORKERS) as pool:

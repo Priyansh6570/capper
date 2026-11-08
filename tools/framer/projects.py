@@ -42,6 +42,7 @@ from typing import Optional
 
 import app_settings
 import claude_cli
+import config
 import quality
 import tones
 from config import OUTPUT_DIR, PROJECTS_DIR, WORK_DIR
@@ -286,7 +287,9 @@ def default_settings() -> dict:
         # and whether finished shorts are queued for upload by themselves.
         "youtube": {"channel": None, "title": "{series} Recap | Chapters {chapters}",
                     "description": "Recap of {series}, chapters {chapters}.", "tags": [], "thumbnail": None,
-                    "auto_shorts": True},
+                    "auto_shorts": True,
+                    # a playlist link added to every short's description and posted as its first comment
+                    "shorts_playlist": ""},
         # How often the project uploads (see services/planning.py): on which weekdays (0 = Monday, all seven =
         # daily) and the least video minutes each upload must hold.
         "plan": {"days": list(range(7)), "min_minutes": 30},
@@ -343,8 +346,24 @@ def _chapter_state_path(slug: str, n) -> Path:
     return stored_chapter_dir(slug, n) / CHAPTER_FILE
 
 
+_STATES_CACHE: dict[str, tuple[float, dict]] = {}
+_STATES_TTL = 30.0  # seconds; file reads are slow on this disk (~4ms each), so a project load was 1s+
+
+
 def _stored_states(slug: str) -> dict[int, dict]:
-    """The state of every chapter that has a chapter.json, keyed by chapter number."""
+    """The state of every chapter that has a chapter.json, keyed by chapter number (cached briefly;
+    save_chapter drops the entry, so only writes by another process can be up to _STATES_TTL stale)."""
+    import copy
+    import time as _t
+    hit = _STATES_CACHE.get(slug)
+    if hit and _t.monotonic() - hit[0] < _STATES_TTL:
+        return copy.deepcopy(hit[1])
+    states = _read_stored_states(slug)
+    _STATES_CACHE[slug] = (_t.monotonic(), copy.deepcopy(states))
+    return states
+
+
+def _read_stored_states(slug: str) -> dict[int, dict]:
     root = project_dir(slug) / "chapters"
     states = {}
     for folder in root.iterdir() if root.is_dir() else []:
@@ -362,10 +381,12 @@ def save_chapter(slug: str, ch: dict) -> None:
     saving different chapters never write the same file."""
     state = {k: v for k, v in ch.items() if k not in ("n", "title")}
     path = _chapter_state_path(slug, ch["n"])
+    _STATES_CACHE.pop(slug, None)
     if state == _default_state() and not path.exists():
         return
     path.parent.mkdir(parents=True, exist_ok=True)
     _atomic_write(path, json.dumps({"n": ch["n"], **state}, indent=2, ensure_ascii=False))
+    _STATES_CACHE.pop(slug, None)
 
 
 def _migrate_chapters(slug: str, data: dict) -> None:
@@ -822,6 +843,8 @@ def update_settings(slug: str, settings: dict) -> dict:
         yt["description"] = str(yt.get("description") or "")[:MAX_DESCRIPTION]
         yt["tags"] = clean_tags(yt.get("tags"))
         yt["auto_shorts"] = bool(yt.get("auto_shorts"))
+        link = str(yt.get("shorts_playlist") or "").strip()[:300]
+        yt["shorts_playlist"] = link if link.startswith(("https://", "http://")) else ""
         plan = project["settings"]["plan"]
         plan["days"] = sorted({d for d in plan.get("days") or [] if isinstance(d, int) and d in range(7)}) or list(range(7))
         plan["min_minutes"] = max(1, min(600, int(plan.get("min_minutes") or 30)))

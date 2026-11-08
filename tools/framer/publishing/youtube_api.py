@@ -126,6 +126,11 @@ class Client:
         self._send("POST", f"{API}/playlistItems", COST_WRITE, params={"part": "snippet"}, json={"snippet": {
             "playlistId": playlist_id, "resourceId": {"kind": "youtube#video", "videoId": video_id}}})
 
+    def comment(self, video_id: str, text: str) -> None:
+        """Post a top-level comment on a video as the channel. (The API cannot pin it: that is done in Studio.)"""
+        self._send("POST", f"{API}/commentThreads", COST_WRITE, params={"part": "snippet"}, json={"snippet": {
+            "videoId": video_id, "topLevelComment": {"snippet": {"textOriginal": text}}}})
+
     def set_thumbnail(self, video_id: str, jpeg: bytes) -> None:
         self._send("POST", f"{UPLOAD}/thumbnails/set", COST_WRITE, params={"videoId": video_id}, data=jpeg,
                    headers={"Content-Type": "image/jpeg"})

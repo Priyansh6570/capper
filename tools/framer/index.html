@@ -70,6 +70,7 @@
                   <a class="npsrc" data-host="webtoons.com" href="https://www.webtoons.com/en/" target="_blank" rel="noopener"><i>W</i><span><b>Webtoons</b><em>webtoons.com</em></span><u>&#8599;</u></a>
                   <a class="npsrc" data-host="kingofshojo.com" href="https://kingofshojo.com/" target="_blank" rel="noopener"><i>K</i><span><b>King of Shojo</b><em>kingofshojo.com</em></span><u>&#8599;</u></a>
                   <a class="npsrc" data-host="mgeko.cc" href="https://www.mgeko.cc/" target="_blank" rel="noopener"><i>M</i><span><b>MGeko</b><em>mgeko.cc</em></span><u>&#8599;</u></a>
+                  <a class="npsrc" data-host="roliascan.com" href="https://roliascan.com/" target="_blank" rel="noopener"><i>R</i><span><b>Rolia Scan</b><em>roliascan.com</em></span><u>&#8599;</u></a>
                 </div>
               </div>
 
@@ -254,6 +255,13 @@
           <div class="mtexts">
             <b>Merge complete chapters</b>
             <span class="hint" id="mergeSelHint">No chapters selected.</span>
+            <div class="ctarow" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:8px">
+              <label for="mergeCtaAfter"><b>Call-to-action video</b> after chapter</label>
+              <select id="mergeCtaAfter" disabled><option value="">none</option></select>
+              <button id="ctaBuildBtn" class="small ghost" title="Make (or remake) the like / subscribe / comment video from text-free frames of this project"><span>Make CTA video</span></button>
+              <a id="ctaPlay" class="hint" href="#" target="_blank" style="display:none">play</a>
+              <span class="hint" id="ctaHint"></span>
+            </div>
           </div>
           <div class="macts">
             <button id="mergeCancelBtn" class="small danger" data-icon="stop" data-ic-size="14" disabled title="Stop the running merge"><span>Stop</span></button>
@@ -790,7 +798,7 @@
               </div>
             </section>
             </div>
-            <section class="shsec">
+            <section class="shsec" hidden>
               <h4 class="shsechead">Music library</h4>
               <div class="hint">Upload as many tracks as you like and mark each with a theme. For every short, Claude picks the theme that fits its scene and the matching track plays under it; the short runs as long as the track. Give a track its drop point (the second the build-up ends) and the short's biggest moment lands exactly on it. While the library has tracks, they replace the music below.</div>
               <div class="filerow">
@@ -957,13 +965,15 @@
           <div class="sidefield">
             <label class="lbl">Chapter URL</label>
             <div class="row2">
-              <input id="dlUrl" type="text" placeholder="webtoons.com, kingofshojo.com or mgeko.cc chapter URL" />
+              <input id="dlUrl" type="text" placeholder="webtoons.com, kingofshojo.com, mgeko.cc or roliascan.com chapter URL" />
               <button type="button" class="small ghost icon" data-icon="link" data-ic-size="14"
                       title="Open webtoons.com" onclick="openSiteHome('webtoons')"></button>
               <button type="button" class="small ghost icon" data-icon="link" data-ic-size="14"
                       title="Open kingofshojo.com" onclick="openSiteHome('kingofshojo')"></button>
               <button type="button" class="small ghost icon" data-icon="link" data-ic-size="14"
                       title="Open mgeko.cc" onclick="openSiteHome('mgeko')"></button>
+              <button type="button" class="small ghost icon" data-icon="link" data-ic-size="14"
+                      title="Open roliascan.com" onclick="openSiteHome('roliascan')"></button>
             </div>
           </div>
           <div class="sidefield">

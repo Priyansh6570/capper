@@ -24,7 +24,7 @@ import shorts
 from publishing import enqueue, telegram
 from config import NO_CONSOLE, PROJECTS_DIR, chapter_output_dir, chapter_work_dir
 from manifest import Manifest
-from services import cards
+from services import cards, script_jobs
 from services.chapter_files import downloaded_pdf, stitch_chapter
 from services.common import Refused
 from services.downloads import _download_chapter
@@ -167,6 +167,16 @@ def _run_in_batch(b: batch.Batch, n: int, job: Job) -> None:
         raise RuntimeError(job.message or f"job {job.status}")
 
 
+def _prefetch_next_script(b: batch.Batch, n: int, slug: str) -> None:
+    """While chapter n's script is written by Claude, get the next stitched chapter that still needs a
+    script ready (panels, panel text, downscaled copies) so its own job starts calling Claude at once."""
+    later = sorted((c for c in list(b.chapters) if c["n"] > n and "script" in c["plan"]
+                    and "script" not in c["completed"] and "stitch" in c["completed"]
+                    and c["state"] in ("queued", "running")), key=lambda c: c["n"])
+    if later:
+        script_jobs.prefetch(slug, later[0]["n"], lambda line: b.log(n, line))
+
+
 def _failed(slug: str, shorts: bool) -> Callable[[batch.Batch, int, str, str], None]:
     """What happens when a chapter fails at a stage: a desktop toast, and a Telegram card with the ways to go on."""
     def failed(b: batch.Batch, n: int, stage: str, error: str) -> None:
@@ -209,6 +219,7 @@ def batch_env(slug: str) -> batch.BatchEnv:
         b.gate()
         job = new_script_job(chapter_id(n), slug, str(n))
         job.before_claude_call = b.gate
+        job.after_prepare = lambda: _prefetch_next_script(b, n, slug)
         _run_in_batch(b, n, job)
 
     def export(b: batch.Batch, n: int) -> None:

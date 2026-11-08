@@ -19,7 +19,8 @@ bp = Blueprint("merge", __name__)
 def merge_stream(slug):
     """Concatenate several chapters' recap.mp4, in chapter order, into one
     video under projects/<slug>/merged/. EventSource (GET) only:
-        ?chapters=1,3,5
+        ?chapters=1,3,5[&cta_after=3]
+    `cta_after` puts the project's call-to-action video (cta.py) right after that chapter.
     Only chapters whose recap.mp4 exists on disk are accepted. When every input shares 1920x1080 +
     a matching video AND audio codec, the merge is a fast stream copy;
     otherwise every input is scaled/padded to 1920x1080@24fps first (see
@@ -30,6 +31,10 @@ def merge_stream(slug):
         chapters = sorted({int(x) for x in raw.split(",") if x.strip()})
     except ValueError:
         chapters = []
+    try:
+        cta_after = int(request.args["cta_after"]) if request.args.get("cta_after", "").strip() else None
+    except ValueError:
+        cta_after = None
 
     def stream():
         if not projects.exists(slug):
@@ -43,7 +48,7 @@ def merge_stream(slug):
         try:
             with merge_slot(slug):
                 yield sse({"type": "start", "message": f"Checking {len(chapters)} chapter(s)…"})
-                plan = prepare_merge(slug, chapters)
+                plan = prepare_merge(slug, chapters, cta_after)
                 for note in plan.notes:
                     yield sse({"type": "log", "line": note})
                 yield sse({"type": "log", "line": "$ " + " ".join(plan.cmd)})
@@ -59,7 +64,7 @@ def merge_stream(slug):
 
                 if proc.returncode == 0 and plan.out.is_file():
                     yield sse({"type": "done", "ok": True, "video": f"/projects/{slug}/merged/{plan.out.name}",
-                               "message": f"Merged {len(chapters)} chapter(s) -> {plan.out.name}"})
+                               "message": f"Merged {len(chapters)} chapter(s){' + call-to-action' if cta_after is not None else ''} -> {plan.out.name}"})
                 else:
                     yield sse({"type": "done", "ok": False, "message": f"ffmpeg exited {proc.returncode}."})
         except Refused as e:

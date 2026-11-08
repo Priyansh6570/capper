@@ -66,7 +66,16 @@ PROJECTS_DIR = ROOT / "projects"  # framer project system (tools/framer/projects
 # Where the Shorts add-on keeps its files, under a chapter's work/ and output/ folders (stages/s8_shorts.py).
 SHORTS_FOLDER = "shorts"
 SHORTS_PLAN = "plan.json"      # work/<ch>/shorts/: the segments picked for the chapter
+# The Shorts music library (tools/framer/short_music.py) is switched off: shorts are made and found as before it existed,
+# with no music picked, no track length to write to and no drop to aim at. Its tracks and settings are kept; set this
+# to True to bring the feature back (its section is hidden in the Shorts settings page by tools/framer/index.html).
+SHORTS_MUSIC = False
 SHORTS_INDEX = "shorts.json"   # output/<ch>/shorts/: the rendered shorts with their titles and descriptions
+
+# The call-to-action clip add-on (stages/s9_cta.py), under the chapter it is rendered from.
+CTA_FOLDER = "cta"
+CTA_PLAN = "plan.json"         # work/<ch>/cta/: the lines to say and the text-free frames to show
+CTA_FILE = "cta.mp4"           # output/<ch>/cta/, copied to projects/<slug>/cta/ by the framer
 
 # --------------------------------------------------------------------------- #
 # Chapter-folder redirect for the framer's project system.

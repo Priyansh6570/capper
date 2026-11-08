@@ -82,26 +82,54 @@ def add_logo(video: Path, render: s7.RenderPlan) -> None:
         logo.unlink(missing_ok=True)
 
 
-MAX_FRAMES_PER_LINE = 3
+MAX_FRAMES_PER_LINE = 8
+FRAME_SECONDS = 1.6    # a frame stays on screen about this long: shorts are fast paced, the picture keeps switching
+
+
+def _frames_of(order: int, beats: dict[int, Panel], mapping: dict[int, dict]) -> list[str]:
+    """The images of the chapter line `order`: all the frames its mapping shows, else its crop."""
+    frames = [f["image"] for f in (mapping.get(order) or {}).get("frames", []) if f.get("image")]
+    return frames or ([beats[order].crop] if order in beats and beats[order].crop else [])
 
 
 def script_beats(short: dict, beats: dict[int, Panel], mapping: dict[int, dict]) -> tuple[list[Panel], dict[int, dict]]:
     """The beats of a short with a written script (`short["script"]`: new narration lines, each naming the chapter
-    lines whose panels to show) and the mapping that gives them those panels. The lines are not voiced yet."""
+    lines whose panels to show) and the mapping that gives them those panels. The lines are not voiced yet, so how
+    many of the frames each shows is decided afterwards (`fit_frames`)."""
     made, new_mapping = [], {}
     for k, line in enumerate(short["script"], start=1):
         frames = []
         for order in line["source_lines"]:
-            info = mapping.get(order)
-            image = next((f["image"] for f in (info or {}).get("frames", []) if f.get("image")), None)
-            image = image or (beats[order].crop if order in beats else None)
-            if image and image not in frames:
-                frames.append(image)
-        frames = frames[:MAX_FRAMES_PER_LINE]
+            frames += [f for f in _frames_of(order, beats, mapping) if f not in frames]
         made.append(Panel(id=f"short{short['id']:02d}_{k:02d}", bbox=[0, 0, 0, 0], order=k, crop=frames[0] if frames else None,
                           emotion=line.get("pace"), script_line=line["text"]))
-        new_mapping[k] = {"order": k, "mode": "sequence", "frames": [{"image": f} for f in frames]}
+        new_mapping[k] = {"order": k, "mode": "sequence", "frames": [{"image": f} for f in frames[:MAX_FRAMES_PER_LINE]]}
     return made, new_mapping
+
+
+def fit_frames(short: dict, panels: list[Panel], mapping: dict[int, dict], beats: dict[int, Panel],
+               chapter: dict[int, dict]) -> None:
+    """Once the lines are voiced: show each line as many frames as keep one on screen about FRAME_SECONDS (spread
+    over the line's own panels in story order; when it names fewer than that, the panels just before and after
+    them are added, so the cuts stay on the scene)."""
+    for k, (panel, line) in enumerate(zip(panels, short["script"]), start=1):
+        seconds = float(panel.duration_s or 0) or FRAME_SECONDS
+        want = max(1, min(MAX_FRAMES_PER_LINE, round(seconds / FRAME_SECONDS)))
+        own = [f["image"] for f in mapping[k]["frames"]]
+        sources = line["source_lines"]
+        frames = list(own)
+        lo, hi = (min(sources), max(sources)) if sources else (0, -1)
+        while len(frames) < want and (lo > min(beats, default=0) or hi < max(beats, default=0)):
+            for order in (lo - 1, hi + 1):
+                if order in beats and len(frames) < want:
+                    extra = [f for f in _frames_of(order, beats, chapter) if f not in frames]
+                    frames = extra + frames if order < lo else frames + extra
+            lo, hi = lo - 1, hi + 1
+        if len(frames) > want:   # evenly spread over the candidates
+            frames = [frames[round(i * (len(frames) - 1) / max(1, want - 1))] for i in range(want)] if want > 1 else frames[:1]
+        mapping[k]["frames"] = [{"image": f} for f in frames]
+        if frames:
+            panel.crop = frames[0]
 
 
 def voice_scripts(m: Manifest, work: Path, planned: list[tuple[dict, list[Panel]]]) -> None:
@@ -153,6 +181,9 @@ def run(m: Manifest) -> Manifest:
     # a short with a script is a new narration over chosen panels; one without (a plan from before) replays its lines
     scripted = {short["id"]: script_beats(short, beats, mapping) for short in plan["shorts"] if short.get("script")}
     voice_scripts(m, work, [(short, scripted[short["id"]][0]) for short in plan["shorts"] if short["id"] in scripted])
+    for short in plan["shorts"]:
+        if short["id"] in scripted:
+            fit_frames(short, *scripted[short["id"]], beats, mapping)
     for number, short in enumerate(plan["shorts"], start=1):
         print(f"shorts {number}/{len(plan['shorts'])}: {short['title']}", flush=True)
         if short["id"] in scripted:

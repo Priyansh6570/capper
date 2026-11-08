@@ -17,10 +17,10 @@ def _download_chapter(url: str, chapter_no: str, raw_id: str, slug: str | None, 
     matches `url`; `log` also receives each step as it happens. Returns {chapter_id, pdf,
     page_count, steps}."""
     if not url:
-        raise Refused("Paste a webtoons.com, kingofshojo.com or mgeko.cc chapter URL.")
+        raise Refused("Paste a webtoons.com, kingofshojo.com, mgeko.cc or roliascan.com chapter URL.")
     adapter = sites.detect(url)
     if adapter is None:
-        raise Refused("That doesn't look like a webtoons.com, kingofshojo.com or mgeko.cc URL.")
+        raise Refused("That doesn't look like a webtoons.com, kingofshojo.com, mgeko.cc or roliascan.com URL.")
     if not raw_id and not chapter_no:
         raise Refused("Enter the chapter number (or a chapter id).")
     chapter_id = sanitize_chapter(raw_id or chapter_no)

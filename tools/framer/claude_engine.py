@@ -135,19 +135,44 @@ def _without_ads(characters: dict) -> dict:
     return {name: text for name, text in characters.items() if not AD_WORDS.search(f"{name} {text}")}
 
 
-def _story_so_far(memory: dict, ch_no: int) -> str:
+RECENT_CHAPTERS = 15   # earlier chapters' summaries sent in full; older ones are left out to keep every call small
+
+
+def _recent_summaries(memory: dict, ch_no: int) -> list[tuple[int, str]]:
     earlier = sorted((int(n), text) for n, text in memory["chapters"].items() if int(n) < ch_no)
-    return "\n".join(f"Chapter {n}: {text}" for n, text in earlier) or "(this is the first chapter)"
+    return earlier[-RECENT_CHAPTERS:]
 
 
-def _character_sheet(memory: dict) -> str:
-    return "\n".join(f"- {name}: {text}" for name, text in memory["characters"].items()) or "(none yet)"
+def _story_so_far(memory: dict, ch_no: int) -> str:
+    return "\n".join(f"Chapter {n}: {text}" for n, text in _recent_summaries(memory, ch_no)) \
+        or "(this is the first chapter)"
 
 
-def _context(memory: dict, ch_no: int, brief: str) -> str:
+def _words(name: str) -> list[str]:
+    return [w for w in re.split(r"\W+", name.lower()) if len(w) >= 4]
+
+
+def _character_sheet(memory: dict, ch_no: int, relevant: str) -> str:
+    """Only the characters the recent chapters or this chapter's own text (`relevant`) mention: by full name, or
+    by a word of their name (a first name) that few other characters share, so "master" matches nobody."""
+    haystack = (relevant + "\n" + _story_so_far(memory, ch_no)).lower()
+    shared = collections.Counter(w for name in memory["characters"] for w in set(_words(name)))
+
+    def mentioned(name: str) -> bool:
+        full = name.lower().strip()
+        return bool(full) and (full in haystack or any(
+            shared[w] <= 3 and re.search(rf"{re.escape(w)}", haystack) for w in _words(full)))
+
+    kept = [(name, text) for name, text in memory["characters"].items() if mentioned(name)]
+    return "\n".join(f"- {name}: {text}" for name, text in kept) or "(none yet)"
+
+
+def _context(memory: dict, ch_no: int, brief: str, relevant: str = "") -> str:
+    """`relevant`: this chapter's text so far (the text read from its panels, or its breakdown), which decides
+    which characters of the sheet are sent."""
     return (f"Series brief:\n{brief.strip() or '(none)'}\n\n"
-            f"Story so far:\n{_story_so_far(memory, ch_no)}\n\n"
-            f"Character sheet:\n{_character_sheet(memory)}")
+            f"Story so far (the last {RECENT_CHAPTERS} chapters):\n{_story_so_far(memory, ch_no)}\n\n"
+            f"Character sheet (the characters in these chapters):\n{_character_sheet(memory, ch_no, relevant)}")
 
 
 def _batches(ids: list[str], limit: int) -> list[list[str]]:
@@ -175,7 +200,10 @@ TEXT_NOTE = (
 BALANCED_RULES = (
     "The images are reduced to save space, so small lettering is not legible in them: take every word of dialogue and "
     "every caption from the text read from the panel, never from the image. The image shows the art; the text lines "
-    "show where each bubble sits.")
+    "show where each bubble sits. Be as thorough as if you saw every panel at full size: describe the visible action, "
+    "expressions, gestures, setting and objects in each panel, not only what is said, and fill `what_happens`, "
+    "`feelings`, `stakes` and `world_info` for every scene with the same detail you would give with full images. Do "
+    "not shorten the notes because the images are small.")
 
 LITE_RULES = (
     "You have no images: you only have the dialogue and captions of each panel, and where they sit. Work from them "
@@ -190,6 +218,8 @@ LITE_NARRATION_NOTE = (
     "The notes were made from the chapter's dialogue and captions alone: nobody saw the art. Narrate from what the "
     "characters say and what the captions state, and do not invent visual action, looks or settings the words do "
     "not give. The frame candidates list no subjects, so give every frame `subject` -1, which shows the whole panel.")
+
+WORDS_PER_PANEL = 17     # narration words per story panel, what Full mode produces; every mode is held to it
 
 MODE_RULES = {quality.FULL: "", quality.BALANCED: BALANCED_RULES, quality.LITE: LITE_RULES}
 
@@ -304,7 +334,7 @@ def _narration_prompt(memory: dict, ch_no: int, brief: str, breakdown: dict, sty
     uncertain = "\n".join(f"{', '.join(u['panel_ids'])}: {u['note']}" for u in breakdown["uncertain"]) or "(none)"
     return (
         f"You are writing the recap narration for chapter {ch_no} of a manhwa, working only from the notes "
-        f"below (you have no images).\n\n{_context(memory, ch_no, brief)}\n\n"
+        f"below (you have no images).\n\n{_context(memory, ch_no, brief, json.dumps(breakdown, ensure_ascii=False))}\n\n"
         f"Chapter summary:\n{breakdown['chapter_summary']}\n\nScenes, in order:\n{scenes}\n\n"
         f"Uncertain (do not resolve these):\n{uncertain}\n\n"
         f"Frame candidates (the only panels you may use), each followed by its numbered subjects:\n{catalogue}\n\n{style}\n\n"
@@ -321,7 +351,10 @@ def _narration_prompt(memory: dict, ch_no: int, brief: str, breakdown: dict, sty
         "to a block: a block narrates one moment spanning one to three panels, and a panel that only continues "
         "the moment before it is folded into that block, never dropped. Each scene line gives its panel count "
         "and the fewest blocks it may get, so on average a block covers no more than two panels; a scene may "
-        "get more. There is no target length beyond that; the story sets it. A fight or action sequence may be "
+        f"get more. As a guide the whole narration runs about {art * WORDS_PER_PANEL:,} words, roughly "
+        f"{WORDS_PER_PANEL} per story panel: never pad to reach it, but do not fall well short of it either. Use "
+        "what the notes give for each scene (every beat, feeling, stake, want and world detail) so that nothing "
+        "in them is left unused. A fight or action sequence may be "
         "compressed into flowing narration, but each hit, turn, reveal and reaction that matters is still "
         "narrated.\n"
         "- A block is two to three sentences, about 25 to 50 words, in story order; turning points, reveals "
@@ -547,7 +580,9 @@ def run_chapter(*, panels: list[Panel], work_dir: Path, state_path: Path, memory
             earlier = [b["result"] for b in done]
             prior = claude_cli.sum_usage([b["usage"] for b in done])
             usage = claude_cli.empty_usage()
-            content = _batch_content([by_id[i] for i in ids], _context(memory, ch_no, brief), earlier,
+            seen = "\n".join(b["text"] for i in ids for b in texts.get(i, [])) + "\n" + json.dumps(
+                [b["result"]["characters"] for b in done], ensure_ascii=False)
+            content = _batch_content([by_id[i] for i in ids], _context(memory, ch_no, brief, seen), earlier,
                                      ch_no, number, len(batches), mode, cache, side, texts)
 
             result = call(1, content, BREAKDOWN_SCHEMA, models["comprehension"], usage, "read", ids, prior)
