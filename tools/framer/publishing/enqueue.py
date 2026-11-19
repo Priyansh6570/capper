@@ -82,5 +82,5 @@ def shorts_of_chapter(slug: str, n: int) -> list[dict]:
             "file": str(shorts.shorts_dir(output) / short["file"]), "duration_s": short.get("duration_s"),
             "title": clean_title(short["title"]), "description": short["description"], "tags": default_tags(series),
             "script": short.get("script") or [], "model": project["settings"]["claude"]["narration_model"],
-            "metadata": "pending", "publish_at": slot.isoformat(timespec="seconds"), "series": series}))
+            "metadata": "pending", "other_title": project.get("other_title") or "", "publish_at": slot.isoformat(timespec="seconds"), "series": series}))
     return queued

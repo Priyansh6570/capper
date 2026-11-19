@@ -4071,12 +4071,63 @@ function startCtaBuild() {
 $('ctaBuildBtn').onclick = startCtaBuild;
 $('mergeCtaAfter').onchange = () => updateMergeBar();
 
+// The closure video (cta.py kind "closure"): a thank-you for the end of a series, added after a merge's last chapter.
+let CLOSURE = null, closureES = null, closureSlug = null;
+
+async function refreshClosure() {
+  if (!CURRENT_PROJECT) return;
+  const slug = CURRENT_PROJECT.slug;
+  try {
+    const r = await fetch(`/api/projects/${encodeURIComponent(slug)}/closure`);
+    if (slug === CURRENT_PROJECT.slug) { CLOSURE = r.ok ? await r.json() : { ready: false }; closureSlug = slug; }
+  } catch (_) { CLOSURE = { ready: false }; closureSlug = slug; }
+  updateMergeBar();
+}
+
+function paintClosure() {
+  const box = $('mergeClosure'), ready = !!(CLOSURE && CLOSURE.ready);
+  box.disabled = !ready || SELECTION.size < 2 || !!mergeES;
+  if (!ready) box.checked = false;
+  $('closureBuildBtn').disabled = !!closureES || !!mergeES;
+  $('closureBuildBtn').firstElementChild.textContent = closureES ? 'Making…' : ready ? 'Remake closure video' : 'Make closure video';
+  const play = $('closurePlay');
+  play.style.display = ready ? '' : 'none';
+  if (ready) play.href = `/projects/${encodeURIComponent(CURRENT_PROJECT.slug)}/closure/closure.mp4`;
+  $('closureHint').textContent = closureES ? 'Making it: voicing and rendering (a few minutes).'
+    : ready ? `${Math.round(CLOSURE.duration_s || 0)}s, ready. Words: projects/${CURRENT_PROJECT.slug}/closure/script.txt`
+    : "Not made yet. Put one picture per script line in the project's closure/frames folder, then make it.";
+}
+
+function startClosureBuild() {
+  if (closureES) return;
+  mergeLines.length = 0;
+  $('mergeStatus').textContent = '';
+  const slug = CURRENT_PROJECT.slug;
+  closureES = new EventSource(`/api/projects/${encodeURIComponent(slug)}/closure_stream`);
+  let finished = false;
+  const end = () => { finished = true; closureES.close(); closureES = null; refreshClosure(); };
+  closureES.onmessage = e => {
+    let ev; try { ev = JSON.parse(e.data); } catch (_) { return; }
+    if (ev.type === 'start') appendMergeLog(ev.message || 'Starting…');
+    else if (ev.type === 'log') appendMergeLog(ev.line || '');
+    else if (ev.type === 'done') { appendMergeLog('OK  ' + (ev.message || 'Done.')); showToast('Closure video ready.', null, null, 'ok'); end(); }
+    else if (ev.type === 'error') { appendMergeLog('FAILED  ' + (ev.message || 'Error')); setStatus(ev.message || 'Could not make the video.', true); end(); }
+  };
+  closureES.onerror = () => { if (!finished) { appendMergeLog('[connection lost]'); end(); } };
+  paintClosure();
+}
+$('closureBuildBtn').onclick = startClosureBuild;
+$('mergeClosure').onchange = () => updateMergeBar();
+
 function updateMergeBar() {
   if (CURRENT_PROJECT && ctaSlug !== CURRENT_PROJECT.slug) { ctaSlug = CURRENT_PROJECT.slug; CTA = null; refreshCta(); }
   paintCta();
+  if (CURRENT_PROJECT && closureSlug !== CURRENT_PROJECT.slug) { closureSlug = CURRENT_PROJECT.slug; CLOSURE = null; refreshClosure(); }
+  paintClosure();
   const ctaAfter = $('mergeCtaAfter').value;
   const total = [...SELECTION].reduce((sum, n) => sum + (chapterByNumber(n).duration || 0), 0)
-    + (ctaAfter && CTA ? CTA.duration_s || 0 : 0);
+    + (ctaAfter && CTA ? CTA.duration_s || 0 : 0)
+    + ($('mergeClosure').checked && CLOSURE ? CLOSURE.duration_s || 0 : 0);
   const blocker = mergeBlocker();
   $('mergeSelHint').textContent = SELECTION.size === 0 ? blocker
     : `${SELECTION.size} chapter(s) selected: ${listNumbers(SELECTION)}. ${blocker || `The merged video will be ${fmtClock(total)} (before any intro/outro).`}`;
@@ -4290,9 +4341,9 @@ function startMerge() {
   mergeLines.length = 0; mergeDone = false;
   $('mergeStatus').textContent = ''; $('mergeResult').innerHTML = '';
   setMergeBusy(true); setMergeBar(0, true);
-  appendMergeLog(`Requesting merge of chapters ${chapters.join(', ')}${$('mergeCtaAfter').value ? ` with the call-to-action video after chapter ${$('mergeCtaAfter').value}` : ''}…`);
+  appendMergeLog(`Requesting merge of chapters ${chapters.join(', ')}${$('mergeCtaAfter').value ? ` with the call-to-action video after chapter ${$('mergeCtaAfter').value}` : ''}${$('mergeClosure').checked ? ' and the closure video at the end' : ''}…`);
 
-  const url = `/api/projects/${encodeURIComponent(CURRENT_PROJECT.slug)}/merge_stream?chapters=${chapters.join(',')}${$('mergeCtaAfter').value ? `&cta_after=${$('mergeCtaAfter').value}` : ''}`;
+  const url = `/api/projects/${encodeURIComponent(CURRENT_PROJECT.slug)}/merge_stream?chapters=${chapters.join(',')}${$('mergeCtaAfter').value ? `&cta_after=${$('mergeCtaAfter').value}` : ''}${$('mergeClosure').checked ? '&closure=1' : ''}`;
   mergeES = new EventSource(url);
   mergeES.onmessage = e => { try { handleMergeEvent(JSON.parse(e.data)); } catch (_) {} };
   mergeES.onerror = () => {

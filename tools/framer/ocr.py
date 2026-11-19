@@ -19,15 +19,36 @@ MIN_ALNUM = 2               # text with fewer letters or digits is a stray mark,
 
 _LOCK = threading.Lock()
 _reader = None
+_gpu_failed = False         # a CUDA error (usually out of memory) was seen: stay on the CPU for this process
 
 
 def _build(gpu: bool):
+    """A reader on the GPU, or on the CPU when the GPU is missing or fails to take the models."""
+    global _gpu_failed
     import easyocr
     MODEL_DIR.mkdir(parents=True, exist_ok=True)
-    return easyocr.Reader(["en"], gpu=gpu, model_storage_directory=str(MODEL_DIR), verbose=False)
+    if gpu and not _gpu_failed:
+        try:
+            return easyocr.Reader(["en"], gpu=True, model_storage_directory=str(MODEL_DIR), verbose=False)
+        except Exception:  # noqa: BLE001 - CUDA out of memory surfaces as several exception types
+            _gpu_failed = True
+            _release_gpu()
+    return easyocr.Reader(["en"], gpu=False, model_storage_directory=str(MODEL_DIR), verbose=False)
+
+
+def _release_gpu() -> None:
+    try:
+        import gc
+        import torch
+        gc.collect()
+        torch.cuda.empty_cache()
+    except Exception:  # noqa: BLE001 - after a CUDA error even this call can raise
+        pass
 
 
 def _gpu_available() -> bool:
+    if _gpu_failed:
+        return False
     import torch
     return torch.cuda.is_available()
 
@@ -47,11 +68,13 @@ def _read(image: np.ndarray) -> list:
         _reader = _build(_gpu_available())
     try:
         return _reader.readtext(image, paragraph=True)
-    except RuntimeError:
+    except Exception:  # noqa: BLE001 - CUDA errors are not always a RuntimeError (AcceleratorError)
+        global _gpu_failed
         if _reader.device == "cpu":
             raise
-        import torch
-        torch.cuda.empty_cache()
+        _gpu_failed = True
+        _reader = None
+        _release_gpu()
         _reader = _build(False)
         return _reader.readtext(image, paragraph=True)
 

@@ -13,6 +13,7 @@ from services.chapter_files import THUMB_MAX, _framer_dir, _tiles_dir, ensure_di
 from services.common import Refused, sanitize_chapter, scope_params
 from services.downloads import _download_chapter
 from services.frames import DEFAULT_BLUR_STYLE, blur_region, export_chapter
+from services.jobs import queue_bank_tagging
 from services.script_text import split_script_into_lines
 
 bp = Blueprint("chapters", __name__)
@@ -204,7 +205,8 @@ def export():
     """
     data = request.get_json(silent=True) or {}
     try:
-        return jsonify(export_chapter(sanitize_chapter(data.get("chapter_id") or ""),
-                                       data.get("entries") or [], *scope_params()))
+        result = export_chapter(sanitize_chapter(data.get("chapter_id") or ""), data.get("entries") or [], *scope_params())
+        result["bank_queued"] = queue_bank_tagging(*scope_params())    # tag the new frames for shorts
+        return jsonify(result)
     except Refused as e:
         return jsonify(error=str(e)), e.status

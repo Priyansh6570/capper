@@ -234,3 +234,124 @@ Run: `.venv\Scripts\python.exe -m unittest discover -s tests -t .`
 - `services/script_jobs.py`: new `prepare_inputs` (panels + OCR text + downscaled copies, the same cache files `claude_engine.run_chapter` makes) and `prefetch` (background thread, failures only logged). `run_script_job` now calls `prepare_inputs`, then `job.after_prepare`.
 - `services/batching.py`: once a chapter's inputs are ready, `_prefetch_next_script` prepares the next stitched chapter that needs a script while Claude works on the current one. `services/jobs.py`: `Job.after_prepare`.
 - Claude receives identical inputs; only timing moves. Measured prep for ch134: 118s cold, 2.4s cached. Takes effect after an app restart. Tests (script, batch) pass.
+
+## 2026-11-09 batch: reuse saved script after strip cleared
+- services/batching.py: if a chapter's strip is missing but its script is saved, the batch rebuilds the strip, keeps the script (no Claude call) and cuts frames from mapping.json.
+
+## 2026-11-09 shorts: music share, other title
+- shorts.py, services/shorts_jobs.py, publishing/enqueue.py, publishing/metadata.py: optional project field `other_title`. With it, a short's closing says a full recap is coming soon (no playlist/pinned-comment line) and its description names the other title.
+- The World's Best Engineer project.json (backup: project.json.pre-edit): other_title = The Greatest Estate Developer, shorts music_share 0.3 (narration 70
+## 2026-11-09 shorts: music share, other title
+- shorts.py, services/shorts_jobs.py, publishing/enqueue.py, publishing/metadata.py: optional project field `other_title`. With it, a short's closing says a full recap is coming soon (no playlist/pinned-comment line) and its description names the other title.
+- The World's Best Engineer project.json (backup: project.json.pre-edit): other_title = The Greatest Estate Developer, shorts music_share 0.3 (narration 70%), full-video description mentions the other name.
+- Restart the app. Only shorts made from now on change; already-written short scripts and queued uploads keep the old text.
+
+## 2026-11-11 my-disciples-are-all-big-villains-2: added chapter 530
+- mgeko lacked ch 530. Added it to the project (project.json + chapters/530/chapter.json), downloaded it from roliascan.com (ch530-295208, 8 pages; stored PDF in the project folder), and ran the full pipeline (stitch, script, export, audio, video) as a batch of just 530. Output: projects/.../chapters/530/output/recap.mp4.
+- The earlier paused batch (562-574 queued) was cancelled at the user's choice; re-queue those chapters when wanted.
+- No code changed.
+
+## Closure video (end-of-series thank-you) + "Add closure video" merge toggle
+- `cta.py` now handles two clip kinds (`KINDS`: `cta`, `closure`). Closure = same add-on under `projects/<slug>/closure/` (`script.txt`, `frames/`, `closure.mp4`); it needs its own pictures (one per script line, number order), no OCR search. `DEFAULT_CLOSURE_SCRIPT` (9 lines, `{series}` = project name).
+- `stages/s9_cta.py`: `run(m, folder, filename)` + `--folder/--file` args (defaults unchanged, so the CTA clip is untouched). `config.py`: `CLOSURE_FOLDER/FILE`.
+- Routes: `/api/projects/<slug>/closure`, `/closure_stream`, `/projects/<slug>/closure/closure.mp4`; `merge_stream` takes `closure=1`.
+- `services/merging.py`: `prepare_merge/merge_videos(..., closure=True)` puts the closure after the LAST chapter (after the CTA when that is also last); output name gets `_closure`.
+- UI (index.html, app.js): in the merge card, a checkbox "Add closure video", plus Make/Remake closure video and play. Checkbox is enabled once the clip exists and 2+ chapters are selected.
+- Tests: `tests/test_cta.py` (+4, 13 pass). `test_planner...waits_until_the_situation_changes` fails with or without these changes.
+- My Disciples project: `closure/script.txt` written, frames 1-9 copied to `closure/frames/` (G:\My Drive\RECAPPER\bebe\my-disciples-are-all-big-villains-2\closure). NOT built yet: frame 6 (weekly calendar) shows WED twice and no THU, and has art bleeding over the FRI/SAT tabs; replace `closure/frames/6.png`, then restart the app, hard-refresh and press "Make closure video".
+
+## Closure video built (My Disciples)
+- Frame 6 fixed (days MON-SUN, "TRANSMIGRATED" caption) and copied to `closure/frames/6.png`; built via `cta.build(slug, "closure")` -> `G:\My Drive\RECAPPER\bebe\my-disciples-are-all-big-villains-2\closure\closure.mp4` (56.5s, 1920x1080, 9 lines / 9 frames, chapter 577's voice, background and watermark).
+- Run next: restart the app, hard-refresh, tick "Add closure video" in the merge card when merging the last range (it goes after the last selected chapter).
+
+## Closure video rebuilt with updated frames
+- All 9 updated frames (no Gemini sparkle; new frame 5 = series grid in the ornate style of frame 6) copied from `cta_script/end video/frames/` to `closure/frames/1..9.png` and the clip remade -> `G:\My Drive\RECAPPER\bebe\my-disciples-are-all-big-villains-2\closure\closure.mp4` (56.5s, 1080p). No code changes.
+
+## 2026-11-14 - Missing chapters 142, 159, 462, 530 (My Disciples Are All Big Villains)
+- Cause: all four were absent from the project's chapter list (574 of 578). 530 still had a finished work/ + output/recap.mp4 on disk; 142/159/462 had no folders. The project source (mgeko.cc) doesn't have them.
+- Re-added the four to `projects/my-disciples-are-all-big-villains-2/project.json` (chapter list now 578, 0..577). 530 reads as complete again (no re-run).
+- Downloaded 142 (20 pages), 159 (24), 462 (14) from roliascan.com via `services.downloads._download_chapter` (project URL left on mgeko).
+- Started a batch via the app (`POST /api/projects/<slug>/batch`): stitch, script, export, audio, video for 142, 159, 462. Watch it on the project's Batch panel; outputs land in `chapters/<n>/output/recap.mp4`.
+- No code changed.
+
+## 2026-11-14 - Merge of ch 1-577 failed: file name too long
+- Cause: merged file was named `merged_<stamp>_ch1-2-3-...-577.mp4` (~2,200 chars); Windows caps a file name at 255, so ffmpeg could not create it (all 577 videos were restored and the checks passed).
+- Fix: `branding.chapters_label()` writes long lists as ranges (`ch1to141+143to577`; lists up to 100 chars keep the old `1-2-3` form); `branding.chapters_of()` reads both; `services/merging.py` uses it. Old merged files still parse.
+- Next: restart the app (tray icon) so it loads the change, then run the merge again - all videos are already on disk, so it goes straight to the stream-copy join.
+- Correction: the `services/merging.py` edit above had silently not applied (merge failed again with the long name). Applied it for real; verified a 577-chapter merge now names `merged_<stamp>_ch1to577.mp4` and ffmpeg writes it (~50 MB/s to the Drive folder). Restart the app, then merge again.
+- Naming changed to always `ch<lowest>to<highest>` (branding.chapters_label); old names still readable.
+
+## 2026-11-14 - render final "not a readable video file"
+- Cause: branding.probe() had a fixed 30s ffprobe timeout; the 15.8GB merge on Google Drive was not locally cached, so the first read timed out and was reported as unreadable. The file itself is fine (h264 1080p + aac, 45.9h).
+- Fix: tools/framer/branding.py - probe(path, timeout=30); render_final probes the merge with timeout=600.
+- Next: restart the app and run Render final again.
+
+## 2026-11-15 - Drive read retry + lane survives bookkeeping errors
+- atomic_io.read_json_with_backup_fallback retries OSError reads (Google Drive Errno 22) 4x.
+- tools/framer/batch.py _lane: an exception in _leave no longer kills the lane thread; the chapter is marked failed instead.
+- Why: nano-machine script lane died when project.json read failed. Restart the app to load this, then Retry stuck chapters.
+
+## 2026-11-15 - Mount Hua script failures (CUDA OOM)
+- tools/framer/ocr.py: GPU model build and read fall back to CPU on any exception (not just RuntimeError, e.g. AcceleratorError) and stay on CPU for the process after a CUDA error.
+- Restarted the app (poisoned CUDA context) and retried script for ch 48-58 via the batch retry endpoint.
+- ch 89/90 failed at download (kingofshojo.com timeout); not retried.
+
+## AMV Shorts prototype (new `amv/` package)
+- Added `amv/music.py` (librosa beat/downbeat/low-band-drop analysis, cached in `cache/amv_music/`, window picker),
+  `amv/render.py` (beat-synced 1080x1920 renderer: hook burst, build-up acceleration, drop flash/shake/RGB split,
+  zoom-blur cuts, pans on tall/wide panels, grade, RECAPPER top+bottom middle + logo top-left), `amv/__main__.py` (CLI),
+  `tests/test_amv.py`. No pipeline stage, manifest or old shorts code touched yet.
+- Try: `.venv\Scripts\python.exe -m amv --track "shorts/bg music/xcool.mp3" --frames a.png b.png ... --hero 3 -o out.mp4`
+  (`--preview` for a fast half-size check, `--analyze` for beats/drops only). Sample output: `shorts/amv_prototype/xcool_test.mp4`.
+- Next: frame-pool tagging in the script pass, planner, plan window, upscaling only when needed, scheduling; then retire the narration shorts.
+
+## AMV prototype: feedback round 1
+- `amv/render.py`: one flow transition (zoom-blur + push) on every cut; flash/shake/RGB-split now only on the drop hero (and a light accent on drop downbeats) so the flow is only interrupted at the drop. No more push/pull cycling.
+- Small pools: `thin_cuts` merges the relaxed sections (post, then intro) instead of repeating frames; the planner must still supply more frames than cuts (a 30s short has ~34 cuts before thinning).
+- Watermark now matches `shorts/watermark placement`: bold sans (Arial Bold), 50% white, no shadow, centred at y=160 and y=1794; logo 172px at (39,78), opaque.
+- Test render: `shorts/amv_prototype/xcool_test2.mp4` (35 frames). Tests: `.venv\Scripts\python.exe -m unittest tests.test_amv`.
+
+## AMV prototype: feedback round 2 (camera continuity, music end, Mount Hua test)
+- `amv/render.py`: every cut is now one continuous camera move. The outgoing shot accelerates into the cut, the incoming shot starts at the same speed and eases out, and motion blur follows that speed (fast cuts = high speed, slow shots = gentle). Drop hero still the only interruption. `thin_cuts` now merges the shortest neighbouring relaxed cuts (max hold 2.2s) instead of creating multi-second holds.
+- `amv/music.py`: analysis also finds `breaks` (kick/808 gaps, cache files now `*_v2.json`); `pick_window(length=None)` ends at the first break after the drop section (+0.9s) so the track is never cut mid-phrase. CLI `--length` is optional now (default: auto). For xcool the clip is 25.4s (16.9s-42.3s of the track).
+- New test render with Return of the Mount Hua Sect (chapters 48-69; earlier chapters' panels are no longer on disk): `shorts/amv_prototype/mounthua_xcool.mp4`. Frames were picked by eye, so a few may not be the protagonist; the real tagger will use character names from the script.
+
+## AMV prototype: other tracks
+- `amv/music.py` `pick_window`: never starts less than 2s before the drop; auto-length only uses a break inside the max window (else 30s).
+- Rendered the Mount Hua frames with all 5 tracks into `shorts/amv_prototype/mounthua_<track>.mp4` (xcool = `mounthua_xcool.mp4`).
+
+## AMV prototype: feedback round 3 (faces, pivots, beat transitions)
+- New `amv/tagger.py`: tags frames with the app's `claude` CLI wrapper (sonnet, 16 images/call, cached in `cache/amv_tags/`): has_face, face_box, eye point, character, kind (face/action/scenery/aftermath/object), expression, intensity, text. Production path: this runs when a chapter's script is made (or on demand), the plan then reads the tags.
+- New `amv/planner.py` (`plan_aura`): >=90% faces, intensity follows the music (calm intro -> rising build -> strongest on the drop -> cooldown), neighbours avoid the same chapter/expression, non-face frames spaced out, lettering a last resort.
+- `amv/render.py`: face shots zoom about the eyes, which stay pinned at a shared screen anchor (50% x, 40% y) and are size-matched (face ~30% of screen height), so the gaze rests while frames change. Frames without a face never zoom (static, or a slide along the long side). `--style push|alt`: alt alternates zoom-in/zoom-out on the beat. Motion blur uses 11 samples and a shorter span.
+- Test renders: `shorts/amv_prototype/v3_<track>_<style>.mp4` (Chung Myung aura, chapters 48-68).
+- Final v3 renders verified (all 8 decode with 0 errors): `shorts/amv_prototype/v3_{xcool,sub_clair-phonk-hard,sub_clair-drift-phonk}_{push,alt}.mp4`, `v3_mondamusic-brazilian-phonk-phonk_push.mp4`, `v3_sub_clair-brazilian-phonk-instrumental_alt.mp4`. Note: never start two renders writing to the same output file (an earlier overlapping run corrupted them).
+
+## 2026-11-18 - shorts: style flag fix + frame bank (steps 1-2 of the AMV plan)
+- `amv/__main__.py`: `--style` was never passed to `render()`, so every `_alt` render equalled its `_push` twin. Now passed.
+- `amv/tagger.py`: tags now also carry `visibility` (full/partial/hidden), `solo`, and `mouth`/`hand`/`weapon` points; `TAG_VERSION = 2` makes older cached tags be read again.
+- `amv/bank.py` (new): per-chapter frame bank. Tags every exported frame, keeps the best <= 60 (no readable text, strong or with a face) in `work/shorts_bank/frames/`, writes `work/shorts_bank/bank.json` (tags of ALL frames).
+- `tools/framer/chapter_backup.py`: new ticked-by-default clearable kind `shorts_frames`; `bank.json` joins the always-local `script` kind. So the big `frames` folder can be cleared and shorts still work.
+- `tools/framer/services/shorts_bank.py` (new): `build_chapter` / `build_project` (restores cleared frames from Drive for tagging, skips chapters that already have a bank, backs the bank up). `services/frames.py` `export_chapter` drops the stale bank when frames are re-cut.
+- `tests/test_bank.py` (new). Not yet wired: automatic tagging after export / job queue / UI button.
+- Run next: `.venv\Scripts\python.exe tools/framer/services/shorts_bank.py <project-slug> [chapters]` to tag existing chapters (uses Claude).
+
+## 2026-11-18 - shorts: auto-tagging job, old-chapter recut, style recipes (aura / story / twist)
+- Job queue: new `shorts_tag` job (`services/jobs.py` `new_bank_job`, `queue_bank_tagging`; runner `run_shorts_tag_job` in `services/shorts_jobs.py`; holds the `claude` lock, own `~bank` key so it never blocks a chapter's audio/video). Queued after an editor export (`routes/chapters.py`) and after a batch's export step (`services/batching.py`).
+- Routes: `GET/POST /api/projects/<slug>/shorts_bank` (status per chapter / queue tagging for chapters or all, `rebuild`). No UI button yet.
+- `services/shorts_bank.py`: chapters with no frames on this PC (usual case: only script, mapping, video are on Drive) are re-cut from `mapping.json` via the Drive PDF (strip stitched, then removed again), tagged, and only the bank is kept. Tested on Mount Hua ch 1: 128 frames tagged, 47 kept, bank backed up to Drive.
+- `amv/styles.py` (new): recipes `aura`, `story` (2s+ holds in reading order, then burst on the drop), `twist` (story, twist frame on the last story cut, aura from the drop). `amv/render.py`: `Cut.mode/trans`, story view with drift + dissolve, whip transition, `recipe=`/`items=`. CLI: `python -m amv --track X --recipe story --bank <chapter work folder> -o out.mp4`.
+- Samples: `shorts/amv_prototype/v4_{aura,story,twist}_drift.mp4`. Tests: tests/test_amv.py, tests/test_bank.py.
+- Next: pivot style (4), quote (6) and lyrics (7) layers, adaptive (5); a UI button for the bank.
+
+## 2026-11-18 - shorts: cuts at the start now follow the audible hits
+- Problem: at the start of a clip the cuts sat on the beat tracker's even grid (and its half-beats), which does not match syncopated or kick-less intros; there was also a ~1s hole after the hook, and a 0.25s audio/video fade-in swallowed a hit on the first frame.
+- `amv/music.py`: `analyze` also stores `onsets` ([time, strength], 256-sample hop; cache `_v3`, old caches are re-analysed); `hit_near` / `pick_window` start the clip on a strong hit within 0.2s of the downbeat.
+- `amv/render.py`: `build_cuts` takes hook / intro / post cuts from the strongest hits (min gaps, holes filled from the beat grid), snaps build/drop cuts to a hit within 50ms, enforces >= 0.14s between cuts; fade-in 0.06s (`FADE_IN`).
+- `amv/styles.py`: story changes land on beats, holds stay >= 2s.
+- Samples: `shorts/amv_prototype/v5_{aura,story,twist}_drift.mp4`. Tests in tests/test_amv.py.
+
+## 2026-11-18 - shorts: style 4, pivot (one fixed point of focus)
+- `amv/styles.py` `pivot`: aura timing over only the frames that show the chosen point (`eye`, `mouth`, `hand`, `weapon`; frames too small to zoom are left out; < 8 usable frames is refused with a message). No whips: the point is pinned to one screen spot (`render.ANCHORS`) and all the motion happens around it.
+- `amv/render.py`: `pivot_of(tag, point)`, `load_shot(..., point)`: small panels the renderer letterboxes are pinned too, but only when a point is asked for, so the normal aura look is unchanged. `render(..., point=)`.
+- CLI: `python -m amv --track X --recipe pivot --point eye --bank <chapter work folder> -o out.mp4`. Samples: `shorts/amv_prototype/v5_pivot_{eye,weapon}_drift.mp4`. Tests: `AmvPivot` in tests/test_amv.py.

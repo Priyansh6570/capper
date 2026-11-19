@@ -12,13 +12,13 @@ SCHEMA = {
                    "tags": {"type": "array", "items": {"type": "string"}}},
 }
 PROMPT = """Write the YouTube metadata for a vertical Short from a manhwa recap channel.
-Series: {series}
+Series: {series}{other}
 The short's narration, in order:
 {script}
 
 Return:
 - title: at most 70 characters, a hook that makes people watch, without clickbait lies and without hashtags;
-- description: two or three sentences that tease the scene without spoiling its ending, then the series name;
+- description: two or three sentences that tease the scene without spoiling its ending, then the series name{also_known};
 - tags: 8 to 12 search tags a viewer of this kind of video would use (the series name, its genre, "manhwa recap")."""
 
 
@@ -35,7 +35,10 @@ def write(item: dict, series: str, model: str) -> dict:
     script = "\n".join(entry["text"] for entry in item.get("script") or []) or item["description"] or item["title"]
     folder = store.path("claude")
     folder.mkdir(parents=True, exist_ok=True)
-    answer = claude_cli.call([{"type": "text", "text": PROMPT.format(series=series, script=script)}], SCHEMA, model, folder,
+    answer = claude_cli.call([{"type": "text", "text": PROMPT.format(
+        series=series, script=script,
+        other=f" (also known as {other})" if (other := item.get("other_title")) else "",
+        also_known=f" and its other name, {other}" if other else "")}], SCHEMA, model, folder,
                              usage=claude_cli.empty_usage(), mention_event="read", panel_ids=set(),
                              on_proc=lambda proc: None, on_event=lambda event: None, on_limit=_stop_on_limit)
     return {"title": clean_title(answer["title"]) or item["title"],

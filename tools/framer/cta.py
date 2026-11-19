@@ -27,7 +27,7 @@ from PIL import Image, ImageDraw, ImageFont, ImageStat
 import config
 import pacing
 import projects
-from config import CTA_FILE, CTA_FOLDER, CTA_PLAN, NO_CONSOLE, ROOT
+from config import CLOSURE_FILE, CLOSURE_FOLDER, CTA_FILE, CTA_FOLDER, CTA_PLAN, NO_CONSOLE, ROOT
 
 DEFAULT_SCRIPT = """\
 calm: Quick pause, before the next chapter.
@@ -37,6 +37,25 @@ calm: If it has earned your time, a like tells us it was worth it. Subscribe, an
 action: And the comments? We read every one. Tell us what you think, and which story we should cover next.
 calm: Thank you for watching. Back to the story.
 """
+
+# The closure video: a warm thank-you at the end of a series, made from pictures drawn for it
+# (projects/<slug>/closure/frames/, one per line, in number order). A merge can add it after its last chapter.
+DEFAULT_CLOSURE_SCRIPT = """calm: We have reached the end of {series}. Together, we have covered every chapter up to chapter 577.
+calm: It has been a wonderful journey, and we are so grateful that you walked it with us.
+calm: Thank you for following along, and for staying with us until the very end. It truly means a lot to us.
+reveal: This is not goodbye. When new chapters come out, we will be right here to continue the story. And we will also share one complete recap of chapters 1 to 577, so you can enjoy the whole story again whenever you like.
+calm: Now, we have a little news to share. We are happy to bring you seven new series.
+calm: Our two hour videos will stay just the same. Each series will have its own day of the week, so every series gets a new part every week.
+calm: This way, we can share more stories with you, and you will always have something new to watch.
+calm: We will post the final schedule in our YouTube posts. And we would love to hear your suggestions, so please tell us which stories you would like to see.
+calm: Thank you for being such a wonderful audience. We are so happy you are here.
+"""
+
+# kind -> (folder, clip file, default script)
+KINDS = {
+    "cta": (CTA_FOLDER, CTA_FILE, DEFAULT_SCRIPT),
+    "closure": (CLOSURE_FOLDER, CLOSURE_FILE, DEFAULT_CLOSURE_SCRIPT),
+}
 
 FRAMES_PER_LINE = 2
 LAST_LINE_CARD = True
@@ -51,19 +70,21 @@ MIN_CONTRAST = 38.0        # grey-level spread; blank or washed-out frames fall 
 # --------------------------------------------------------------------------- #
 # files
 # --------------------------------------------------------------------------- #
-def cta_dir(slug: str) -> Path:
-    d = projects.project_dir(slug) / CTA_FOLDER
+def cta_dir(slug: str, kind: str = "cta") -> Path:
+    d = projects.project_dir(slug) / KINDS[kind][0]
     d.mkdir(parents=True, exist_ok=True)
     return d
 
 
-def clip_path(slug: str) -> Path:
-    return projects.project_dir(slug) / CTA_FOLDER / CTA_FILE
+def clip_path(slug: str, kind: str = "cta") -> Path:
+    folder, name, _ = KINDS[kind]
+    return projects.project_dir(slug) / folder / name
 
 
-def info(slug: str) -> dict:
+def info(slug: str, kind: str = "cta") -> dict:
     """{"ready": bool, "duration_s", "built_at", "chapter", "lines"} of the project's clip."""
-    clip, meta = clip_path(slug), clip_path(slug).with_name("cta.json")
+    clip = clip_path(slug, kind)
+    meta = clip.with_suffix(".json")
     if not clip.is_file():
         return {"ready": False}
     try:
@@ -88,19 +109,19 @@ def parse_script(text: str) -> list[dict]:
     return [line for line in lines if line["text"]]
 
 
-def own_frames(slug: str) -> list[str]:
+def own_frames(slug: str, kind: str = "cta") -> list[str]:
     """Pictures made for the clip (projects/<slug>/cta/frames/, shown in name order, numbers in natural order).
     When there are some, the clip shows them, one per line, instead of frames taken from the chapters."""
-    folder = cta_dir(slug) / "frames"
+    folder = cta_dir(slug, kind) / "frames"
     files = [p for p in folder.glob("*") if p.suffix.lower() in (".png", ".jpg", ".jpeg", ".webp")]
     files.sort(key=lambda p: [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", p.stem)])
     return [str(p) for p in files]
 
 
-def load_script(slug: str) -> list[dict]:
-    path = cta_dir(slug) / "script.txt"
+def load_script(slug: str, kind: str = "cta") -> list[dict]:
+    path = cta_dir(slug, kind) / "script.txt"
     if not path.is_file():
-        path.write_text(DEFAULT_SCRIPT, encoding="utf-8")
+        path.write_text(KINDS[kind][2].replace("{series}", projects.load(slug).get("name") or slug), encoding="utf-8")
     return parse_script(path.read_text(encoding="utf-8"))
 
 
@@ -221,20 +242,24 @@ def frames_needed(script: list[dict]) -> int:
     return FRAMES_PER_LINE * (len(script) - (1 if LAST_LINE_CARD else 0))
 
 
-def build(slug: str) -> Iterator[str]:
-    """Make the project's clip, yielding log lines. Raises RuntimeError when it cannot be made."""
+def build(slug: str, kind: str = "cta") -> Iterator[str]:
+    """Make the project's clip, yielding log lines. Raises RuntimeError when it cannot be made.
+    kind "closure" is the end-of-series thank-you: it needs its own pictures (projects/<slug>/closure/frames/)."""
+    folder, filename, _ = KINDS[kind]
     project = projects.load(slug)
     chapters = source_chapters(slug)
     if not chapters:
         raise RuntimeError("No chapter of this project has frames on this PC to take pictures from.")
-    script = load_script(slug)
+    script = load_script(slug, kind)
     if not script:
-        raise RuntimeError("The call-to-action script is empty (projects/<slug>/cta/script.txt).")
+        raise RuntimeError(f"The {kind} script is empty (projects/<slug>/{folder}/script.txt).")
     source = chapters[0]
-    own = own_frames(slug)
+    own = own_frames(slug, kind)
+    if kind == "closure" and not own:
+        raise RuntimeError(f"Put the closure pictures (one per script line) in projects/<slug>/{folder}/frames/.")
     if own and len(own) < len(script):
-        raise RuntimeError(f"The script has {len(script)} lines but projects/<slug>/cta/frames/ has {len(own)} picture(s).")
-    yield "Using the pictures in the project's cta/frames folder." if own else f"Looking for frames without dialogue in {min(len(chapters), SCAN_CHAPTERS)} chapter(s)…"
+        raise RuntimeError(f"The script has {len(script)} lines but projects/<slug>/{folder}/frames/ has {len(own)} picture(s).")
+    yield f"Using the pictures in the project's {folder}/frames folder." if own else f"Looking for frames without dialogue in {min(len(chapters), SCAN_CHAPTERS)} chapter(s)…"
     frames: list[str] = []
     for item in ([own[:len(script)]] if own else pick_frames(slug, frames_needed(script), chapters)):
         if isinstance(item, list):
@@ -243,11 +268,11 @@ def build(slug: str) -> Iterator[str]:
             yield item
     work = projects.chapter_work_dir(slug, source)
     out_dir = projects.chapter_output_dir(slug, source)
-    card = end_card(work / CTA_FOLDER / "end_card.png", project["name"]) if LAST_LINE_CARD and not own else None
+    card = end_card(work / folder / "end_card.png", project["name"]) if LAST_LINE_CARD and not own else None
     plan = ({"lines": [{**line, "frames": [frame]} for line, frame in zip(script, frames)]} if own
             else make_plan(script, frames, str(card) if card else None))
-    (work / CTA_FOLDER).mkdir(exist_ok=True)
-    (work / CTA_FOLDER / CTA_PLAN).write_text(json.dumps(plan, indent=2, ensure_ascii=False), encoding="utf-8")
+    (work / folder).mkdir(exist_ok=True)
+    (work / folder / CTA_PLAN).write_text(json.dumps(plan, indent=2, ensure_ascii=False), encoding="utf-8")
     yield f"{len(script)} lines, {len(frames)} frames; voicing and rendering with chapter {source}'s look…"
 
     chapter_id = json.loads((work / "manifest.json").read_text(encoding="utf-8"))["chapter_id"]
@@ -255,7 +280,8 @@ def build(slug: str) -> Iterator[str]:
                MANHWA_WORK_ROOT=str(work), MANHWA_OUTPUT_ROOT=str(out_dir))
     with config.chapter_scope(work, out_dir):
         projects.write_media_snapshot(slug, source)
-    proc = subprocess.Popen([sys.executable, "-u", "-m", "stages.s9_cta", "--chapter", chapter_id], cwd=str(ROOT), env=env,
+    proc = subprocess.Popen([sys.executable, "-u", "-m", "stages.s9_cta", "--chapter", chapter_id,
+                             "--folder", folder, "--file", filename], cwd=str(ROOT), env=env,
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, text=True,
                             bufsize=1, encoding="utf-8", errors="replace", **NO_CONSOLE)
     try:
@@ -265,18 +291,18 @@ def build(slug: str) -> Iterator[str]:
     finally:
         if proc.poll() is None:
             proc.terminate()
-    made = out_dir / CTA_FOLDER / CTA_FILE
+    made = out_dir / folder / filename
     if proc.returncode or not made.is_file():
         raise RuntimeError(f"The render exited {proc.returncode}; see the log above.")
 
-    dest = clip_path(slug)
+    dest = clip_path(slug, kind)
     shutil.copy2(made, dest)
     stage_meta = {}
     try:
-        stage_meta = json.loads((made.with_name("cta.json")).read_text(encoding="utf-8"))
+        stage_meta = json.loads(made.with_suffix(".json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         pass
-    dest.with_name("cta.json").write_text(json.dumps({
+    dest.with_suffix(".json").write_text(json.dumps({
         **stage_meta, "chapter": source, "lines": len(script), "frames": len(frames),
         "built_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}), encoding="utf-8")
     yield f"Done: {dest}"

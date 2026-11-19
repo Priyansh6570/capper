@@ -56,23 +56,26 @@ class Stage(unittest.TestCase):
 
 
 class MergePlacement(unittest.TestCase):
-    def prepare(self, chapters, cta_after, probes):
+    def prepare(self, chapters, cta_after, probes, closure=False):
         with tempfile.TemporaryDirectory() as tmp:
             folder = Path(tmp)
             clip = folder / "cta.mp4"
             clip.write_bytes(b"x")
+            closure_clip = folder / "closure.mp4"
+            closure_clip.write_bytes(b"x")
             with mock.patch.object(merging.projects, "get_chapter", return_value={}), \
                  mock.patch.object(merging.projects, "load", return_value={}), \
                  mock.patch.object(merging.chapter_backup, "restore"), \
                  mock.patch.object(merging.projects, "chapter_video_path", side_effect=lambda s, n: folder / f"{n}.mp4"), \
                  mock.patch.object(merging.projects, "merged_dir", return_value=folder), \
-                 mock.patch.object(merging.cta, "clip_path", return_value=clip), \
+                 mock.patch.object(merging.cta, "clip_path",
+                                   side_effect=lambda s, kind="cta": closure_clip if kind == "closure" else clip), \
                  mock.patch.object(merging.branding, "probe", side_effect=probes), \
-                 mock.patch.object(merging.branding, "normalized_clip", return_value=clip) as normalize, \
+                 mock.patch.object(merging.branding, "normalized_clip", side_effect=lambda slug, src, *a: src) as normalize, \
                  mock.patch.object(merging.gpu, "ffmpeg_path", return_value="ffmpeg"):
                 for n in chapters:
                     (folder / f"{n}.mp4").write_bytes(b"x")
-                plan = merging.prepare_merge("p", chapters, cta_after)
+                plan = merging.prepare_merge("p", chapters, cta_after, closure)
                 listing = (folder / "_concat_list.txt").read_text(encoding="utf-8") if (folder / "_concat_list.txt").exists() else ""
                 return plan, listing, normalize
 
@@ -98,6 +101,28 @@ class MergePlacement(unittest.TestCase):
         self.assertEqual(len(listing.splitlines()), 2)
         self.assertNotIn("_cta", plan.out.name)
         normalize.assert_not_called()
+
+    def test_closure_goes_after_the_last_chapter_even_after_the_cta(self):
+        plan, listing, _ = self.prepare([4, 5], 5, [info(), info(), info(), info()], closure=True)
+        order = [Path(row.split("'")[1]).name for row in listing.splitlines()]
+        self.assertEqual(order, ["4.mp4", "5.mp4", "cta.mp4", "closure.mp4"])
+        self.assertIn("_cta5_closure_ch4-5.mp4", plan.out.name)
+
+    def test_closure_alone_is_the_last_clip(self):
+        plan, listing, normalize = self.prepare([4, 5, 6], None, [info(), info(), info(), info()], closure=True)
+        order = [Path(row.split("'")[1]).name for row in listing.splitlines()]
+        self.assertEqual(order, ["4.mp4", "5.mp4", "6.mp4", "closure.mp4"])
+        self.assertIn("_closure_ch4-5-6.mp4", plan.out.name)
+        normalize.assert_called_once()
+
+
+class Kinds(unittest.TestCase):
+    def test_closure_default_script_parses_and_has_nine_lines(self):
+        self.assertEqual(len(cta.parse_script(cta.DEFAULT_CLOSURE_SCRIPT)), 9)
+
+    def test_kinds_use_their_own_folder_and_file(self):
+        self.assertEqual(cta.KINDS["closure"][:2], ("closure", "closure.mp4"))
+        self.assertEqual(cta.KINDS["cta"][:2], ("cta", "cta.mp4"))
 
 
 if __name__ == "__main__":

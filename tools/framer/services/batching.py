@@ -28,9 +28,9 @@ from services import cards, script_jobs
 from services.chapter_files import downloaded_pdf, stitch_chapter
 from services.common import Refused
 from services.downloads import _download_chapter
-from services.editor_state import resolve_editor_state
+from services.editor_state import _state_from_mapping, resolve_editor_state
 from services.frames import export_chapter
-from services.jobs import JOBS, Job, new_render_job, new_script_job, new_shorts_job, run_now, stop_running
+from services.jobs import JOBS, Job, new_render_job, new_script_job, new_shorts_job, queue_bank_tagging, run_now, stop_running
 
 
 # --------------------------------------------------------------------------- #
@@ -212,10 +212,18 @@ def batch_env(slug: str) -> batch.BatchEnv:
     def download(b: batch.Batch, n: int) -> None:
         _download_chapter(projects.load(slug)["url"], str(n), chapter_id(n), slug, str(n), lambda line: b.log(n, line))
 
+    restitched: set[int] = set()   # chapters whose strip was gone (cleared after a backup) and was rebuilt for a saved script
+
     def stitch(b: batch.Batch, n: int) -> None:
+        strip_was_missing = not (chapter_work_dir(chapter_id(n)) / "pages" / "strip_001.png").is_file()
         stitch_chapter(_chapter_pdf(chapter_id(n)), chapter_id(n))
+        if strip_was_missing and claude_engine.read_narration(chapter_work_dir(chapter_id(n)) / "claude" / "state.json"):
+            restitched.add(n)
 
     def script(b: batch.Batch, n: int) -> None:
+        if n in restitched:   # only the strip was rebuilt: the saved script is still good, don't call Claude again
+            b.log(n, "Saved script kept (the page strip was only rebuilt).")
+            return
         b.gate()
         job = new_script_job(chapter_id(n), slug, str(n))
         job.before_claude_call = b.gate
@@ -223,10 +231,12 @@ def batch_env(slug: str) -> batch.BatchEnv:
         _run_in_batch(b, n, job)
 
     def export(b: batch.Batch, n: int) -> None:
-        state = resolve_editor_state(chapter_id(n))
+        # a rebuilt strip: cut the frames from the exported mapping, exactly as the user left it
+        state = (_state_from_mapping(chapter_id(n)) if n in restitched else None) or resolve_editor_state(chapter_id(n))
         if not state or not state.get("lines"):
             raise Refused("There are no narration lines to export.")
         export_chapter(chapter_id(n), _entries_from_state(state), slug, str(n))
+        queue_bank_tagging(slug, str(n))
 
     def render(what: str) -> Callable[[batch.Batch, int], None]:
         return lambda b, n: _run_in_batch(b, n, new_render_job(chapter_id(n), what, slug, str(n)))

@@ -22,6 +22,7 @@ Not a database - just two guarantees layered on plain files:
 from __future__ import annotations
 
 import json
+import time
 import os
 import shutil
 import threading
@@ -95,14 +96,18 @@ def read_json_with_backup_fallback(path: Path) -> Any:
     for candidate in (path, path.with_name(path.name + ".bak")):
         if not candidate.exists():
             continue
-        try:
-            text = candidate.read_text(encoding="utf-8")
-            if not text.strip():
-                raise ValueError("empty file")
-            return json.loads(text)
-        except (OSError, ValueError) as e:
-            last_err = e
-            continue
+        for attempt in range(4):   # a synced drive (Google Drive) sometimes refuses a read for a moment
+            try:
+                text = candidate.read_text(encoding="utf-8")
+                if not text.strip():
+                    raise ValueError("empty file")
+                return json.loads(text)
+            except OSError as e:
+                last_err = e
+                time.sleep(0.5 * (attempt + 1))
+            except ValueError as e:
+                last_err = e
+                break
     raise FileNotFoundError(f"No readable JSON at {path} or its .bak") from last_err
 
 

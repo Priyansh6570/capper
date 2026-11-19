@@ -11,6 +11,7 @@ import projects
 import shorts
 from services.batching import SHORTS_BATCHES, batch_do, job_summary, start_shorts
 from services.common import Refused
+from services.jobs import _enqueue, new_bank_job
 
 bp = Blueprint("shorts", __name__)
 
@@ -132,3 +133,42 @@ def api_shorts_retry(slug, n):
 def api_shorts_skip(slug, n):
     """Give up on failed chapter n of the Shorts batch."""
     return batch_do(slug, lambda b: b.skip(n), SHORTS_BATCHES)
+
+
+@bp.get("/api/projects/<slug>/shorts_bank")
+def api_shorts_bank(slug):
+    """Per chapter: is its shorts frame bank built, and how many frames did it keep."""
+    if not projects.exists(slug):
+        return jsonify(error=f"No such project: {slug}"), 404
+    from amv import bank
+    return jsonify(chapters=[{"n": ch["n"], "title": ch["title"], **bank.summary(projects.chapter_work_path(slug, ch["n"]))}
+                             for ch in projects.load(slug)["chapters"]])
+
+
+@bp.post("/api/projects/<slug>/shorts_bank")
+def api_shorts_bank_build(slug):
+    """Queue the tagging of chapters' frames. Body {chapters: [n...] (default: every chapter), rebuild: bool}.
+    Chapters that already have a bank are left alone unless `rebuild`; chapters with no script/frames, to restore or
+    cut, are queued anyway and report it when they run."""
+    if not projects.exists(slug):
+        return jsonify(error=f"No such project: {slug}"), 404
+    from amv import bank
+    data = request.get_json(silent=True) or {}
+    rebuild = bool(data.get("rebuild"))
+    wanted = data.get("chapters") or [ch["n"] for ch in projects.load(slug)["chapters"]]
+    queued, skipped = [], []
+    for n in wanted:
+        if not rebuild and bank.exists(projects.chapter_work_path(slug, n)):
+            skipped.append(n)
+            continue
+        try:
+            job = new_bank_job(slug, str(n))
+        except Refused as e:
+            if e.status == 409 and "Claude" in str(e):
+                return jsonify(error=str(e)), 409
+            skipped.append(n)
+            continue
+        job.rebuild = rebuild
+        _enqueue(job)
+        queued.append(n)
+    return jsonify(queued=queued, skipped=skipped)

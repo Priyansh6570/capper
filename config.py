@@ -76,6 +76,9 @@ SHORTS_INDEX = "shorts.json"   # output/<ch>/shorts/: the rendered shorts with t
 CTA_FOLDER = "cta"
 CTA_PLAN = "plan.json"         # work/<ch>/cta/: the lines to say and the text-free frames to show
 CTA_FILE = "cta.mp4"           # output/<ch>/cta/, copied to projects/<slug>/cta/ by the framer
+# The closure video (end-of-series thank-you) is the same add-on under another folder: work/<ch>/closure/, closure.mp4.
+CLOSURE_FOLDER = "closure"
+CLOSURE_FILE = "closure.mp4"
 
 # --------------------------------------------------------------------------- #
 # Chapter-folder redirect for the framer's project system.

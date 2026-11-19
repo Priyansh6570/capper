@@ -45,8 +45,11 @@ class Kind:
 KINDS: dict[str, Kind] = {k.key: k for k in (
     Kind("script", "Script and key mappings", "Narration script, frame boxes and chapter settings. Small.", False,
          ("work/claude", "work/framer/mapping.json", "work/framer/preview.json", "work/manifest.json",
-          "work/manifest.json.bak", "work/media_settings.json", "work/media_settings.json.bak")),
+          "work/manifest.json.bak", "work/media_settings.json", "work/media_settings.json.bak",
+          "work/shorts_bank/bank.json")),
     Kind("frames", "Frames", "The cropped frames shown in the video.", True, ("work/frames",)),
+    Kind("shorts_frames", "Shorts frames", "The best tagged frames kept for shorts (a small selection of the chapter's frames).",
+         True, ("work/shorts_bank/frames",)),
     Kind("audio", "Narration audio", "The voiced lines.", True, ("work/audio",)),
     Kind("pages", "Page images", "The stitched strip, panels and editor tiles. Very large (most of a chapter's size).", True,
          ("work/pages", "work/panels", "work/framer/tiles"), default=False),

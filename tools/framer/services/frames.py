@@ -124,6 +124,8 @@ def export_chapter(chapter_id: str, entries: list[dict], slug: str | None, ch_no
     frames_dir = chapter_work_dir(chapter_id) / "frames"
     clear_directory(frames_dir)
     clear_directory(chapter_work_dir(chapter_id) / "audio")
+    from services.shorts_bank import invalidate     # the shorts frame bank was tagged from the old frames
+    invalidate(chapter_work_dir(chapter_id))
 
     mapping = []
     beats = []

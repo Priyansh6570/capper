@@ -25,7 +25,7 @@ from manifest import Manifest
 from services.chapter_files import _strip_path, downloaded_pdf
 from services.common import Refused, now_iso
 from services.script_jobs import run_script_job
-from services.shorts_jobs import run_shorts_find_job
+from services.shorts_jobs import run_shorts_find_job, run_shorts_tag_job
 
 
 # --------------------------------------------------------------------------- #
@@ -70,7 +70,8 @@ _RENDER_HISTORY_CAP = 20
 
 # Jobs whose length isn't per-beat: a branded join is a copy once the clips are
 # cached; a script is two Claude calls over a whole chapter and a shorts search one text call (rough guesses).
-FIXED_ESTIMATE_S = {"brand": 15.0, "script": 600.0, "shorts_find": 90.0, "shorts_render": 240.0}
+FIXED_ESTIMATE_S = {"brand": 15.0, "script": 600.0, "shorts_find": 90.0, "shorts_render": 240.0,
+                    "shorts_tag": 120.0}
 
 
 class Job:
@@ -258,7 +259,7 @@ _HARDWARE = {name: threading.Lock() for name in ("claude", "audio", "video")}
 
 _HARDWARE_USED = {"script": ("claude",), "voice": ("audio",), "video": ("video",),
                   "both": ("audio", "video"), "brand": ("video",), "shorts_find": ("claude",),
-                  "shorts_render": ("video",)}
+                  "shorts_render": ("video",), "shorts_tag": ("claude",)}
 
 
 def _run_job(job: "Job") -> None:
@@ -269,7 +270,7 @@ def _run_job(job: "Job") -> None:
         job.started_at = now_iso()
         try:
             {"brand": _run_brand_job, "script": run_script_job,
-             "shorts_find": run_shorts_find_job}.get(job.what, _run_pipeline_job)(job)
+             "shorts_find": run_shorts_find_job, "shorts_tag": run_shorts_tag_job}.get(job.what, _run_pipeline_job)(job)
         finally:
             job.finished_at = now_iso()
             job.emit({"type": "end"})
@@ -552,6 +553,31 @@ def new_shorts_job(chapter_id: str, what: str, slug: str, ch_no: str) -> "Job":
     job = Job(chapter_id, what, slug, ch_no, 0)
     job.append_log(f"Queued {what.replace('_', ' ')} for {chapter_id}…")
     return job
+
+
+def new_bank_job(slug: str, ch_no: str) -> "Job":
+    """Tag a chapter's exported frames into the shorts frame bank. Its own key keeps it from blocking the chapter's
+    audio and video jobs (it only reads the frames)."""
+    status = claude_cli.cli_status()
+    if not status["ready"]:
+        raise Refused(status["message"], 409)
+    key = f"{slug}_ch{ch_no}~bank"
+    _refuse_if_busy(key, "Tagging")
+    job = Job(key, "shorts_tag", slug, ch_no, 0)
+    job.append_log(f"Queued shorts frame tagging for chapter {ch_no}…")
+    return job
+
+
+def queue_bank_tagging(slug: str | None, ch_no: str | None) -> bool:
+    """Queue the shorts-bank tagging of a freshly exported chapter. Never fails the caller: Claude not being
+    ready, or a tagging already queued, just means no job."""
+    if not (slug and ch_no):
+        return False
+    try:
+        _enqueue(new_bank_job(slug, str(ch_no)))
+        return True
+    except Refused:
+        return False
 
 
 def stop_running(job: "Job") -> None:

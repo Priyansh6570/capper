@@ -238,7 +238,19 @@ def _track_rule(tracks: list[dict] | None) -> str:
         "the closing the rest of the track. Without a drop, or without a track, use -1.")
 
 
-def _script_prompt(short: dict, scene: list[Panel], after: list[Panel], brief: str, tracks: list[dict] | None = None) -> str:
+def _closing_call_to_action(other_title: str) -> str:
+    """What the teaser tells the viewer to do. A series with an `other_title` has no playlist yet: the full
+    recap is announced as coming soon instead of pointing at a playlist link."""
+    if other_title:
+        return (f"tell the viewer that a full recap of {other_title} (the same story) is coming soon to our channel "
+                "and they should subscribe so they do not miss it; do NOT mention a playlist, a link, the "
+                "description or a pinned comment")
+    return ("tell the viewer that to find out what happens next they should watch this manhwa on our channel or "
+            "subscribe, and that the playlist link is in the description and the pinned comment")
+
+
+def _script_prompt(short: dict, scene: list[Panel], after: list[Panel], brief: str, tracks: list[dict] | None = None,
+                   other_title: str = "") -> str:
     return (
         "You are writing the narration of a YouTube Short / TikTok that retells ONE scene of a manhwa, from the "
         "narration of a longer recap video. The short is voiced and shown over the scene's panels.\n\n"
@@ -257,9 +269,8 @@ def _script_prompt(short: dict, scene: list[Panel], after: list[Panel], brief: s
         "line says best (a striking action pose, a face, a reveal). Pick the best-looking panels, in story order; "
         "do not repeat the same line number across lines unless nothing else fits.\n"
         f"- `closing`: about {CLOSING_WORDS} words that end the short on a mysterious teaser made for THIS scene "
-        "alone: stop on the question it leaves open (never answer it), and tell the viewer that to find out what "
-        "happens next they should watch this manhwa on our channel or subscribe, and that the playlist link is in "
-        "the description and the pinned comment. Word it freshly for this scene, in the narrator's voice; it "
+        "alone: stop on the question it leaves open (never answer it), and "
+        f"{_closing_call_to_action(other_title)}. Word it freshly for this scene, in the narrator's voice; it "
         "must not read like a generic ad. Its `source_lines` are the scene's most intriguing panels."
         f"{_track_rule(tracks)}")
 
@@ -280,13 +291,13 @@ def _script_entries(items: list[dict], orders: list[int], closing: bool = False)
 
 
 def write_script(short: dict, scene: list[Panel], after: list[Panel], *, brief: str, model: str, work: Path,
-                 usage: dict, tracks: list[dict] | None = None, **callbacks) -> list[dict]:
+                 usage: dict, tracks: list[dict] | None = None, other_title: str = "", **callbacks) -> list[dict]:
     """The recap narration for one picked moment: lines, then the closing teaser (flagged `closing`), each with
     the scene's line numbers whose panels to show. Raises ValueError when the answer has no usable script.
     With `tracks` (the project's music library) the model also picks the track to play, written to fit its length
     and its drop: stored as `short["track"]` (its id), `short["theme"]` and, for a track with a drop, `short["peak"]`
     (the 0-based index of the script line that starts at the drop)."""
-    answer = claude_cli.call([{"type": "text", "text": _script_prompt(short, scene, after, brief, tracks)}], SCRIPT_SCHEMA,
+    answer = claude_cli.call([{"type": "text", "text": _script_prompt(short, scene, after, brief, tracks, other_title)}], SCRIPT_SCHEMA,
                              model, work, usage=usage, mention_event="read", panel_ids=set(), **callbacks)
     orders = [b.order for b in scene]
     body = _script_entries(answer.get("lines") or [], orders)

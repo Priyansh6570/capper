@@ -254,7 +254,15 @@ class Batch:
                     self.env.runners[stage](self, n)
             except Exception as e:  # noqa: BLE001 - a stage failure belongs to its chapter, not the lane
                 error = f"{type(e).__name__}: {e}"
-            self._leave(n, stage, error, time.monotonic() - started, generation)
+            try:
+                self._leave(n, stage, error, time.monotonic() - started, generation)
+            except Exception as e:  # noqa: BLE001 - bookkeeping failed (e.g. a drive read); the lane must keep going
+                with self._cond:
+                    self._busy.discard(n)
+                    ch = self._chapter(n)
+                    ch.update(state="failed", error=f"{stage}: {type(e).__name__}: {e}", finished_at=_now())
+                    self._save()
+                    self._cond.notify_all()
 
     def _leave(self, n: int, stage: str, error: str | None, seconds: float, generation: int) -> None:
         with self._cond:

@@ -69,7 +69,8 @@ def run_shorts_find_job(job: "Job") -> None:
                         short, scene, after, brief=settings["series_brief"], model=settings["comprehension_model"],
                         work=projects.local_dir(slug) / "shorts_find", usage=found["usage"], on_event=on_event,
                         on_limit=lambda at: wait_out_usage_limit(job, at), on_proc=attach_proc(job),
-                        before_call=job.before_claude_call, tracks=music_tracks or None)
+                        before_call=job.before_claude_call, tracks=music_tracks or None,
+                        other_title=projects.load(slug).get("other_title") or "")
                     track = next((t for t in music_tracks if t["id"] == short.get("track")), None)
                     short["duration_s"] = track["duration_s"] if track else shorts.script_seconds(short["script"])
                 except ValueError as e:
@@ -103,3 +104,19 @@ def run_shorts_find_job(job: "Job") -> None:
             job.note(f"ERROR: {job.message}")
     finally:
         job.resume_at = None
+
+
+def run_shorts_tag_job(job: "Job") -> None:
+    """Tags one chapter's exported frames into its shorts frame bank (amv/bank.py, services/shorts_bank.py)."""
+    from services import shorts_bank
+    try:
+        job.message = f"Tagging chapter {job.ch_no}'s frames for shorts"
+        job.note(job.message)
+        summary = shorts_bank.build_chapter(job.slug, int(job.ch_no), rebuild=getattr(job, "rebuild", False), log=job.note)
+        job.message = f"Shorts bank: {summary['kept']} of {summary['frames']} frames kept"
+        job.note(job.message)
+        job.fraction, job.status, job.ok = 1.0, "done", True
+    except Exception as e:      # noqa: BLE001 - the job reports it; a chapter with no frames is an ordinary outcome
+        job.message = f"Shorts tagging failed: {e}"
+        job.note(job.message)
+        job.status, job.ok = "failed", False

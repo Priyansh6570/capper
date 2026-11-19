@@ -57,8 +57,10 @@ def full_hd(settings: dict) -> dict:
     return settings if preset["height"] >= MIN_HEIGHT else {**settings, "quality": "standard"}
 
 
-def run(m: Manifest) -> Manifest:
-    work = chapter_work_dir(m.chapter_id) / CTA_FOLDER
+def run(m: Manifest, folder: str = CTA_FOLDER, filename: str = CTA_FILE) -> Manifest:
+    """Render work/<ch>/<folder>/plan.json to output/<ch>/<folder>/<filename>. The closure video (cta.py,
+    kind "closure") is the same render under its own folder and file name."""
+    work = chapter_work_dir(m.chapter_id) / folder
     plan = json.loads((work / CTA_PLAN).read_text(encoding="utf-8"))
     panels, mapping = beats_of(plan)
     if not panels:
@@ -70,11 +72,11 @@ def run(m: Manifest) -> Manifest:
 
     settings = full_hd(s7.load_media_settings(m.chapter_id))
     render = s7.prepare_render(panels, mapping, settings, s7.LANDSCAPE)
-    out_dir = chapter_output_dir(m.chapter_id) / CTA_FOLDER
+    out_dir = chapter_output_dir(m.chapter_id) / folder
     shutil.rmtree(out_dir, ignore_errors=True)
     out_dir.mkdir(parents=True)
-    s7.execute_render(render, out_dir / CTA_FILE)
-    (out_dir / "cta.json").write_text(json.dumps({"duration_s": round(render.total, 1), "size": list(render.out_size)}),
+    s7.execute_render(render, out_dir / filename)
+    (out_dir / Path(filename).with_suffix(".json").name).write_text(json.dumps({"duration_s": round(render.total, 1), "size": list(render.out_size)}),
                                       encoding="utf-8")
     return m
 
@@ -82,7 +84,10 @@ def run(m: Manifest) -> Manifest:
 def main() -> None:
     ap = argparse.ArgumentParser(description="Render the call-to-action clip of a project from a chapter's cta plan")
     ap.add_argument("--chapter", required=True)
-    run(Manifest.load(chapter_work_dir(ap.parse_args().chapter)))
+    ap.add_argument("--folder", default=CTA_FOLDER, help="work/<ch>/ folder holding plan.json (cta or closure)")
+    ap.add_argument("--file", default=CTA_FILE, help="name of the video written to output/<ch>/<folder>/")
+    args = ap.parse_args()
+    run(Manifest.load(chapter_work_dir(args.chapter)), args.folder, args.file)
 
 
 if __name__ == "__main__":

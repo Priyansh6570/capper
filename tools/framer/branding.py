@@ -30,7 +30,7 @@ FADE_START_VOLUME = 0.15   # ...starting from this fraction of full volume
 CLIP_KINDS = ("intro", "outro")
 DEFAULT_CLIPS = {"intro": ROOT / "recapper_intro.mp4", "outro": ROOT / "recapper_outro.mp4"}
 
-_CHAPTERS_IN_NAME = re.compile(r"_ch(\d+(?:-\d+)*)\.mp4$")
+_CHAPTERS_IN_NAME = re.compile(r"_ch(\d+(?:to\d+)?(?:[-+]\d+(?:to\d+)?)*)\.mp4$")
 _X264_PROFILES = {"baseline": "baseline", "constrained baseline": "baseline",
                   "main": "main", "high": "high"}
 _DURATIONS: dict[tuple, float] = {}
@@ -45,7 +45,7 @@ def ffprobe_path() -> str:
     return str(sibling) if sibling.is_file() else (shutil.which("ffprobe") or "ffprobe")
 
 
-def probe(path: Path) -> Optional[dict]:
+def probe(path: Path, timeout: float = 30) -> Optional[dict]:
     """{"video": stream, "audio": stream or {}, "duration": seconds (whole file),
     "video_duration": seconds (picture only)} for `path`, or None when it can't be
     read or has no video stream."""
@@ -54,7 +54,7 @@ def probe(path: Path) -> Optional[dict]:
             [ffprobe_path(), "-v", "error", "-show_entries",
              "stream=codec_type,codec_name,profile,width,height,r_frame_rate,pix_fmt,"
              "sample_rate,channels,duration:format=duration", "-of", "json", str(path)],
-            capture_output=True, text=True, timeout=30, **NO_CONSOLE)
+            capture_output=True, text=True, timeout=timeout, **NO_CONSOLE)
         data = json.loads(out.stdout or "{}")
     except Exception:  # noqa: BLE001 - an unreadable file is reported as None
         return None
@@ -220,7 +220,9 @@ def render_final(slug: str, name: str, run: Runner, on_fraction: Callable[[float
     raw = merge_path(slug, name)
     if not raw.is_file():
         raise FileNotFoundError(f"{name} no longer exists.")
-    info = probe(raw)
+    # a huge merge on a cloud drive (Google Drive streaming) can take minutes to
+    # open the first time, so give ffprobe far longer than for a local clip
+    info = probe(raw, timeout=600)
     if info is None:
         raise ValueError(f"{name} is not a readable video file.")
     if not info["audio"]:
@@ -279,7 +281,19 @@ def final_path(raw: Path) -> Path:
 def chapters_of(name: str) -> list[int]:
     """The chapter numbers a merged video's file name says it was made from."""
     found = _CHAPTERS_IN_NAME.search(name)
-    return [int(n) for n in found.group(1).split("-")] if found else []
+    if not found:
+        return []
+    numbers: list[int] = []
+    for part in re.split(r"[-+]", found.group(1)):
+        first, _, last = part.partition("to")
+        numbers += range(int(first), int(last or first) + 1)
+    return numbers
+
+
+def chapters_label(chapters: list[int]) -> str:
+    """The chapter part of a merged file's name: `<lowest>to<highest>`, e.g. 1to577. `chapters_of` also
+    reads the older names that listed every chapter."""
+    return f"{min(chapters)}to{max(chapters)}"
 
 
 def _describe(slug: str, path: Path) -> dict:
