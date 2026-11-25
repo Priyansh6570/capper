@@ -15,6 +15,7 @@ import json
 import re
 import shutil
 import subprocess
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Optional
@@ -213,6 +214,41 @@ def _fade_in_cmd(ffmpeg: str, raw: Path, out: Path, target: dict) -> list:
             "-ac", str(target["channels"]), "-f", "mp4", str(out)]
 
 
+def first_keyframe_after(raw: Path, seconds: float, window: float = 60.0) -> Optional[float]:
+    """Time of the first video keyframe at or after `seconds` (looked for in the first `window` seconds), or None."""
+    try:
+        out = subprocess.run(
+            [ffprobe_path(), "-v", "error", "-select_streams", "v:0", "-skip_frame", "nokey",
+             "-show_entries", "frame=pts_time", "-read_intervals", f"%+{window}", "-of", "csv=p=0", str(raw)],
+            capture_output=True, text=True, timeout=600, **NO_CONSOLE).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    for row in out.splitlines():
+        try:
+            t = float(row.strip().rstrip(","))
+        except ValueError:
+            continue
+        if t >= seconds - 1e-6:
+            return t
+    return None
+
+
+def _head_cmd(ffmpeg: str, raw: Path, out: Path, target: dict, until: float) -> list:
+    """The first `until` seconds of the merge (picture copied) with the audio rising from FADE_START_VOLUME to full.
+    `until` is a keyframe, so the rest of the merge can be joined on without re-encoding anything."""
+    ramp = f"min(1,{FADE_START_VOLUME}+{1 - FADE_START_VOLUME}*t/{FADE_SECONDS})"
+    layout = "stereo" if target["channels"] == 2 else "mono"
+    num, _, den = str(target["fps"]).partition("/")
+    # exactly the frames shown before the keyframe: a plain -t would also take the keyframe itself (its
+    # decode time is earlier than its show time), and the join would then repeat it
+    frames = round(until * float(num) / float(den or 1))
+    return [ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-nostats", "-progress", "pipe:1",
+            "-i", str(raw), "-t", f"{until:.6f}", "-frames:v", str(frames), "-map", "0:v:0", "-map", "0:a:0", "-c:v", "copy",
+            "-af", f"volume='{ramp}':eval=frame,aformat=channel_layouts={layout}",
+            "-c:a", "aac", "-b:a", AUDIO_BITRATE, "-ar", str(target["sample_rate"]),
+            "-ac", str(target["channels"]), "-f", "mp4", str(out)]
+
+
 def render_final(slug: str, name: str, run: Runner, on_fraction: Callable[[float], None]) -> Path:
     """Write `<merge>_branded.mp4` next to the raw merge `name`: enabled intro,
     a silent gap, the merge (picture copied as-is, audio fading in), a gap, and
@@ -234,6 +270,7 @@ def render_final(slug: str, name: str, run: Runner, on_fraction: Callable[[float
 
     target = target_format(info)
     steps = len(kinds) + 3          # clips, gap, fade-in, join
+    split = first_keyframe_after(raw, FADE_SECONDS)   # None: the whole merge is faded, the slow way
     step = 0
 
     def stage() -> Callable[[float], None]:
@@ -249,20 +286,39 @@ def render_final(slug: str, name: str, run: Runner, on_fraction: Callable[[float
     part = final.with_name(final.name + ".part")
     faded = final.with_name(final.name + ".faded")
     concat_list = final.with_name(final.name + ".txt")
+    # The fast way: only the first seconds (up to a keyframe) are re-encoded, in a small file on the local disk;
+    # the join then reads the merge once and writes the final once. The old way wrote a whole faded copy of the
+    # merge first and read it back - twice the traffic on a cloud drive, and the whole audio track re-encoded.
+    local = Path(tempfile.mkdtemp(prefix="brand_")) if split else None
     try:
-        run(_fade_in_cmd(gpu.ffmpeg_path(), raw, faded, target), info["duration"], stage())
-        parts = ([clips["intro"], gap] if "intro" in clips else []) + [faded] + \
-                ([gap, clips["outro"]] if "outro" in clips else [])
-        concat_list.write_text("\n".join(f"file '{str(p).replace(chr(92), '/')}'" for p in parts),
-                               encoding="utf-8")
+        if split:
+            head = local / "head.mp4"
+            run(_head_cmd(gpu.ffmpeg_path(), raw, head, target, split), split, stage())
+            entries = [(head, None), (raw, split)]
+            main_len = probe(head)["duration"] + max(0.0, info["duration"] - split)
+            concat_list = local / "join.txt"
+        else:
+            run(_fade_in_cmd(gpu.ffmpeg_path(), raw, faded, target), info["duration"], stage())
+            entries = [(faded, None)]
+            main_len = probe(faded)["duration"]
+        before = [(clips["intro"], None), (gap, None)] if "intro" in clips else []
+        after = [(gap, None), (clips["outro"], None)] if "outro" in clips else []
+        lines = []
+        for path, inpoint in before + entries + after:
+            lines.append(f"file '{str(path).replace(chr(92), '/')}'")
+            if inpoint is not None:
+                lines.append(f"inpoint {inpoint:.6f}")
+        concat_list.write_text("\n".join(lines), encoding="utf-8")
+        total = main_len + sum(probe(p)["duration"] for p, _ in before + after)
         run([gpu.ffmpeg_path(), "-y", "-hide_banner", "-loglevel", "error", "-nostats",
              "-progress", "pipe:1", "-f", "concat", "-safe", "0", "-i", str(concat_list),
-             "-c", "copy", "-f", "mp4", str(part)],
-            sum(probe(p)["duration"] for p in parts), stage())
+             "-c", "copy", "-f", "mp4", str(part)], total, stage())
         part.replace(final)
     finally:
         for leftover in (part, faded, concat_list):
             leftover.unlink(missing_ok=True)
+        if local is not None:
+            shutil.rmtree(local, ignore_errors=True)
     return final
 
 

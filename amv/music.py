@@ -172,21 +172,34 @@ def hit_near(a: dict, t: float, reach: float = 0.2, floor: float = 0.6) -> float
 
 
 def pick_window(a: dict, length: float | None, drop: float | None = None, lead: float | None = None,
-                min_len: float = 15.0, max_len: float = 58.0) -> tuple[float, float, float]:
+                min_len: float = 15.0, max_len: float = 58.0,
+                fixed_start: float | None = None) -> tuple[float, float, float]:
     """Choose (start, end, drop_in_window). The window starts on a downbeat and puts the drop
     at about `lead` seconds in. With `length=None` it ends where the music's own section ends:
     at the first break (the dip after the drop section), plus a short tail, so the track is never
     cut in the middle of a phrase."""
     drops = a["drops"]
     want = length or 30.0
+    # a drop this close to the track's start: play the track from its beginning (for a fixed length the drop
+    # must still land well inside the clip)
+    from_start = 35.0 if length is None else want * 0.7
     if drop is None:
-        need = max(4.0, want * 0.35)
+        need = 6.0                              # a "drop" in the first seconds is an intro hit, not the main drop
         usable = [d for d in drops if d + want * 0.6 <= a["duration"] and d >= need] or drops or [a["duration"] * 0.4]
         drop = usable[0]
     drop = snap(drop, a["beats"])
-    lead = want * 0.35 if lead is None else lead
     grid = a["downbeats"] or a["beats"]
-    start = hit_near(a, snap(max(0.0, drop - lead), grid))
+    if fixed_start is not None:
+        start = fixed_start
+    elif lead is None and drop <= from_start:
+        start = 0.0                             # the intro of the track, as the artist made it
+    else:
+        # a later drop: start on a phrase boundary (8 bars) before it, never in the middle of a phrase
+        lead = want * 0.35 if lead is None else lead
+        bar = 60.0 / max(a["bpm"], 1.0) * 4
+        origin = grid[0] if grid else 0.0
+        k = max(0, int((drop - lead - origin) // (bar * 8)))
+        start = hit_near(a, snap(origin + k * bar * 8, grid))
     if start > drop - 2.0:                      # never start at/after the drop
         earlier = [g for g in grid if g <= drop - 2.0]
         start = earlier[-1] if earlier else 0.0

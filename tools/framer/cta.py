@@ -76,9 +76,16 @@ def cta_dir(slug: str, kind: str = "cta") -> Path:
     return d
 
 
+SHARED_CTA = ROOT / "assets" / "cta" / CTA_FILE   # the one clip every project can use (tools/common_cta.py)
+
+
 def clip_path(slug: str, kind: str = "cta") -> Path:
+    """The project's own clip; for the call-to-action, the shared clip when the project has none."""
     folder, name, _ = KINDS[kind]
-    return projects.project_dir(slug) / folder / name
+    own = projects.project_dir(slug) / folder / name
+    if kind == "cta" and not own.is_file() and SHARED_CTA.is_file():
+        return SHARED_CTA
+    return own
 
 
 def info(slug: str, kind: str = "cta") -> dict:

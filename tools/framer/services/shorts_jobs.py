@@ -106,6 +106,65 @@ def run_shorts_find_job(job: "Job") -> None:
         job.resume_at = None
 
 
+DEFAULT_SHORTS = 10      # a run without a number makes this many shorts, one per chapter, from the first chapters of the range
+
+
+def spread(chapters: list[int], total: int | None) -> dict[int, int]:
+    """How many AMV shorts each chapter gets: one each, or `total` shorts dealt round-robin over the chapters."""
+    if not total:
+        return {n: 1 for n in chapters}
+    counts = {n: 0 for n in chapters}
+    for i in range(total):
+        counts[chapters[i % len(chapters)]] += 1
+    return {n: c for n, c in counts.items() if c}
+
+
+def run_amv_find_job(job: "Job") -> None:
+    """The find step of the AMV shorts: no Claude search, just make sure every chapter in `job.chapters` has its
+    shorts frame bank (tagged frames; cut again from the chapter's saved mapping + PDF when the frames are gone) and
+    decide how many shorts each gets. `job.picked` ends up as {chapter: number of shorts to render}."""
+    from amv import bank
+    from services import shorts_bank
+    slug = job.slug
+    try:
+        ready = []
+        total = job.max_shorts or DEFAULT_SHORTS          # prepare only as many chapters as shorts are wanted
+        for i, n in enumerate(job.chapters):
+            if len(ready) >= min(total, len(job.chapters)):
+                break
+            job.message = f"Preparing the frames of chapter {n} ({i + 1}/{len(job.chapters)})"
+            job.fraction = i / max(1, len(job.chapters))
+            work = projects.chapter_work_path(slug, n)
+            try:
+                shorts_bank.build_chapter(slug, n, log=job.note)
+                if not bank.load(work) and chapter_backup.cleared_kinds(slug, n):
+                    job.note(f"Chapter {n}: restoring its shorts frames from the Drive backup")
+                    chapter_backup.restore(slug, n, ["shorts_frames"])
+                if not bank.load(work):
+                    job.note(f"Chapter {n}: the bank's frames are gone, cutting them again")
+                    shorts_bank.build_chapter(slug, n, rebuild=True, log=job.note)
+                if bank.load(work):
+                    ready.append(n)
+                else:
+                    job.note(f"Chapter {n} left out: no usable frames.")
+            except Exception as e:  # noqa: BLE001 - one bad chapter must not stop the rest
+                job.note(f"Chapter {n} left out: {e}")
+        if not ready:
+            raise ValueError("None of the chapters has frames to make shorts from.")
+        job.picked = spread(ready, min(job.max_shorts or DEFAULT_SHORTS, max(job.max_shorts or 0, len(ready))))
+        job.analyzed = ready
+        job.status, job.ok, job.fraction = "done", True, 1.0
+        job.message = f"{sum(job.picked.values())} short(s) to make from {len(job.picked)} chapter(s)."
+    except Exception as e:  # noqa: BLE001
+        if job.cancel_requested:
+            job.status, job.ok, job.message = "cancelled", False, "Stopped by user."
+        else:
+            job.status, job.ok, job.message = "failed", False, f"{type(e).__name__}: {e}"
+            job.note(f"ERROR: {job.message}")
+    finally:
+        job.resume_at = None
+
+
 def run_shorts_tag_job(job: "Job") -> None:
     """Tags one chapter's exported frames into its shorts frame bank (amv/bank.py, services/shorts_bank.py)."""
     from services import shorts_bank

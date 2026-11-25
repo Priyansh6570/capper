@@ -29,12 +29,26 @@ def _channel_views() -> list[dict]:
     return [{**channels.public(c), "quota": quota.snapshot(c["client"]["id"])} for c in channels.all_channels()]
 
 
+_NAMES: dict[str, str] = {}
+
+
+def _project_name(slug) -> str:
+    if not slug:
+        return ""
+    if slug not in _NAMES:
+        try:
+            _NAMES[slug] = projects.load(slug).get("name") or slug
+        except Exception:  # noqa: BLE001 - a deleted project still shows its slug
+            return slug
+    return _NAMES[slug]
+
+
 @bp.get("/api/publishing")
 def api_state():
     sign_in = oauth.current()
     return jsonify(channels=_channel_views(), telegram=telegram.state(), quota_limit=quota.limit(),
                    sign_in=sign_in.view() if sign_in else None,
-                   items=[uploads.public(i) for i in uploads.all_items()])
+                   items=[{**uploads.public(i), "project_name": _project_name(i.get("project"))} for i in uploads.all_items()])
 
 
 @bp.post("/api/publishing/channels/connect")
@@ -176,6 +190,16 @@ def api_item_thumbnail(item_id):
         return send_file(io.BytesIO(thumbnails.jpeg_for_youtube(item["thumbnail"])), mimetype="image/jpeg")
     except OSError:
         return jsonify(error="The thumbnail file is missing."), 404
+
+
+@bp.post("/api/publishing/queue/order")
+def api_queue_order():
+    """Body: {ids}: the waiting items, first to upload first."""
+    ids = (request.get_json(silent=True) or {}).get("ids")
+    if not isinstance(ids, list):
+        return jsonify(error="Send the item ids in order."), 400
+    uploads.reorder([str(i) for i in ids])
+    return jsonify(ok=True)
 
 
 @bp.post("/api/publishing/items/<item_id>/<action>")

@@ -15,7 +15,7 @@ QUALITIES = (92, 85, 75, 60, 40)
 def jpeg_for_youtube(source: str | Path | BinaryIO) -> bytes:
     with Image.open(source) as opened:
         image = opened.convert("RGB")
-    image.thumbnail(MAX_SIZE)
+    image.thumbnail(MAX_SIZE[::-1] if image.height > image.width else MAX_SIZE)   # a Short's cover is vertical
     for quality in QUALITIES:
         buffer = io.BytesIO()
         image.save(buffer, "JPEG", quality=quality)

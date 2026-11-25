@@ -2830,14 +2830,141 @@ async function startShorts(body, chapters) {
 function makeShorts() {
   const chapters = [...SELECTION].sort((a, b) => a - b);
   navTo({ project: CURRENT_PROJECT.slug, view: 'shorts' });
-  return startShorts({ chapters }, chapters);
+  return startShorts({ chapters, ...shortsChoices() }, chapters);
+}
+
+// What the Shorts page asks for besides the range: a style (only the quote style is offered) and music
+// ("" = the project's own tracks if it has any, "shared", or one track's id).
+const SHORT_STYLES = [
+  ['', 'Quote (style 6)', "Every short is a quote short: a line of the hero spoken over a held full-screen frame, with the words in the picture, then the edit. Lines come from the project's quotes (made for you when there are none)."]];
+function shortsChoices() {
+  const style = $('shortsStyle').value;
+  return { styles: style ? [style] : [], music: [...SHORT_MUSIC_PICK] };
+}
+
+// Every track the shorts can use: this project's own ("p:<id>") and the shared folder's ("s:<file>"). The ticked ones
+// are the only ones this run uses; none ticked = the default (the project's own music if it has any, else the shared folder).
+let SHORT_MUSIC = [], SHORT_MUSIC_FOR = null;
+const SHORT_MUSIC_PICK = new Set();
+async function loadShortsMusic(force) {
+  if (!force && SHORT_MUSIC_FOR === CURRENT_PROJECT.slug) return;
+  const res = await fetch(projectApi('/shorts/music'), { cache: 'no-store' });
+  const d = await res.json().catch(() => ({}));
+  if (!res.ok) return;
+  if (SHORT_MUSIC_FOR !== CURRENT_PROJECT.slug) SHORT_MUSIC_PICK.clear();
+  SHORT_MUSIC = d.tracks; SHORT_MUSIC_FOR = CURRENT_PROJECT.slug;
+  renderShortsOptions();
+}
+
+function renderShortsOptions() {
+  const style = $('shortsStyle');
+  const keepStyle = style.value;
+  style.innerHTML = SHORT_STYLES.map(([v, label]) => `<option value="${v}">${escHtml(label)}</option>`).join('');
+  style.value = keepStyle;
+  $('shortsStyleHint').textContent = (SHORT_STYLES.find(s => s[0] === style.value) || SHORT_STYLES[0])[2];
+  const fb = SHORTS && SHORTS.feedback;
+  const left = fb ? [...fb.avoid.styles.map(s => `style ${s}`), ...fb.avoid.tracks.map(t => `track ${t}`)] : [];
+  $('shortsFeedbackNote').textContent = left.length
+    ? `Auto mix is leaving out what you rated badly: ${left.join(', ')}. Picking a style or music yourself overrides this.` : '';
+  const own = SHORT_MUSIC.filter(t => t.own).length;
+  $('shortsMusicHint').textContent = SHORT_MUSIC_PICK.size
+    ? `${SHORT_MUSIC_PICK.size} track(s) ticked: only these are used, in turn.`
+    : own ? `Nothing ticked: this project's ${own} own track(s) are used. Tick tracks to choose.`
+      : 'Nothing ticked: all the shared tracks are used. Tick tracks to choose.';
+  $('shortsMusicList').innerHTML = SHORT_MUSIC.length ? SHORT_MUSIC.map(t => `<div class="mtrack${t.own ? ' own' : ''}" data-id="${escAttr(t.id)}">
+      <label><input type="checkbox" class="mpick"${SHORT_MUSIC_PICK.has(t.id) ? ' checked' : ''} /><span class="mname" title="${escAttr(t.name)}">${escHtml(t.name)}</span></label>
+      <span class="hint">${(t.duration_s || 0).toFixed(0)}s${t.bpm ? ` \u00b7 ${t.bpm} BPM` : ''}${t.drop_s ? ` \u00b7 drop at ${t.drop_s}s` : ''}${t.rating ? ` \u00b7 rated ${t.rating.avg}\u2605 (${t.rating.count})` : ''}</span>
+      ${t.own && !t.drop_s ? '<span class="warn" title="AMV shorts are built around a drop">no drop found</span>' : ''}
+      <audio controls preload="none" src="${t.own ? libUrl(t.id.slice(2), 'audio') : '/api/shorts/shared_music/' + encodeURIComponent(t.id.slice(2))}"></audio>
+      ${t.own ? '<button type="button" class="small ghost libdel">Delete</button>' : ''}</div>`).join('')
+    : '<span class="hint">No music found. Add a track, or put .mp3 files in <code>shorts/bg music</code>.</span>';
+}
+
+$('shortsStyle').onchange = renderShortsOptions;
+// one preview at a time
+$('shortsMusicList').addEventListener('play', e => { document.querySelectorAll('#shortsMusicList audio').forEach(a => { if (a !== e.target) a.pause(); }); }, true);
+$('shortsMusicAdd').onclick = () => $('shortsMusicFile').click();
+$('shortsMusicAll').onclick = () => { SHORT_MUSIC.forEach(t => SHORT_MUSIC_PICK.add(t.id)); renderShortsOptions(); };
+$('shortsMusicNone').onclick = () => { SHORT_MUSIC_PICK.clear(); renderShortsOptions(); };
+$('shortsMusicFile').onchange = async e => {
+  const files = [...e.target.files]; e.target.value = '';
+  $('shortsMusicAdd').disabled = true;
+  showToast(`Studying ${files.length} track(s)\u2026`, null, null, 'info');
+  for (const file of files) {
+    const fd = new FormData(); fd.append('file', file); fd.append('theme', 'phonk');
+    const res = await fetch(libUrl(), { method: 'POST', body: fd });
+    const d = await res.json().catch(() => ({}));
+    if (!res.ok) { showToast(d.error || 'Upload failed', null, null, 'err'); continue; }
+    CURRENT_PROJECT.settings.shorts.library.push(d.track);
+    if (d.track.warning) showToast(`${d.track.name}: ${d.track.warning}`, null, null, 'warn');
+    SHORT_MUSIC_PICK.add('p:' + d.track.id);
+    renderShortsLibrary();
+  }
+  $('shortsMusicAdd').disabled = false;
+  await loadShortsMusic(true);
+};
+$('shortsMusicList').onchange = e => {
+  if (!e.target.classList.contains('mpick')) return;
+  const id = e.target.closest('.mtrack').dataset.id;
+  e.target.checked ? SHORT_MUSIC_PICK.add(id) : SHORT_MUSIC_PICK.delete(id);
+  renderShortsOptions();
+};
+$('shortsMusicList').onclick = async e => {
+  if (!e.target.classList.contains('libdel')) return;
+  const id = e.target.closest('.mtrack').dataset.id;
+  const { ok } = await apiJson(libUrl(id.slice(2)), 'DELETE');
+  if (ok) {
+    CURRENT_PROJECT.settings.shorts.library = CURRENT_PROJECT.settings.shorts.library.filter(t => 'p:' + t.id !== id);
+    SHORT_MUSIC_PICK.delete(id);
+    renderShortsLibrary();
+    await loadShortsMusic(true);
+  }
+};
+
+// Rating a built short: stars at once; for 3 stars or fewer a form asks what is wrong (tags + a note). The ratings steer
+// the Auto mix away from styles and music that keep scoring badly, and the notes are kept for the next changes.
+function shortRatingEl(n, short) {
+  const fb = short.feedback || {};
+  const box = document.createElement('div');
+  box.className = 'shrate';
+  const tags = new Set(fb.tags || []);
+  const paint = () => {
+    const stars = [1, 2, 3, 4, 5].map(i => `<button type="button" data-r="${i}" class="${i <= (fb.rating || 0) ? 'on' : ''}" title="${i} star${i > 1 ? 's' : ''}">\u2605</button>`).join('');
+    box.innerHTML = `<div class="shstars">${stars}<span class="hint">${fb.rating ? 'Rated' : 'Rate this short'}${short.style ? ` \u00b7 ${escHtml(short.style)}` : ''}${short.track ? ` \u00b7 ${escHtml(short.track.replace(/\.\w+$/, ''))}` : ''}</span></div>
+      <div class="shrateform"><div class="shchips">${(SHORTS.tags || []).map(t => `<button type="button" data-tag="${escAttr(t)}" class="${tags.has(t) ? 'on' : ''}">${escHtml(t)}</button>`).join('')}</div>
+        <textarea placeholder="What don't you like? It is kept for the next shorts.">${escHtml(fb.note || '')}</textarea>
+        <div><button type="button" class="small ghost shratesave">Save feedback</button></div></div>`;
+  };
+  const save = async () => {
+    const note = box.querySelector('textarea') ? box.querySelector('textarea').value : fb.note;
+    const { ok, data } = await apiJson(projectApi(`/shorts/${n}/${short.id}/rating`), 'POST', { rating: fb.rating, tags: [...tags], note });
+    if (!ok) { showToast(data.error || 'Not saved', null, null, 'err'); return; }
+    Object.assign(fb, data.feedback); short.feedback = fb;
+    if (SHORTS.feedback) SHORTS.feedback = data.summary;
+    showToast('Feedback saved.', null, null, 'info');
+    renderShortsOptions();
+  };
+  box.onclick = async e => {
+    const star = e.target.closest('[data-r]'), chip = e.target.closest('[data-tag]');
+    if (star) {
+      fb.rating = +star.dataset.r;
+      await save(); paint();
+      box.classList.toggle('open', fb.rating <= 3);
+    } else if (chip) {
+      tags.has(chip.dataset.tag) ? tags.delete(chip.dataset.tag) : tags.add(chip.dataset.tag);
+      chip.classList.toggle('on');
+    } else if (e.target.closest('.shratesave')) { await save(); box.classList.remove('open'); }
+  };
+  paint();
+  box.classList.toggle('open', !!fb.rating && fb.rating <= 3 && !fb.note && !(fb.tags || []).length);
+  return box;
 }
 
 function findShorts() {
   const first = +$('shortsFrom').value, last = +$('shortsTo').value;
   if (first > last) { showToast('Choose a first chapter that comes before the last one.', null, null, 'err'); return; }
   const max = $('shortsMax').value.trim();
-  return startShorts({ first, last, max_shorts: max ? +max : null },
+  return startShorts({ first, last, max_shorts: max ? +max : null, ...shortsChoices() },
     CURRENT_PROJECT.chapters.map(c => c.n).filter(n => n >= first && n <= last));
 }
 
@@ -2880,6 +3007,8 @@ async function loadShorts() {
   SHORTS = await res.json();
   if (!res.ok) throw new Error(SHORTS.error || 'shorts unavailable');
   fillShortsRange();
+  loadShortsMusic(false);
+  renderShortsOptions();
   renderShorts();
   if (shortsActive()) shortsTimer = setTimeout(() => {
     if (SCREEN === 'hub' && HUB_VIEW === 'shorts') loadShorts().catch(() => {});
@@ -3075,14 +3204,15 @@ function shortCardEl(n, short, number) {
   card.innerHTML = `<button class="shthumb" title="Play"><video muted preload="metadata" src="${url}#t=0.5"></video>
       <span class="shplay">${ic('play', 14)}</span><span class="shdur">${fmtShortTime(short.duration_s)}</span><span class="shnum">#${number}</span></button>
     <div class="shinfo"><span class="shname" title="${escAttr(short.title)}">${escHtml(short.title)}</span>
-      <span class="shmeta">lines ${short.first_line}–${short.last_line} · ${fmtSize(short.size)}</span>
+      <span class="shmeta">${short.style ? `${escHtml(short.style)} · ${escHtml((short.track || '').replace(/\.\w+$/, ''))}` : `lines ${short.first_line}–${short.last_line}`} · ${fmtSize(short.size)}</span>
       <div class="shactions"><button class="shdetails">${ic('chevdown', 13)}Details</button>
         <button class="shicon shcopytitle" title="Copy title">${ic('copy', 13)}</button>
         <a class="shicon" href="${url}" download="${escAttr(short.file)}" title="Download">${ic('download', 14)}</a>
         <button class="shicon shdel" title="Delete this short">${ic('trash', 13)}</button></div>
       <div class="shdetailbody">
         <div class="shfield"><div><span>DESCRIPTION</span><button class="shcopy shcopydesc">${ic('copy', 13)}Copy</button></div><p>${escHtml(short.description)}</p></div>
-        <div class="shfield why"><span>WHY THIS CLIP</span><p>${escHtml(short.reason)}</p></div></div></div>`;
+        ${short.reason ? `<div class="shfield why"><span>WHY THIS CLIP</span><p>${escHtml(short.reason)}</p></div>` : ''}</div></div>`;
+  card.querySelector('.shinfo').insertBefore(shortRatingEl(n, short), card.querySelector('.shdetailbody'));
   card.querySelector('.shthumb').onclick = () => playShort(n, short, number);
   card.querySelector('.shdetails').onclick = () => {
     card.classList.toggle('open');
@@ -4528,6 +4658,7 @@ function fillSettingsForm() {
   document.querySelector(`input[name=shLayout][value="${sh.layout}"]`).checked = true;
   $('shCoverHint').hidden = sh.layout !== 'cover';
   $('shAutoMake').checked = sh.auto_make;
+  $('shLook').value = sh.look || 'auto';
   $('shOwnLook').checked = sh.own_look;
   $('shLookBody').hidden = !sh.own_look;
   $('shWmEnabled').checked = !!sh.watermark.enabled;
@@ -4713,6 +4844,7 @@ function currentSettingsFromForm() {
     shorts: {
       layout: document.querySelector('input[name=shLayout]:checked').value,
       auto_make: $('shAutoMake').checked,
+      look: $('shLook').value,
       own_look: $('shOwnLook').checked,
       watermark: {
         enabled: $('shWmEnabled').checked,
@@ -5427,6 +5559,7 @@ $('wmEnabled').onchange = saveSettingsDebounced;
 document.querySelectorAll('input[name=shLayout]').forEach(el =>
   el.addEventListener('change', () => { $('shCoverHint').hidden = el.value !== 'cover' || !el.checked; }));
 $('shAutoMake').onchange = saveSettingsDebounced;
+$('shLook').onchange = saveSettingsDebounced;
 $('shOwnLook').onchange = () => { $('shLookBody').hidden = !$('shOwnLook').checked; saveSettingsDebounced(); };
 $('shOwnAudio').onchange = () => { $('shSoundBody').hidden = !$('shOwnAudio').checked; saveSettingsDebounced(); };
 $('shSampleBtn').onclick = playShortsSample;

@@ -287,7 +287,7 @@ def shorts_env(slug: str) -> batch.BatchEnv:
     def find(b: batch.Batch, n: int) -> None:
         b.gate()
         wanted = b.meta.get("find") or {"chapters": [n]}   # a batch saved before ranges: its own chapter
-        job = new_shorts_job(chapter_id(n), "shorts_find", slug, str(n))
+        job = new_shorts_job(chapter_id(n), "shorts_find", slug, str(n))        # AMV: prepares each chapter's frame bank
         job.chapters, job.max_shorts = wanted["chapters"], wanted.get("max_shorts")
         job.before_claude_call = b.gate
         _run_in_batch(b, n, job)
@@ -296,13 +296,15 @@ def shorts_env(slug: str) -> batch.BatchEnv:
 
     def render(b: batch.Batch, n: int) -> None:
         found = b.meta.get("found")
-        if found is not None and str(n) not in found["picked"]:
-            b.log(n, "No moment of this chapter was picked, so nothing to render.")
+        count = (found or {}).get("picked", {}).get(str(n))
+        if not count:
+            b.log(n, "No short was planned for this chapter, so nothing to render.")
             return
-        if not shorts.read_plan(projects.chapter_work_path(slug, n)):
-            b.log(n, "No segment was strong enough for a short, so nothing to render.")
-            return
-        _run_in_batch(b, n, new_shorts_job(chapter_id(n), "shorts_render", slug, str(n)))
+        job = new_shorts_job(chapter_id(n), "shorts_render", slug, str(n))
+        want = b.meta.get("find") or {}
+        job.amv = {"count": count, "styles": want.get("styles") or amv_styles(slug), "offset": amv_offset(slug),
+                   "tracks": amv_tracks(slug, want.get("music"))}      # stages/s8_amv.py
+        _run_in_batch(b, n, job)
         if queued := enqueue.shorts_of_chapter(slug, n):
             b.log(n, f"Queued {len(queued)} short(s) for upload.")
 
@@ -312,13 +314,74 @@ def shorts_env(slug: str) -> batch.BatchEnv:
         space_low=lambda: False, finished=lambda finished: None, failed=_failed(slug, shorts=True))
 
 
+AMV_STYLES = ("quote",)      # every short is a quote short (style 6); the other recipes stay in amv/ but are not offered
+
+
+def amv_styles(slug: str) -> list[str]:
+    """The styles a run uses: only the quote style, whatever the ratings say (the user chose it for every project)."""
+    return list(AMV_STYLES)
+
+
+def shared_tracks() -> list[Path]:
+    from stages import s8_amv
+    return s8_amv.tracks()
+
+
+def amv_tracks(slug: str, music) -> list[str] | None:
+    """The audio files a run may use. `music` = the user's pick: a list of ids ("p:<id>" a project track, "s:<file>" a
+    shared one; a bare id is a project track), else the project's own tracks when it has any, else the shared folder.
+    Only the default is filtered by ratings; what was picked by hand is used as picked. None = the shared folder."""
+    import short_feedback
+    import short_music
+    project = projects.load(slug)
+    picked = [music] if isinstance(music, str) and music else list(music or [])
+    if picked:
+        files: list[str] = []
+        for m in picked:
+            if m.startswith("s:"):
+                files += [str(p) for p in shared_tracks() if p.name == m[2:]]
+            else:
+                files += short_music.files_of(project, slug, m[2:] if m.startswith("p:") else m)
+        return files or None
+    own = short_music.files_of(project, slug)
+    pool = own or [str(p) for p in shared_tracks()]
+    bad = short_feedback.avoid(slug)["tracks"]
+    keep = [f for f in pool if Path(f).name not in bad]
+    return (keep if keep and len(keep) < len(pool) else own) or None
+
+
+def amv_offset(slug: str) -> int:
+    """Where the quote/track rotation starts: the shorts already queued for upload plus this project's shorts that are
+    rendered but not queued (yet, or at all), so the next short always goes on from the last one. Counting only the
+    queue made every short rendered before the queue saw them start from the same place: the same quote and music."""
+    import json
+    from publishing import uploads
+    queued = [i for i in uploads.all_items() if i["kind"] == uploads.SHORT]
+    known = {str(i.get("file")) for i in queued}
+    extra = 0
+    for index in (projects.local_dir(slug) / "chapters").glob("*/output/shorts/shorts.json"):
+        try:
+            made = json.loads(index.read_text(encoding="utf-8")).get("shorts", [])
+        except (OSError, ValueError):
+            continue
+        extra += sum(1 for m in made if str(index.parent / m.get("file", "")) not in known and (index.parent / m.get("file", "")).is_file())
+    return len(queued) + extra
+
+
 def shorts_blocker(slug: str, n: int) -> str | None:
-    """Why chapter n can't have shorts made yet, or None. Shorts reuse the chapter's script, frames and
-    narration, which a finished video has all of."""
-    return None if "video" in chapter_steps(slug, n)["done"] else "it has no finished video yet"
+    """Why chapter n can't have shorts made yet, or None. AMV shorts need the chapter's frames: its shorts bank, or
+    (when the frames are gone) its saved mapping and PDF to cut them again."""
+    from amv import bank
+    work = projects.chapter_work_path(slug, n)
+    if bank.exists(work):
+        return None
+    if (work / "framer" / "mapping.json").is_file():
+        return None if (projects.stored_pdf(slug, n) or (work / "frames").is_dir()) else "its PDF and frames are both gone"
+    return "it has no saved frame mapping yet"
 
 
-def start_shorts(slug: str, numbers: list[int], max_shorts: int | None = None) -> tuple[list[int], list[dict]]:
+def start_shorts(slug: str, numbers: list[int], max_shorts: int | None = None, styles: list[str] | None = None,
+                 music: list[str] | None = None) -> tuple[list[int], list[dict]]:
     """Run the Shorts pipeline over those of `numbers` that have a finished video. Returns the chapters it studies
     and the ones skipped with the reason. Raises Refused when none can have shorts or shorts are being made already."""
     skipped = [{"n": n, "reason": reason} for n in numbers if (reason := shorts_blocker(slug, n))]
@@ -334,7 +397,8 @@ def start_shorts(slug: str, numbers: list[int], max_shorts: int | None = None) -
             previous.close()
         SHORTS_BATCHES[slug] = batch.Batch.create(
             shorts_batch_path(slug), shorts_env(slug), {eligible[0]: list(batch.SHORTS_STAGES)},
-            meta={"find": {"chapters": eligible, "max_shorts": max_shorts, "skipped": skipped}})
+            meta={"find": {"chapters": eligible, "max_shorts": max_shorts, "skipped": skipped,
+                           "styles": [s for s in styles or [] if s in AMV_STYLES] or None, "music": music or None}})
     return eligible, skipped
 
 

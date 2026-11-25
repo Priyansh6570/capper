@@ -3,6 +3,7 @@ shorts that YouTube forced to private until the API project passes its audit."""
 from __future__ import annotations
 
 import time
+from datetime import datetime, timedelta, timezone
 
 from publishing import channels, uploads
 from publishing.youtube_api import ApiError, Client, QuotaExceeded
@@ -23,7 +24,13 @@ def refresh_visibility(channel_id: str) -> list[dict]:
             uploads.update(item["id"], status="removed", error="Deleted from YouTube.")
         elif video["status"]["privacyStatus"] == "public":
             published.append(uploads.update(item["id"], status="live", locked=False))
+        elif item.get("scheduled_at") and not item["locked"] and _past(item["scheduled_at"]):
+            uploads.update(item["id"], locked=True)     # its slot passed and YouTube kept it private: the API restriction
     return published
+
+
+def _past(iso: str) -> bool:
+    return datetime.fromisoformat(iso) + timedelta(minutes=15) < datetime.now(timezone.utc)
 
 
 def stuck_shorts(channel_id: str) -> list[dict]:

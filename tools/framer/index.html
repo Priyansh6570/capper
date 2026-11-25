@@ -329,7 +329,7 @@
         <div class="shhead">
           <div class="shintro">
             <h2>Shorts</h2>
-            <p>Vertical 9:16 clips cut from the moments that would catch viewers: the ones that hit an emotion, feel epic or are mysterious. Pick a range of chapters and Claude studies them together; only chapters with a strong moment get shorts, and the others get none. Picking a chapter's moments again replaces that chapter's shorts.</p>
+            <p>Vertical 9:16 beat-synced edits of the chapters' best frames over music, each with its own thumbnail. Pick a range of chapters and how many shorts you want: the first chapters of the range get one each (or the number is dealt over them). Styles rotate by themselves, or you can ask for one.</p>
           </div>
           <div class="shstats" id="shortsStats"></div>
         </div>
@@ -342,6 +342,21 @@
             <label>Most shorts<input id="shortsMax" type="number" min="1" max="50" placeholder="no limit" /></label>
             <button class="primary" id="shortsFindBtn">Find and make shorts</button>
           </div>
+        </div>
+        <div class="shfind shopts" id="shortsOptions">
+          <div class="shfindtext"><b>Style and music</b>
+            <span id="shortsStyleHint"></span>
+            <span id="shortsFeedbackNote" class="hint"></span></div>
+          <div class="shfindform">
+            <label>Style<select id="shortsStyle"></select></label>
+            <button type="button" class="small ghost" id="shortsMusicAdd" data-icon="folder" data-ic-size="14"><span>Add music…</span></button>
+            <input id="shortsMusicFile" type="file" accept="audio/*" multiple class="filehidden" tabindex="-1" />
+          </div>
+          <div class="shmusichead"><b>Music for this run</b>
+            <span class="hint" id="shortsMusicHint"></span>
+            <button type="button" class="small ghost" id="shortsMusicAll">Select all</button>
+            <button type="button" class="small ghost" id="shortsMusicNone">Clear</button></div>
+          <div class="shmusiclist" id="shortsMusicList"></div>
         </div>
         <div id="shortsJob"></div>
         <div id="shortsGroups"></div>
@@ -729,6 +744,17 @@
               <b>Shorts</b><span>The vertical videos made from the best moments of your chapters. They use the main video's animation and video size; the look and the sound can be their own.</span>
               <label class="togglesw" style="margin-top:6px"><input type="checkbox" id="shAutoMake" style="position:absolute;opacity:0;width:1px;height:1px" /><span class="tk"></span>Make shorts automatically</label>
               <span class="hint">When a pipeline run has rendered chapters, shorts are made for them right after.</span>
+              <label for="shLook" style="margin-top:8px;display:block">Quote design</label>
+              <select id="shLook">
+                <option value="auto">Auto (this series' own)</option>
+                <option value="ember">Ember: embers, light shafts, bold type</option>
+                <option value="scroll">Scroll: serif, line, blossom petals</option>
+                <option value="royal">Royal: gold, cinema bars</option>
+                <option value="neon">Neon: slam-in capitals, scanlines</option>
+                <option value="blood">Blood: heavy type, embers, smoke</option>
+                <option value="frost">Frost: thin capitals, snow</option>
+              </select>
+              <span class="hint">How the quote shorts of this project look. Auto gives each series a design of its own.</span>
               <label class="togglesw" style="margin-top:6px"><input type="checkbox" id="shOwnLook" style="position:absolute;opacity:0;width:1px;height:1px" /><span class="tk"></span>Own watermark and background</label>
               <label class="togglesw" style="margin-top:6px"><input type="checkbox" id="shOwnAudio" style="position:absolute;opacity:0;width:1px;height:1px" /><span class="tk"></span>Own music and volume</label>
             </div>

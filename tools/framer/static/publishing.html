@@ -98,6 +98,9 @@
   .edit textarea { min-height: 84px; resize: vertical; }
   .edit .row { display: flex; gap: 6px; flex-wrap: wrap; }
   .edit .row .btn { height: 30px; font-size: 12.5px; }
+  .card.movable { cursor: grab; }
+  .mover { display: inline-flex; gap: 4px; margin-right: auto; }
+  .mover .btn { padding: 0 9px; }
   .empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; padding: 22px 14px; border-radius: 12px; border: 1.5px dashed var(--line); text-align: center; color: var(--text3); }
   .empty span { max-width: 200px; font-size: 13px; line-height: 1.5; text-wrap: pretty; }
 
@@ -244,15 +247,16 @@ function thumbStyle(item) {
   const hash = [...item.id].reduce((sum, ch) => sum + ch.charCodeAt(0), 0) % THUMBS.length;
   return item.has_thumbnail ? `background-image:url(/api/publishing/items/${item.id}/thumbnail?v=${thumbVersion})` : `background:${THUMBS[hash]}`;
 }
+const lowQuota = item => { const c = channelOf(item.channel); return c && c.quota && c.quota.limit - c.quota.used < UPLOAD_COST + 200; };
 function metaOf(item, lane) {
-  const where = `${item.series ? esc(item.series) + ' · ' : ''}ch ${item.chapters.join(', ')}${item.parts > 1 ? ` · part ${item.part}/${item.parts}` : ''}`;
+  const where = `${item.project_name ? esc(item.project_name) + ' · ' : ''}${item.series ? esc(item.series) + ' · ' : ''}ch ${item.chapters.join(', ')}${item.parts > 1 ? ` · part ${item.part}/${item.parts}` : ''}`;
   if (lane === 'queue') {
     const text = item.status === 'uploading' ? `uploading ${Math.round((item.progress || 0) * 100)}%` : item.status === 'scheduled' ? 'posts ' + local(item.publish_at)
-      : item.next_attempt_at ? 'retry ' + local(item.next_attempt_at) : 'posts when the quota allows';
-    return [text, 'blue'];
+      : item.next_attempt_at ? 'retry ' + local(item.next_attempt_at) : lowQuota(item) ? `waiting for YouTube quota, resets in ${resetText(channelOf(item.channel).quota.resets_in_s - elapsed())}` : item.publish_at ? 'uploads soon, posts ' + local(item.publish_at) : 'posts when the quota allows';
+    return [(item.project_name ? item.project_name + ' · ' : '') + `ch ${item.chapters.join(', ')} · ` + text, 'blue'];
   }
-  if (lane === 'up') return [item.uploaded_at ? 'uploaded ' + local(item.uploaded_at) : where, ''];
-  if (lane === 'fail') return [item.error || item.status, 'bad'];
+  if (lane === 'up') return [(item.project_name ? item.project_name + ' · ' : '') + (item.uploaded_at ? 'uploaded ' + local(item.uploaded_at) : where), ''];
+  if (lane === 'fail') return [(item.project_name ? item.project_name + ' · ' : '') + (item.error || item.status), 'bad'];
   return [where, ''];
 }
 function editHtml(item) {
@@ -271,17 +275,23 @@ function cardHtml(item, lane) {
   if (item.status === 'failed') actions.push(`<button class="btn" data-act="retry" data-id="${item.id}">Retry upload</button>`);
   if (editable) actions.push(`<button class="btn muted" data-act="toggle" data-id="${item.id}">${open.has(item.id) ? 'Close' : 'Edit'}</button>`);
   const notes = (item.warnings || []).map(w => `<span class="meta warn">${esc(w)}</span>`).join('');
-  return `<article class="card"><div class="card-top"><div class="thumb ${long ? 'full' : 'short'}" style="${thumbStyle(item)}">${item.duration_s ? `<em>${length(item.duration_s)}</em>` : ''}</div>
+  const movable = lane === 'queue' && ['queued', 'scheduled'].includes(item.status);
+  const move = movable ? `<span class="mover"><button class="btn muted" data-act="up" data-id="${item.id}" title="Move up">▲</button><button class="btn muted" data-act="down" data-id="${item.id}" title="Move down">▼</button></span>` : '';
+  return `<article class="card${movable ? ' movable' : ''}" data-id="${item.id}"${movable ? ' draggable="true"' : ''}><div class="card-top"><div class="thumb ${long ? 'full' : 'short'}" style="${thumbStyle(item)}">${item.duration_s ? `<em>${length(item.duration_s)}</em>` : ''}</div>
       <div class="card-text"><span class="title" title="${esc(item.title)}">${esc(item.title)}</span><span class="meta ${tone}">${esc(meta)}</span>${notes}</div></div>
     ${item.status === 'uploading' ? `<div class="bar"><i style="width:${Math.round((item.progress || 0) * 100)}%"></i></div>` : ''}
-    ${lane === 'up' ? `<div class="uploaded-row"><span class="vis ${item.status === 'live' ? 'live' : ''}">${item.status === 'live' ? 'public' : item.status === 'private' ? (item.locked ? 'private · publish in Studio' : 'private') : item.status}</span>
+    ${lane === 'up' ? `<div class="uploaded-row"><span class="vis ${item.status === 'live' ? 'live' : ''}">${item.status === 'live' ? 'public' : item.status === 'private' ? (item.locked ? 'private · publish in Studio' : item.scheduled_at ? 'scheduled on YouTube · ' + local(item.scheduled_at) : 'private') : item.status}</span>
       ${item.url ? `<a href="${esc(item.url)}" target="_blank" rel="noopener">${esc(item.url.replace('https://', ''))}</a>` : ''}</div>` : ''}
-    ${actions.length ? `<div class="card-actions">${actions.join('')}</div>` : ''}${open.has(item.id) && editable ? editHtml(item) : ''}</article>`;
+    ${actions.length || move ? `<div class="card-actions">${move}${actions.join('')}</div>` : ''}${open.has(item.id) && editable ? editHtml(item) : ''}</article>`;
 }
+const rankOf = i => i.rank == null ? Infinity : i.rank;
+const queueOrder = (a, b) => (a.status === 'uploading') !== (b.status === 'uploading') ? (a.status === 'uploading' ? -1 : 1)
+  : rankOf(a) !== rankOf(b) ? (rankOf(a) < rankOf(b) ? -1 : 1) : (a.publish_at || a.created_at).localeCompare(b.publish_at || b.created_at);
+const waiting = () => state.items.filter(i => ['queued', 'scheduled'].includes(i.status)).sort(queueOrder).map(i => i.id);
 function laneHtml(lane) {
   const items = state.items.filter(i => lane.statuses.includes(i.status));
   const newest = (a, b) => (b.uploaded_at || b.created_at).localeCompare(a.uploaded_at || a.created_at);
-  items.sort(lane.key === 'queue' ? (a, b) => (a.publish_at || a.created_at).localeCompare(b.publish_at || b.created_at) : newest);
+  items.sort(lane.key === 'queue' ? queueOrder : newest);
   return `<section class="panel lane"><div class="lane-head"><span class="dot" style="background:${lane.color}"></span><b>${lane.title}</b>
       <span class="count" style="color:${items.length ? 'var(--text)' : 'var(--text3)'}">${items.length}</span></div>
     ${items.map(i => cardHtml(i, lane.key)).join('')}
@@ -334,6 +344,28 @@ function pickThumbnail(item) {
   });
   input.click();
 }
+function saveOrder(ids) { return act(() => api('/api/publishing/queue/order', 'POST', {ids})); }
+function moveItem(id, by) {
+  const ids = waiting(), at = ids.indexOf(id), to = at + by;
+  if (at < 0 || to < 0 || to >= ids.length) return;
+  ids.splice(to, 0, ids.splice(at, 1)[0]);
+  saveOrder(ids);
+}
+// drag a waiting card onto another one to put it there
+let dragId = null;
+document.addEventListener('dragstart', e => { const c = e.target.closest && e.target.closest('.card.movable'); if (c) { dragId = c.dataset.id; e.dataTransfer.effectAllowed = 'move'; } });
+document.addEventListener('dragover', e => { if (dragId && e.target.closest('.card.movable')) e.preventDefault(); });
+document.addEventListener('dragend', () => { dragId = null; });
+document.addEventListener('drop', e => {
+  const target = e.target.closest('.card.movable');
+  if (!dragId || !target || target.dataset.id === dragId) { dragId = null; return; }
+  e.preventDefault();
+  const ids = waiting(), from = ids.indexOf(dragId), to = ids.indexOf(target.dataset.id);
+  dragId = null;
+  if (from < 0 || to < 0) return;
+  ids.splice(to, 0, ids.splice(from, 1)[0]);
+  saveOrder(ids);
+});
 const post = (item, action) => api(`/api/publishing/items/${item.id}/${action}`, 'POST');
 const itemOf = id => state.items.find(i => i.id === id);
 const channelOf = id => state.channels.find(c => c.id === id);
@@ -357,6 +389,8 @@ const ACTIONS = {
   save(el) { act(() => saveEdits(itemOf(el.dataset.id))); },
   thumb(el) { pickThumbnail(itemOf(el.dataset.id)); },
   clearThumb(el) { act(async () => { await api(`/api/publishing/items/${el.dataset.id}/thumbnail`, 'DELETE'); thumbVersion = Date.now(); }); },
+  up(el) { moveItem(el.dataset.id, -1); },
+  down(el) { moveItem(el.dataset.id, 1); },
   remove(el) { confirm('Remove this item from the queue?') && act(() => api(`/api/publishing/items/${el.dataset.id}`, 'DELETE')); },
   unpair() { act(() => api('/api/publishing/telegram/unpair', 'POST')); },
   removeBot() { confirm('Remove the bot token?') && act(() => api('/api/publishing/telegram', 'DELETE')); },
@@ -392,7 +426,7 @@ function renderSettingsButtons() {
 }
 
 async function load(force) {
-  if (!force && document.hidden) return;
+  if (!force && (document.hidden || dragId)) return;
   try { state = await api('/api/publishing'); fetchedAt = Date.now(); } catch (e) { return; }
   renderAll(force);
   if (force) Shell.refresh();

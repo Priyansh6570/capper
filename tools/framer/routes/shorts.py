@@ -8,6 +8,7 @@ from pathlib import Path
 from flask import Blueprint, jsonify, request, send_file
 
 import projects
+import short_feedback
 import shorts
 from services.batching import SHORTS_BATCHES, batch_do, job_summary, start_shorts
 from services.common import Refused
@@ -39,7 +40,11 @@ def api_shorts(slug):
         plan = shorts.read_plan(projects.chapter_work_path(slug, run["n"])) if found else None
         run["planned"] = None if plan is None else [
             {k: s[k] for k in ("title", "first_line", "last_line", "duration_s")} for s in plan]
-    return jsonify(chapters=chapters, batch=view)
+    rated = short_feedback.by_short(slug)
+    for ch in chapters:
+        for s in ch["shorts"]:
+            s["feedback"] = rated.get(f"{ch['n']}:{s['id']}")
+    return jsonify(chapters=chapters, batch=view, feedback=short_feedback.summary(slug), tags=list(short_feedback.TAGS))
 
 
 def _delete_guard(slug: str, n: int):
@@ -58,6 +63,7 @@ def api_shorts_delete_chapter(slug, n):
     if (refused := _delete_guard(slug, n)):
         return refused
     shorts.clear(projects.chapter_work_path(slug, n), projects.chapter_output_path(slug, n))
+    short_feedback.forget(slug, n)
     return jsonify(ok=True)
 
 
@@ -68,7 +74,55 @@ def api_shorts_delete_one(slug, n, short_id):
         return refused
     if not shorts.delete_short(projects.chapter_work_path(slug, n), projects.chapter_output_path(slug, n), short_id):
         return jsonify(error="No such short."), 404
+    short_feedback.forget(slug, n, short_id)
     return jsonify(ok=True)
+
+SHARED_INFO: dict[str, dict] = {}
+
+
+@bp.get("/api/projects/<slug>/shorts/music")
+def api_shorts_music_all(slug):
+    """All the music the shorts can use: this project's own tracks ("p:<id>") and the shared folder's ("s:<file>"),
+    with how the user rated the shorts made with each."""
+    if not projects.exists(slug):
+        return jsonify(error=f"No such project: {slug}"), 404
+    import short_music
+    from services.batching import shared_tracks
+    rated = short_feedback.summary(slug)["tracks"]
+    own = [{"id": "p:" + t["id"], "name": t["name"], "duration_s": t["duration_s"], "bpm": t.get("bpm"),
+            "drop_s": t.get("drop_s"), "own": True, "rating": rated.get(Path(projects.resolve_asset_path(slug, t["file"]) or "").name)}
+           for t in short_music.library(projects.load(slug))]
+    shared = []
+    for p in shared_tracks():
+        info = SHARED_INFO.get(p.name)
+        if info is None:
+            info = SHARED_INFO[p.name] = {"duration_s": short_music.duration_of(p)}
+        shared.append({"id": "s:" + p.name, "name": p.stem, "duration_s": info["duration_s"], "own": False,
+                       "rating": rated.get(p.name)})
+    return jsonify(tracks=own + shared)
+
+
+@bp.get("/api/shorts/shared_music/<path:name>")
+def api_shared_music_audio(name):
+    """A track of the shared music folder, so the Shorts page can play it before it is picked."""
+    from services.batching import shared_tracks
+    path = next((p for p in shared_tracks() if p.name == name), None)
+    if path is None:
+        return jsonify(error="No such track."), 404
+    return send_file(path, conditional=True)
+
+
+@bp.post("/api/projects/<slug>/shorts/<int:n>/<int:short_id>/rating")
+def api_shorts_rate(slug, n, short_id):
+    """Body {rating: 1-5, tags: [...], note: "..."}: what the user thinks of a built short."""
+    if not projects.exists(slug):
+        return jsonify(error=f"No such project: {slug}"), 404
+    body = request.get_json(silent=True) or {}
+    try:
+        entry = short_feedback.rate(slug, n, short_id, body.get("rating"), body.get("tags"), body.get("note"))
+    except (short_feedback.FeedbackError, TypeError, ValueError) as e:
+        return jsonify(error=str(e) or "Bad rating."), 400
+    return jsonify(ok=True, feedback=entry, summary=short_feedback.summary(slug))
 
 
 @bp.get("/api/projects/<slug>/shorts/<int:n>/zip")
@@ -108,7 +162,10 @@ def api_shorts_start(slug):
     if not numbers or not known.issuperset(numbers) or (max_shorts is not None and max_shorts < 1):
         return jsonify(error="Choose chapters of this project, and a number of shorts of 1 or more."), 400
     try:
-        eligible, skipped = start_shorts(slug, sorted(numbers), max_shorts)
+        styles = [str(s) for s in body.get("styles") or []]
+        music = body.get("music") or []
+        music = [str(m) for m in (music if isinstance(music, list) else [music])][:40]
+        eligible, skipped = start_shorts(slug, sorted(numbers), max_shorts, styles, music or None)
     except Refused as e:
         return jsonify(error=str(e)), e.status
     return jsonify(ok=True, started=eligible, skipped=skipped)

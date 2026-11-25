@@ -130,6 +130,9 @@ def main() -> None:
     if not os.environ.pop("RECAPPER_SKIP_BROWSER_OPEN", None):
         threading.Thread(target=lambda: (time.sleep(1.0), webbrowser.open(url)),
                           daemon=True).start()
+    # Warm the chapter-state cache so the first page load does not wait on ~1200 slow file reads.
+    import projects as _projects
+    threading.Thread(target=_projects.list_projects, daemon=True).start()
     start_background()
     # Threaded: a generate job holds an SSE connection open for minutes; other
     # requests (thumbnails, the result video, a second tab) must still be served.

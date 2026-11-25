@@ -355,3 +355,199 @@ Run: `.venv\Scripts\python.exe -m unittest discover -s tests -t .`
 - `amv/styles.py` `pivot`: aura timing over only the frames that show the chosen point (`eye`, `mouth`, `hand`, `weapon`; frames too small to zoom are left out; < 8 usable frames is refused with a message). No whips: the point is pinned to one screen spot (`render.ANCHORS`) and all the motion happens around it.
 - `amv/render.py`: `pivot_of(tag, point)`, `load_shot(..., point)`: small panels the renderer letterboxes are pinned too, but only when a point is asked for, so the normal aura look is unchanged. `render(..., point=)`.
 - CLI: `python -m amv --track X --recipe pivot --point eye --bank <chapter work folder> -o out.mp4`. Samples: `shorts/amv_prototype/v5_pivot_{eye,weapon}_drift.mp4`. Tests: `AmvPivot` in tests/test_amv.py.
+
+## 2026-11-19 - shorts: plan for styles 5 (adaptive + backdrop), 6 (quote), 7 (lyrics)
+- Planning only, no code. Decisions: style 5 = a per-section sequencer over the existing recipes plus a backdrop layer stack; 6/7 share one "title card" system (voice/text on the pre-drop part, protagonist frames after the drop). Backdrops are procedural numpy/cv2 (no new deps); lyrics alignment uses torchaudio's MMS forced aligner (no new torch-pulling package).
+- Order: backdrop layer -> quote (6) -> lyrics (7) -> adaptive (5).
+
+## 2026-11-19 - shorts: backdrop layer system (step 1 of styles 5-7)
+- Decisions from the user: lyrics stop at the drop (style 7); narration voice is Kokoro `am_michael` (style 6); quotes are the protagonist's own philosophical lines, no author credit shown; post-drop frames are the protagonist matching the quote's persona/mood.
+- New `amv/backdrop.py`: `Layer(kind, strength, t0, t1, fade)`, `Backdrop.apply(img, t)`, `parse("mono,rain:0.8@0-12,film@12-")`, `for_emotion()`. Kinds: mono, sepia, film (grain/flicker/scratches/dust/weave/vignette), rain (fogged glass + lens drops), ripple (water displacement), vignette, leak, dust. Pure numpy/OpenCV, no new dependency.
+- `amv/render.py`: `render(..., backdrop=)` applies the layers after the flash/build darkening, before the branding. `amv/__main__.py`: `--backdrop "<spec>"`.
+- Tests: `AmvBackdrop` in tests/test_amv.py (19 pass). Cost is ~70-170 ms/frame per layer at 1080x1920 (numpy); GPU (moderngl) only if that becomes a problem.
+- Sample: `shorts/amv_prototype/v6_backdrop_preview.mp4` (film -> mono+rain -> vignette; Magic Emperor ch 49-53, half-size preview).
+- Next: style 6 (quote bank, am_michael narration, text layer ending before the drop, protagonist frames after it).
+
+## 2026-11-19 - shorts: music starts at the track's beginning, 60 fps
+- `amv/music.py` `pick_window`: a drop within 35s of the start now means the clip starts at 0.0 (the artist's own intro), not `drop - lead`. A later drop starts on an 8-bar phrase boundary before it. The "main drop" must be >= 6s in (earlier ones are intro hits). New windows: monda 0-30, drift 0-30, phonk-hard 0-30, xcool 0-42.3 (drop 27.0), sub_clair-brazilian 29.6-76.1 (drop 44.3).
+- `amv/render.py`: `FPS = 60` (was 30); preview now 30 fps (draws every second frame). All timings are in seconds so looks are unchanged, just smoother.
+- Cost: a 30s 60 fps render with film + vignette took ~6 min on this PC (~200 ms/frame). If that is too slow: fewer motion-blur steps, or move the per-frame work to the GPU.
+- Sample: `shorts/amv_prototype/v6_aura_60fps.mp4` (1800 frames, 60 fps, drift-phonk from 0:00).
+- Follow-up: from-start rule only when the drop is <= 70% into a fixed-length clip (else a phrase boundary), tests all pass.
+
+## 2026-11-19 - shorts: style 6, quote (voice + words + protagonist aura)
+- New: `amv/voice.py` (Kokoro `am_michael`, slowed, pitched down, bass/echo/compression in ffmpeg; per-word times; cached in `cache/amv_voice/`), `amv/textlayer.py` (Cormorant Garamond from `assets/fonts/`, words rise out of a blur as spoken, accent colour on key words, line lifts away, picture dimmed under it), `amv/quotes.py` (per-project `quotes.json`: load/upsert/delete, mood -> accent colour, auto emphasis words, `suggest()` via Claude with a `confidence` label), `amv/cast.py` (one text-only Claude call that groups the tagger's inconsistent character labels and returns the protagonist's; cached in `cache/amv_cast/`), `amv/quote_short.py` (voice -> window -> render).
+- `amv/styles.py`: recipe `quote` (slow mood-matched protagonist shots under the words, aura montage of his strongest frames from the drop; `Plan` gained `overlay`, `voice`, `backdrop`). `amv/music.py`: `pick_window(fixed_start=)`. `amv/render.py`: `extra=`, draws the text layer after the backdrop, mixes the narration over the unchanged music (stereo, no ducking), recipe backdrop defaults to the quote's mood.
+- Timing rule: the last word ends 0.55s before the drop; the clip starts at 0:00 when the voice fits (voice slows/speeds 0.86-1.0 to make that work), else on a 2-bar boundary; an error says when no drop leaves room.
+- CLI: `python -m amv --track X --recipe quote --quote "<text>" --mood tense --series "Magic Emperor" --bank projects/<slug>/chapters/*/work -o out.mp4` (or `--quotes projects/<slug>/quotes.json --quote <id>`).
+- Suggestions for Magic Emperor saved in `projects/magic-emperor/quotes.json`: ALL are "in-spirit" (Claude cannot recall real dialogue); replace with real lines.
+- Sample: `shorts/amv_prototype/v6_quote_preview2.mp4` (half-size preview). Tests: `AmvQuote` in tests/test_amv.py (23 pass).
+- Not done yet: UI for the quote bank, frame bank of other projects uses same flow; style 7 reuses textlayer/voice-less path.
+
+## 2026-11-19 - shorts: narration was inaudible under the music (quote style)
+- Cause: the voice wav was fine (am_michael is in D:\hf_cache) but averaged ~-24 dB against music at ~-11 dB (peaks 0 dB), and the mix could clip.
+- `amv/voice.py`: narration loudness-normalised (`loudnorm=I=-10:TP=-1`), `VERSION = 3` (old cached voices are regenerated).
+- `amv/render.py`: `voice_mix_filter()` - the music dips `DUCK_DB` (9 dB, 0 = off) smoothly under the voice, stereo mix, `alimiter` on the sum. `Plan.voice` now carries how long the voice is heard.
+- Measured: voice ~-14 dB vs ducked music ~-19 dB (voice ~5 dB above on average); after the drop the music is back at full level (~-5.6 dB mean). Sample: `shorts/amv_prototype/v6_quote_preview3.mp4`.
+
+## 2026-11-19 - shorts: narration really inaudible = loudnorm sample-rate bug (fixed)
+- Root cause of "no narration": `loudnorm` (added in `amv/voice.py` `POST`) outputs 192 kHz; the result was read back as 24 kHz, so each voice was ~8x too long and ~3 octaves too low (a 9s quote became 72-79s of rumble). Earlier "louder" fix only measured volume and missed it.
+- Fix: `aresample={rate}` after the post chain, `VERSION = 4`, and `narrate()` raises if post-processing changes the length by more than the echo tail.
+- Verified on the finished video (not just levels): cross-correlation finds the narration wav in `shorts/amv_prototype/v6_quote_preview4.mp4` at 0.91s, corr 0.66 (music alone 0.03); voice ~5 dB above the dipped music. v6_quote_preview, 2 and 3 have the broken voice: ignore them.
+
+## 2026-11-19 - shorts: quote style - hero hold, music dip, new font, left text
+- `amv/render.py`: `DUCK_DB = 18` (music dips 18 dB under the voice, back before the drop); new cut mode `hold` + `_hold_view()` (slow visible push + sway; a letterboxed wide panel gets an animated ambient plate instead of static blurred bars); `Shot.fit_geo`/`plate`.
+- `amv/styles.py` `quote`: ONE powerful frame of the speaker (mood match, intensity, face size) is held through the narration + word exit; the beat-cut main edit starts after it (drop = hero); the hold frame is not reused. Adds aurora/embers/mist layers over the hold in the quote's accent colour.
+- `amv/backdrop.py`: `Layer.color`; new kinds `embers`, `mist`, `aurora`. (`mist` wraps by tiling, OpenCV blur has no wrap border.)
+- `amv/textlayer.py`: sans fonts in `assets/fonts` (Montserrat, Oswald, Anton, Poppins ExtraBold, Archivo Black, Barlow Condensed, Bebas Neue; Cormorant kept), default `anton`, per-quote `font` field (`quotes.normalise`), left-aligned block (MARGIN_X 72, MAX_WIDTH 800).
+- Verified on `shorts/amv_prototype/v8_quote_preview.mp4`: narration waveform found at 0.91s (corr 0.86); voice window mean -15.8 dB, after the drop -5.2 dB. 23 tests pass.
+
+## 2026-11-19 - shorts: narration louder + dip before the first word; style 7 (lyrics)
+- `amv/render.py` `voice_mix_filter`: the music dip now finishes 0.55s BEFORE the first word (it used to start with the voice, so the first words fought the full-level music); voice gain x1.6 (limiter on the mix keeps it clean). Re-render a quote to hear it (old previews are unchanged).
+- Style 7 `lyrics`: new `amv/lyrics_short.py` (`parse_lrc`, `clip_words`, `make`), recipe `lyrics` in `amv/styles.py` (shares `quote()`: hero hold + living background + bold left text, but words come from timed lyrics, no narration, music untouched; lyrics stop 0.55s before the drop and nothing is shown after it), `textlayer.pages_from_words(by_sentence=True)` = one page per lyric line.
+- Input is LRC (`[mm:ss.xx] line`, times in the track). NOT done: automatic timing of plain lyrics (torchaudio MMS forced aligner) - plain text without time stamps is refused.
+- CLI: `python -m amv --track X --recipe lyrics --lyrics song.lrc --mood tense --series "<name>" --bank projects/<slug>/chapters/*/work -o out.mp4` (`--font anton|montserrat|...`). Demo: `shorts/amv_prototype/demo_lyrics.lrc` (placeholder lines, the tracks here are instrumentals) -> `v9_lyrics_preview.mp4`.
+- Tests: `AmvLyrics` (26 in tests/test_amv.py pass).
+
+## 2026-11-19 - handoff file for the next session
+- Wrote `shorts/amv_prototype/HANDOFF.md` (requirements per style, decisions, what is built/not, commands, state, traps) and a pointer memory `amv-shorts-handoff` in the Claude memory folder (indexed in MEMORY.md).
+
+## Style 5 `adaptive` (2026-11-19)
+- `amv/styles.py`: added `sections()` (music -> story/aura/pivot scenes: quiet pre-drop = story, a break after the drop = story,
+  a long drop gets a pivot scene), `adaptive()` (joins per-section cuts/frames into one Plan, mood backdrop per scene from the
+  frames' expressions via `backdrop.for_emotion`, `extra["mood"]` forces one), registered in `STYLES`/`build`.
+  (styles.py was accidentally emptied by a bad patch and rewritten from the earlier read; section comments now use `--`.)
+- `amv/render.py`: a pool frame may carry `"point"`; `load_shot` and the pin anchor use it per shot (pivot inside a mixed short).
+- Run: `.venv\Scripts\python.exe -m amv --track "shorts/bg music/sub_clair-phonk-hard.mp3" --recipe adaptive --bank <chapter work dirs> --preview -o shorts/amv_prototype/v10_adaptive_preview.mp4`
+- Not done: optional Claude review of the section plan; magic-emperor frame images are no longer on disk (bank.json only), test used return-of-the-mount-hua-sect ch 1.
+
+## Handoff updated for the daily-shorts goal (2026-11-19)
+- `shorts/amv_prototype/HANDOFF.md`: added a quick map (what to edit where), style 5 marked done, and a "THE DAILY GOAL" section:
+  10+ shorts/day over projects, styles 1-5 + quote (lyrics parked), no approval step (straight to scheduled), playlist link in
+  description + first comment; lists the existing publishing pieces to reuse and the 4 missing build steps in order.
+- No code changed. Next: step 1 (AMV as the shorts renderer job).
+
+## Step 1 of the daily shorts: AMV renderer stage (2026-11-19)
+- New `stages/s8_amv.py` (AMV shorts from a chapter's shorts bank; appends to `output/<ch>/shorts/shorts.json`), `services/jobs.py`
+  (`Job.amv`, `_amv_command`: a `shorts_render` job with `amv` set runs it), 3 tests in `tests/test_amv.py` (29 pass).
+- Verified by running it on mount-hua ch 1 (2 shorts, previews). HANDOFF.md updated (step 1 done, what step 2/3 need).
+- Run: `.venv\Scripts\python.exe -m stages.s8_amv --chapter <id> --count 2 --styles aura,adaptive,quote --series "<name>" --quotes projects/<slug>/quotes.json`
+  (set MANHWA_WORK_ROOT / MANHWA_OUTPUT_ROOT to the project chapter folders, as the framer's job does).
+
+## AMV shorts wired into the Shorts button + cleanup + thumbnails (2026-11-20)
+- The framer's Shorts pipeline now makes AMV shorts: `services/shorts_jobs.py` `run_amv_find_job` (replaces the Claude moment search as the
+  `shorts_find` step: builds/restores each chapter's frame bank, cutting frames again from mapping + stored PDF when they are gone, and deals
+  `max_shorts` shorts over the chapters, 1 each by default), `services/batching.py` (`shorts_env.render` sets `job.amv`; `shorts_blocker` now
+  needs a bank or mapping+PDF instead of a finished video; `amv_offset` rotates style/track from the number of queued shorts), overview labels.
+  Old narration code (`run_shorts_find_job`, `s8_shorts.py`) is left in place, unused.
+- Thumbnails: new `amv/thumb.py` (one Claude vision call per chapter ranks clean female faces, cut 9:16 1080x1920, margins trimmed, cached in
+  `shorts_bank/thumbs.json`); `stages/s8_amv.py` writes `short_NN.jpg` and `thumbnail` in shorts.json; `publishing/enqueue.py` queues it;
+  `publishing/thumbnails.py` keeps portrait covers 720x1280.
+- Old shorts removed: 27 unsent/failed shorts out of the upload queue (16 live ones kept as history), `output/<ch>/shorts` + plans in 120 local
+  chapters and 118 Drive copies, every `shorts_batch.json` and `shorts_find/`.
+- Frame banks being built for chapters 1-6 of the-world-s-best-engineer-2, nano-machine, return-of-the-mount-hua-sect (logs/bank_*.log).
+- RESTART the app to load the new code. Songs: drop .mp3 files into `shorts/bg music/`.
+- Still open: set each project's `settings.youtube.shorts_playlist` link (description + first comment use it), ~6 uploads/day quota.
+
+## Shorts page: style + music panel (2026-11-20)
+- `short_music.py`: `study()` (amv/music analysis -> bpm, main drop >= 6s) runs on upload, stored on the track (`bpm`, `studied`, `warning` when no drop); `files_of()`; theme defaults to "phonk".
+- AMV shorts take a project's own tracks (`settings.shorts.library`) when it has any, else `shorts/bg music`: `services/batching.py` (`amv_tracks`, run meta `find.styles`/`find.music`), `services/jobs.py` + `stages/s8_amv.py` (`--track-files a|b`), `routes/shorts.py` (body `styles`, `music`).
+- Shorts page (`index.html`, `static/js/app.js`, `app.css`): "Style and music" panel: style picker (Auto mix = rotate, or one of aura/story/twist/pivot/adaptive/quote), music picker (project music / shared / one track), upload (studied on upload), play, delete.
+- Style choice before: rotation `(offset + i) % styles` over aura, adaptive, story, twist, quote, pivot, offset = shorts already queued. Restart the app to load.
+
+## Shorts page: multi-select music + ratings (2026-11-20)
+- Music: `GET /api/projects/<slug>/shorts/music` lists the project's own tracks (`p:<id>`) and the shared folder's (`s:<file>`); the Shorts page shows them all as a tick list (Select all / Clear, play, delete own). Ticked tracks are the only ones used (`start_shorts(music=[ids])` -> `batching.amv_tracks` -> `--track-files`); nothing ticked = project's own tracks if any, else the shared folder.
+- Ratings: new `tools/framer/short_feedback.py` (`projects/<slug>/short_feedback.json`: rating 1-5, tags, note, style, track), `POST /api/projects/<slug>/shorts/<n>/<id>/rating`, stars + tag chips + note on every short card (form opens for <= 3 stars), deleting a short drops its rating. The Auto mix leaves out a style or (default) track rated at least twice with an average under 2.5 stars (`batching.amv_styles/amv_tracks`); hand-picked style/music is never filtered. Notes/tags are not applied automatically: read `short_feedback.json` and change the renderer from them.
+- AMV cards now show style + track (not "lines undefined"). Restart the app + Ctrl+F5.
+- NOTE: the engineer project already has its own uploaded track (assets/shorts_music/*.aac), so without ticking anything its shorts use only that one.
+
+## 2026-11-21 - Shorts thumbnails now uploaded
+- tools/framer/publishing/worker.py: `_finish` set a thumbnail only for FULL videos; shorts got none. Now shorts call `_thumbnail` too (vertical JPEG from shorts.json `thumbnail`, queued by enqueue.py).
+- Shorts already live (before chapter 1 of the-world-s-best-engineer-2) have no thumbnail in the queue; ch1-3 have a jpg but were uploaded before the fix and need a backfill.
+
+## 2026-11-21 - Queue reorder, project names, music preview
+- Publishing page: upload-queue cards can be dragged or moved with ▲/▼ (POST /api/publishing/queue/order; uploads.reorder sets `rank`, redeals scheduled shorts' slots per channel; worker._order uploads by rank first). Cards show the project name (api_state adds project_name).
+- Shorts page: every music track, incl. shared-folder ones, now has a player (GET /api/shorts/shared_music/<file>); one plays at a time.
+- Files: tools/framer/{static/publishing.html,static/js/app.js,routes/publishing.py,routes/shorts.py,publishing/uploads.py,publishing/worker.py}. Restart the app to load them.
+
+## 2026-11-21 - Shorts scheduled on YouTube (laptop can be off at post time)
+- worker.py: a short whose slot is within 7 days (AHEAD) is uploaded now as private with `publishAt` = its slot; YouTube publishes it. Item ends 'private' with `scheduled_at`. sync.refresh_visibility marks it live when public; if its slot passed (+15 min) and it is still private it is flagged locked (API restriction) so lift_lock handles it. uploads.reorder also deals slots of queued-ahead shorts. UI shows 'scheduled on YouTube'.
+- Restart the app. Uploads still need the app running (quota ~6 uploads/day), publishing does not.
+
+
+## 2026-11-23 - CTA script + GPT image prompts for Return of the Mount Hua Sect
+- No files changed. Modelled on the chapter-500 CTA of my-disciples-are-all-big-villains-2 (6 lines, calm pace, one frame per line). Wrote a 6-part warm/humble CTA script, a GPT master prompt and 6 per-part image prompts (delivered in chat only).
+- Next: generate 6 frames in GPT, save as cta/frames/scene 1..6.png in the new project, build the CTA from the framer.
+
+
+## 2026-11-23 - Kokoro says "red" for "read"
+- stages/tts_kokoro.py: new fix_pronunciations() called in synthesize(); forces present-tense "read" to /ɹˈid/ via misaki inline markup, leaving it alone after have/had/was/already etc. Covers narration, CTA and AMV voice (all use synthesize).
+- tests/test_kokoro_pronunciation.py added. Re-render the CTA voice to hear it.
+
+
+## 2026-11-23 - CTA video for return-of-the-mount-hua-sect
+- Copied cta_script/project 2/frames/ (6 pngs) to G:/My Drive/RECAPPER/bebe/return-of-the-mount-hua-sect/cta/frames/ as "scene 1..6.png"; backed up old cta/script.txt as script.old.txt and wrote the new 6-line script.
+- Built with cta.build(): Kokoro am_adam voice, project look (watermark + background), 1920x1080, 28.6s, 3.3 MB -> cta/cta.mp4 in the project folder.
+- Re-run from the app (CTA button) or edit cta/script.txt then rebuild.
+
+
+## 2026-11-23 - All shorts are style 6 (quote), cinematic quote look, louder voice / quieter music
+- **Policy**: `AMV_STYLES = ("quote",)` in tools/framer/services/batching.py (`amv_styles()` ignores ratings); `s8_amv.DEFAULT_STYLES = ("quote",)`; the Shorts page style list (static/js/app.js `SHORT_STYLES`) offers only Quote. A project with no quotes.json now gets one automatically (`s8_amv.make_quotes`: Claude writes 10 lines for the protagonist; `cast.protagonist_name` gives the name; lines marked `[in-spirit]`/`[close]` in `note` are NOT verbatim: review them on the Shorts page).
+- **Settings**: `settings.shorts.auto_make` is now True by default (projects.py) and was switched on in all 12 existing projects (project.json, via projects.save). Old shorts deleted from projects/: every `output/<ch>/shorts` and `work/<ch>/shorts` folder, plus the 2 `shorts_batch.json`. Frame banks (`work/shorts_bank`), music and quotes were kept. Drive copies only held desktop.ini. publishing/queue.json history (32 shorts, all `live`) untouched. Ratings in short_feedback.json kept.
+- **Look** (amv/cinema.py new, backdrop.py, render.py, styles.py): text is now `CinemaText` - lower-third, local soft shade, light sweep through each word, key words near-white with an accent glow that breathes with the voice + a self-drawing underline, block drifts/grows with the camera push, one page per sentence. New backdrop layers `bokeh`, `rays`, `frame` (hairline border drawing itself + running light), `grain`; `Plan.post` layers run after the text so grain binds everything; `Plan.env` = voice loudness drives aurora/bokeh/rays. Quote frames are `cover_only` (never letterboxed; `render.load_shot(cover_only=True)`, Lanczos + `_ink` sharpening on frames magnified >2.2x; hero frame prefers frames that fill the screen sharply).
+- **Audio**: `MUSIC_DB = -9` on all AMV music, `DUCK_DB` 18 -> 26, `VOICE_GAIN` 1.6 -> 2.0, limiter 0.9 (render.py).
+- Tests: tests/test_amv.py `CinemaQuote` (4 new). Previews: shorts/amv_prototype/v11-v13_cinema_preview.mp4 (Mount Hua ch1).
+- Note: running the tests earlier reverted cache/durations.json with `git checkout` (it was a modified cache file; regenerates).
+- Run next: restart the framer app, then Shorts page -> make shorts; or `python -m stages.s8_amv --chapter <id> --count 1 --quotes projects/<slug>/quotes.json`.
+
+
+## 2026-11-23 - Quote shorts: softer voice, no frozen frame, shorter, six project looks, closing message
+- **Voice**: amv/voice.py echo is now one faint 26 ms tap (was two taps at 70/140 ms = "bathroom"); VERSION 5 invalidates the cache. `narrate(plain=True)` = Kokoro as it speaks (no pitch/bass/echo), `PLAIN_VOICE = am_adam`.
+- **Repeated frame**: styles.quote widens the pool (other sharp frames) when the speaker has too few, thins the cuts to the pool (`thin_cuts`) and cycles it - no more freezing on the last frame. Short ends `TAIL_S` (8 s) after the drop, min 18 s (`quote_short.py`), not the whole track.
+- **Looks** (amv/looks.py new): ember, scroll, royal, neon, blood, frost = font, text position, entrance (rise/slam/track), rule line, accent, overlay layers, border. New backdrop layers: snow, petals, scan, brackets, bars. `looks.resolve(setting, slug)`: project setting `settings.shorts.look` (auto default; Project settings -> Shorts -> Quote design), else `looks.BY_PROJECT`, else a stable pick from the slug. Passed to s8_amv with `--look` (services/jobs.py `_amv_command`). CLI: `python -m amv ... --look scroll`.
+- **Closing message** (amv/quote_short.py `outro_text`, styles.quote, cinema.Stack): after the edit, a scene with its own frame, text and an am_adam voice: "Thank you for watching. The playlist link for <series> is in our description and our pinned comment, and we upload daily." `--no-outro` to skip. Mixed with `voice_mix_filter(..., more=)` (music dips under both voices). Limiter 0.85.
+- **Playlist links** (`settings.youtube.shorts_playlist`): only my-disciples-are-all-big-villains-2 and the-world-s-best-engineer-2 have one, and both look truncated (11-12 chars after list=). The worker (publishing/worker.py) adds the link to the description and posts it as a comment, but the API cannot PIN a comment.
+- Tests: tests/test_amv.py (QuoteLooks, QuoteOutro; 39 pass). Previews: shorts/amv_prototype/looks/look_<look>.mp4. Lesson: never start 6 renders at once (they starved each other for 33 min); max 3 at a time.
+
+
+## 2026-11-23 - Random terminal windows while shorts render
+- Cause: amv/render.py (ffmpeg render pipe) and amv/voice.py (ffmpeg voice post-processing) started ffmpeg without `creationflags=CREATE_NO_WINDOW`; the app runs under pythonw, so Windows opened a console for each. Fix: `amv.NO_CONSOLE` (amv/__init__.py) used in both. Other subprocess calls were already fine (config.NO_CONSOLE) or GUI launches (restart, splash, startfile).
+- Takes effect for the next shorts render (each job is a new Python process); the render running when this was found keeps the old code.
+
+## 2026-11-25 - app stuck on loading
+- Cause: cold /api/projects took ~10s (1200 chapter.json reads at ~5ms each); cache expiry made each refresh block.
+- tools/framer/projects.py: _stored_states now serves stale cache and refreshes in a background thread. tools/framer/app.py: warms the cache at startup.
+- Restart the app (tray icon > quit, then start.bat) to pick it up.
+
+## 2026-11-25 - shared CTA clip
+- New tools/common_cta.py builds assets/cta/cta.mp4 (32.9s, 1080p, manga-style animation: logo, read/script/voice/edit panels, daily calendar stamps, like + subscribe + bell, comment bubbles; no narration text; synthesized calm SFX). Voice = the 6 project-name-free lines from my-disciples-are-all-big-villains-2, copied to assets/cta/audio/.
+- tools/framer/cta.py: clip_path() falls back to assets/cta/cta.mp4 when a project has no cta/cta.mp4, so merge "CTA after chapter N" works for every project.
+- Rebuild: .venv\Scripts\python.exe tools/common_cta.py (--preview, --still <sec>). Takes ~10 min on this RAM-tight PC.
+
+## 2026-11-25 - shared CTA v2
+- tools/common_cta.py: logo intro cut to 2.7s + new frame (pause->play button, panels with characters); line 3 is now a real 30-day wall calendar with a random chibi character stamped on each day (accelerating); characters also peek in during like/subscribe, comments and the closing logo.
+- Characters = PNGs in assets/cta/characters/ (any size; transparent PNGs used as drawn, others become rounded badges). Currently 4 crops of the chibi disciples as placeholders: add chibis of other projects there and re-run tools/common_cta.py.
+- Voice: line 2 re-voiced with "reed" (Kokoro am_adam, the villains project voice) -> assets/cta/audio/cta_02.wav (old kept as cta_02_old_read.wav.bak).
+
+## 2026-11-25 - shared CTA v3
+- Opening is a Marvel-style wall of fast-scrolling black-and-white manga panels (assets/cta/panels/*.jpg, 54 panels sampled from 6 series; columns scroll in opposite directions, page-flip riffle SFX, logo slams in at 0.7s, wall dims behind the second frame).
+- Characters now come from assets/cta/new characters/ch*.png (white sticker outline added): Luffy/Gojo/Goku burst from the intro panels; ch1 + ch12 in the makers scene; Luffy + Goku frame the calendar (random stickers per day; ch6 excluded); ch4 thumbs-up + ch11 pointing at SUBSCRIBE; ch12 thinking + ch5 OK on comments; ch2 presents the logo, ch8 waves, ch13 duo, ch6 applauds at the end. Old placeholder crops deleted.
+- Rebuild: .venv\Scripts\python.exe tools/common_cta.py
+
+## 2026-11-25 - CTA line 5 voice
+- Line 5 re-voiced with "reed" (assets/cta/audio/cta_05.wav, old kept as cta_05_old_read.wav.bak) and assets/cta/cta.mp4 re-rendered.
+
+## 2026-11-25 - shared CTA final
+- assets/cta/cta.mp4 (+cta.json, audio/, panels/, new characters/) is the final shared CTA. tools/framer/cta.py clip_path() falls back to it for any project without its own cta/cta.mp4, so the merge dropdown "Call-to-action video after chapter" works in every project (and on a friend's PC after update).
+- To ship: git add assets/cta tools/common_cta.py tools/framer/cta.py (assets/** is not git-ignored). A project's own cta/cta.mp4 still wins; delete it to use the shared one.
+
+## 2026-11-25 - faster intro/outro final render
+- tools/framer/branding.py render_final: no more full-size ".faded" copy of the merge. Only the first keyframe-aligned seconds (>= 2s fade) are re-encoded into a small local head clip (-frames:v exact); the join then stream-copies head + merge (concat inpoint) + intro/outro in ONE read/write of the big file. Falls back to the old way when no keyframe is found. Tested on a local 375s chapter: identical frame count/duration, no decode errors, ~5x faster (bigger gain on Google Drive). Applies after restarting the app.
+
+## 2026-11-25 - invisible waiting job
+- A final (brand) render popped by the single job worker waits on the shared "video" hardware lock while a shorts render holds it; it was neither running nor in QUEUE_ORDER, so /api/jobs hid it and the button said "already queued or running". services/jobs.py jobs_with_eta now also lists such waiting jobs (needs an app restart to take effect).
+
+## 2026-11-25 - nano-machine shorts: unique quotes/music + queued
+- Cause of repeated quote/track: services/batching.py amv_offset counted only shorts already in the upload queue, so shorts rendered but not queued all started from the same rotation spot (offset 33 -> same quote #3 and track). Now it also counts this project's rendered-but-unqueued shorts (reads chapters/*/output/shorts/shorts.json). Needs app restart.
+- Re-rendered ch138 short with offset 34 (quote "The higher you climb...", track xcool); old render kept in chapters/138/output/shorts_same_quote_backup/. ch136 keeps "Those who stand beside me..." + sub_clair-phonk-hard.
+- Queued both for upload via publishing.enqueue.shorts_of_chapter (slots 12:00 and 13:24 UTC). ch139 has a partial short_01.mp4 from the cancelled render (no shorts.json): safe to delete.

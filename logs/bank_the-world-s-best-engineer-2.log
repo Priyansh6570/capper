@@ -1,0 +1,58 @@
+chapter 1: stitching the strip from the-worlds-best-engineer-chapter-1.pdf
+  stitched 3 pages -> strip 690x168040 -> D:\Work\manhwa-recap\projects\the-world-s-best-engineer-2\chapters\1\work\pages\strip_001.png
+chapter 1: tagging 16 frames (16/110)
+chapter 1: tagging 16 frames (32/110)
+chapter 1: tagging 16 frames (48/110)
+chapter 1: PermissionError: [WinError 5] Access is denied: 'D:\\Work\\manhwa-recap\\claude_usage.json.tmp09cd04c3' -> 'D:\\Work\\manhwa-recap\\claude_usage.json'
+chapter 2: stitching the strip from the-worlds-best-engineer-chapter-2.pdf
+  stitched 26 pages -> strip 690x143275 -> D:\Work\manhwa-recap\projects\the-world-s-best-engineer-2\chapters\2\work\pages\strip_001.png
+chapter 2: tagging 16 frames (16/92)
+chapter 2: tagging 16 frames (32/92)
+chapter 2: tagging 16 frames (48/92)
+chapter 2: tagging 16 frames (64/92)
+chapter 2: tagging 16 frames (80/92)
+chapter 2: tagging 12 frames (92/92)
+chapter 2: bank: kept 25 of 92 frames
+chapter 3: stitching the strip from the-worlds-best-engineer-chapter-3.pdf
+  stitched 26 pages -> strip 690x139034 -> D:\Work\manhwa-recap\projects\the-world-s-best-engineer-2\chapters\3\work\pages\strip_001.png
+chapter 3: tagging 16 frames (16/103)
+chapter 3: tagging 16 frames (32/103)
+chapter 3: tagging 16 frames (48/103)
+chapter 3: tagging 16 frames (64/103)
+chapter 3: tagging 16 frames (80/103)
+chapter 3: tagging 16 frames (96/103)
+chapter 3: tagging 7 frames (103/103)
+chapter 3: bank: kept 25 of 103 frames
+chapter 4: stitching the strip from the-worlds-best-engineer-chapter-4.pdf
+  stitched 23 pages -> strip 690x120052 -> D:\Work\manhwa-recap\projects\the-world-s-best-engineer-2\chapters\4\work\pages\strip_001.png
+chapter 4: tagging 16 frames (16/88)
+chapter 4: tagging 16 frames (32/88)
+chapter 4: tagging 16 frames (48/88)
+chapter 4: tagging 16 frames (64/88)
+chapter 4: tagging 16 frames (80/88)
+chapter 4: tagging 8 frames (88/88)
+chapter 4: bank: kept 27 of 88 frames
+chapter 5: stitching the strip from the-worlds-best-engineer-chapter-5.pdf
+  stitched 22 pages -> strip 690x119496 -> D:\Work\manhwa-recap\projects\the-world-s-best-engineer-2\chapters\5\work\pages\strip_001.png
+chapter 5: tagging 16 frames (16/82)
+chapter 5: tagging 16 frames (32/82)
+chapter 5: tagging 16 frames (48/82)
+chapter 5: tagging 16 frames (64/82)
+chapter 5: tagging 16 frames (80/82)
+chapter 5: tagging 2 frames (82/82)
+chapter 5: bank: kept 22 of 82 frames
+chapter 6: stitching the strip from the-worlds-best-engineer-chapter-6.pdf
+  stitched 24 pages -> strip 690x128992 -> D:\Work\manhwa-recap\projects\the-world-s-best-engineer-2\chapters\6\work\pages\strip_001.png
+chapter 6: tagging 16 frames (16/88)
+chapter 6: tagging 16 frames (32/88)
+chapter 6: tagging 16 frames (48/88)
+chapter 6: tagging 16 frames (64/88)
+chapter 6: tagging 16 frames (80/88)
+chapter 6: tagging 8 frames (88/88)
+chapter 6: bank: kept 43 of 88 frames
+1 PermissionError: [WinError 5] Access is denied: 'D:\\Work\\manhwa-recap\\claude_usage.json.tmp09cd04c3' -> 'D:\\Work\\manhwa-recap\\claude_usage.json'
+2 {'built': True, 'frames': 92, 'kept': 25, 'at': '2026-11-20T06:44:58+00:00'}
+3 {'built': True, 'frames': 103, 'kept': 25, 'at': '2026-11-20T06:47:00+00:00'}
+4 {'built': True, 'frames': 88, 'kept': 27, 'at': '2026-11-20T06:48:43+00:00'}
+5 {'built': True, 'frames': 82, 'kept': 22, 'at': '2026-11-20T06:50:20+00:00'}
+6 {'built': True, 'frames': 88, 'kept': 43, 'at': '2026-11-20T06:52:08+00:00'}

@@ -23,6 +23,32 @@ class LibraryError(ValueError):
     pass
 
 
+def study(path: Path) -> dict:
+    """What the AMV shorts need to know about a track, found by listening (amv/music.py, cached): the tempo, the
+    main drop (seconds; None when it has none) and whether an edit can be cut to it."""
+    try:
+        from amv import music
+        a = music.analyze(path)
+        drops = a.get("drops") or []
+        main = next((d for d in drops if d >= 6), drops[0] if drops else None)      # a hit before 6s is an intro, not the drop
+        drop = round(float(main), 1) if main is not None else None
+        return {"bpm": round(float(a.get("bpm") or 0)), "drop_s": drop, "studied": True}
+    except Exception as e:  # noqa: BLE001 - a track that cannot be studied is still stored; the shorts will skip it
+        return {"bpm": 0, "drop_s": None, "studied": False, "problem": f"{type(e).__name__}: {e}"[:160]}
+
+
+def files_of(project: dict, slug: str, track_id: str | None = None) -> list[str]:
+    """Absolute paths of the project's own music (one track when `track_id` is given), for the AMV shorts."""
+    out = []
+    for t in library(project):
+        if track_id and t["id"] != track_id:
+            continue
+        p = projects.resolve_asset_path(slug, t.get("file"))
+        if p:
+            out.append(str(p))
+    return out
+
+
 def clean_theme(theme) -> str:
     """A theme as a lowercase word or two (letters, digits, dashes); one of THEMES or a custom one."""
     slug = re.sub(r"[^a-z0-9]+", "-", str(theme or "").lower()).strip("-")[:MAX_THEME]
@@ -63,7 +89,7 @@ def themes_of(project: dict) -> list[str]:
 
 
 def add(slug: str, filename: str, file_storage, theme: str, drop=None) -> dict:
-    theme = clean_theme(theme)
+    theme = clean_theme(theme or "phonk")
     ext = Path(filename or "").suffix.lower()
     if ext not in EXTS:
         raise LibraryError(f"Unsupported music file: {ext or '(none)'}")
@@ -81,8 +107,12 @@ def add(slug: str, filename: str, file_storage, theme: str, drop=None) -> dict:
     except LibraryError:
         dest.unlink(missing_ok=True)
         raise
+    studied = study(dest)
     track = {"id": track_id, "name": Path(filename).stem[:80], "theme": theme, "duration_s": round(seconds, 1),
-             "drop_s": drop_s, "file": f"assets/{FOLDER}/{dest.name}"}
+             "drop_s": drop_s if drop_s is not None else studied["drop_s"], "bpm": studied["bpm"],
+             "studied": studied["studied"], "file": f"assets/{FOLDER}/{dest.name}"}
+    if not track["drop_s"]:
+        track["warning"] = "No drop was found in this track: AMV shorts are built around a drop, so it may be skipped."
     with projects._LOCK:
         project = projects.load(slug)
         library(project).append(track)

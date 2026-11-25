@@ -239,12 +239,13 @@ def default_settings() -> dict:
         # the watermark above.
         # `own_audio` gives them a music track and narration / music volumes of their own too (`music`, `audio`,
         # the same fields as the main ones).
-        # `auto_make`: the Shorts pipeline runs by itself for the chapters a pipeline run has rendered. Off by
-        # default: shorts are only made when asked for.
+        # `look`: the design of the quote shorts (amv/looks.py: ember, scroll, royal, neon, blood, frost); "auto" gives each series its own.
+        # `auto_make`: the Shorts pipeline runs by itself for the chapters a pipeline run has rendered. On by
+        # default (every short is a quote short, amv/styles.py `quote`); switch it off to make shorts only when asked.
         # `library`: the shorts' own music, tracks {id, name, theme, duration_s, drop_s, file} (short_music.py); stage 8 picks
         # the one that fits a short's theme, runs the short as long as it and mixes it in at `music_share` (the
         # narration gets the rest). With no tracks the music settings above apply.
-        "shorts": {"layout": "frame", "auto_make": False, "own_look": False, "watermark": _default_watermark(),
+        "shorts": {"layout": "frame", "auto_make": True, "look": "auto", "own_look": False, "watermark": _default_watermark(),
                    "library": [], "music_share": 0.4,
                    "background": _default_background(),
                    "own_audio": False, "music": {"mode": "default", "file": None},
@@ -347,16 +348,31 @@ def _chapter_state_path(slug: str, n) -> Path:
 
 
 _STATES_CACHE: dict[str, tuple[float, dict]] = {}
+_STATES_REFRESHING: set[str] = set()
 _STATES_TTL = 30.0  # seconds; file reads are slow on this disk (~4ms each), so a project load was 1s+
 
 
 def _stored_states(slug: str) -> dict[int, dict]:
-    """The state of every chapter that has a chapter.json, keyed by chapter number (cached briefly;
-    save_chapter drops the entry, so only writes by another process can be up to _STATES_TTL stale)."""
+    """The state of every chapter that has a chapter.json, keyed by chapter number. Cached; once the entry is
+    older than _STATES_TTL the stale copy is still returned at once and a background thread refreshes it, so a
+    page never waits ~10s for ~1200 slow file reads. Only the very first read of a project blocks.
+    save_chapter drops the entry, so only writes by another process can be a little stale."""
     import copy
+    import threading
     import time as _t
     hit = _STATES_CACHE.get(slug)
-    if hit and _t.monotonic() - hit[0] < _STATES_TTL:
+    if hit:
+        if _t.monotonic() - hit[0] >= _STATES_TTL and slug not in _STATES_REFRESHING:
+            _STATES_REFRESHING.add(slug)
+
+            def _refresh() -> None:
+                try:
+                    _STATES_CACHE[slug] = (_t.monotonic(), _read_stored_states(slug))
+                except Exception:  # noqa: BLE001 - keep serving the stale copy
+                    pass
+                finally:
+                    _STATES_REFRESHING.discard(slug)
+            threading.Thread(target=_refresh, daemon=True).start()
         return copy.deepcopy(hit[1])
     states = _read_stored_states(slug)
     _STATES_CACHE[slug] = (_t.monotonic(), copy.deepcopy(states))
@@ -779,6 +795,9 @@ def update_settings(slug: str, settings: dict) -> dict:
         shorts = project["settings"]["shorts"]
         shorts["own_look"] = bool(shorts.get("own_look"))
         shorts["auto_make"] = bool(shorts.get("auto_make"))
+        from amv import looks as quote_looks
+        if shorts.get("look") != "auto" and shorts.get("look") not in quote_looks.LOOKS:
+            shorts["look"] = "auto"         # the quote shorts' design (amv/looks.py): "auto" = the series' own
         shorts["music_share"] = max(0.1, min(0.7, float(shorts.get("music_share") or 0.4)))
         if shorts.get("layout") not in ("frame", "cover"):
             shorts["layout"] = "frame"

@@ -67,6 +67,26 @@ def retry(item_id: str) -> dict | None:
         return update(item_id, status="queued", attempts=0, error=None, next_attempt_at=None)
 
 
+QUEUED = ("queued", "scheduled")
+
+
+def reorder(ids: list[str]) -> None:
+    """Put the waiting items (queued / scheduled) in the given order. Each gets a `rank` (the upload order of queued
+    items and the lane order); the slots of scheduled shorts of one channel are dealt out again in that order."""
+    with store.LOCK:
+        items = all_items()
+        byid = {i["id"]: i for i in items}
+        order = [byid[i] for i in dict.fromkeys(ids) if i in byid and byid[i]["status"] in QUEUED]
+        for rank, item in enumerate(order):
+            item["rank"] = rank
+        timed = lambda i: i["kind"] == SHORT and i.get("publish_at")      # noqa: E731 - scheduled, or queued ahead of its slot
+        for channel in {i.get("channel") for i in order if timed(i)}:
+            mine = [i for i in order if timed(i) and i.get("channel") == channel]
+            for item, at in zip(mine, sorted(i["publish_at"] for i in mine)):   # same offset format, so strings sort by time
+                item["publish_at"] = at
+        store.write(FILE, items)
+
+
 def remove_where(keep) -> None:
     """Drop every item for which `keep(item)` is false."""
     with store.LOCK:

@@ -25,7 +25,7 @@ from manifest import Manifest
 from services.chapter_files import _strip_path, downloaded_pdf
 from services.common import Refused, now_iso
 from services.script_jobs import run_script_job
-from services.shorts_jobs import run_shorts_find_job, run_shorts_tag_job
+from services.shorts_jobs import run_amv_find_job, run_shorts_find_job, run_shorts_tag_job
 
 
 # --------------------------------------------------------------------------- #
@@ -88,6 +88,7 @@ class Job:
         self.target = target              # brand: the merged video being branded
         self.fraction = 0.0               # brand/script: progress reported by the job itself
         self.resume_at: str | None = None  # script: set while paused on Claude's usage limit
+        self.amv: dict | None = None      # shorts_render: {count, styles, offset}: render AMV shorts (stages/s8_amv.py) instead of narration shorts
         self.short_no = 0                 # shorts_render: the short being rendered and how many there are
         self.short_count = 0
         self.chapters: list[int] = []     # shorts_find: the chapters it studies, and at most how many shorts to keep
@@ -221,7 +222,10 @@ def jobs_with_eta() -> list[dict]:
     with JOBS_LOCK:
         running = [j for j in JOBS.values() if j.status == "running"]
         queued = [JOBS[jid] for jid in QUEUE_ORDER if jid in JOBS]
-    ordered = running + queued
+        # a job the worker has taken off the queue but that still waits for the hardware another job holds
+        # (e.g. a final render behind a shorts render) is neither running nor in QUEUE_ORDER: show it, or it is invisible
+        waiting = [j for j in JOBS.values() if j.status == "queued" and j not in queued and j not in running]
+    ordered = running + queued + waiting
     out = []
     ahead_s = 0.0
     for j in ordered:
@@ -270,7 +274,7 @@ def _run_job(job: "Job") -> None:
         job.started_at = now_iso()
         try:
             {"brand": _run_brand_job, "script": run_script_job,
-             "shorts_find": run_shorts_find_job, "shorts_tag": run_shorts_tag_job}.get(job.what, _run_pipeline_job)(job)
+             "shorts_find": run_amv_find_job, "shorts_tag": run_shorts_tag_job}.get(job.what, _run_pipeline_job)(job)
         finally:
             job.finished_at = now_iso()
             job.emit({"type": "end"})
@@ -470,15 +474,36 @@ def _track_shorts_render(job: "Job", line: str) -> None:
     message) and how far its ffmpeg run has got."""
     if start := _SHORT_START.match(line):
         job.short_no, job.short_count = int(start[1]), int(start[2])
-        job.message = f"Rendering short {start[1]} of {start[2]}: {line.partition(': ')[2]}"
+        job.message = f"Rendering short {start[1]} of {start[2]}: {line.partition(': ')[2]}"     # title [style, track]
         job.fraction = (job.short_no - 1) / job.short_count
     elif (percent := _RENDER_PERCENT.match(line)) and job.short_count:
         job.fraction = (job.short_no - 1 + int(percent[1]) / 100) / job.short_count
 
 
+def _amv_command(job: "Job") -> list[str]:
+    """stages/s8_amv.py for a chapter: `job.amv` = {"count", "styles": [...], "offset"}; the series name and the
+    project's quotes.json come from the project."""
+    opts = job.amv or {}
+    cmd = [sys.executable, "-u", "-m", "stages.s8_amv", "--chapter", job.chapter_id,
+           "--count", str(int(opts.get("count") or 1)), "--offset", str(int(opts.get("offset") or 0))]
+    if opts.get("styles"):
+        cmd += ["--styles", ",".join(opts["styles"])]
+    if opts.get("tracks"):
+        cmd += ["--track-files", "|".join(opts["tracks"])]
+    if job.slug:
+        project = projects.load(job.slug)
+        from amv import looks
+        cmd += ["--series", project.get("series_title") or project.get("name") or "",
+                "--quotes", str(projects.local_dir(job.slug) / "quotes.json"),
+                "--look", looks.resolve(project["settings"]["shorts"].get("look"), job.slug)]
+    return cmd
+
+
 def _pipeline_command(job: "Job") -> list[str]:
     """The subprocess a render job runs: the orchestrator for the chapter's narration and video, the
     shorts stage for its shorts."""
+    if job.what == "shorts_render" and job.amv is not None:
+        return _amv_command(job)
     if job.what == "shorts_render":
         return [sys.executable, "-u", "-m", "stages.s8_shorts", "--chapter", job.chapter_id]
     from_stage, to_stage = {"video": ("video", None), "voice": ("audio", "audio")}.get(job.what, ("audio", None))

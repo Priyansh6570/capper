@@ -25,6 +25,8 @@ PROBE_NEEDS = 2 * COST_WRITE
 CATEGORY_ENTERTAINMENT = "24"
 SUMMARY_HOUR = 20
 STATE_FILE = "worker.json"
+AHEAD = timedelta(days=7)        # shorts whose slot is this close are uploaded now and scheduled on YouTube
+MIN_LEAD = timedelta(minutes=5)  # YouTube needs a publish time in the future
 _last_sync = 0.0
 
 
@@ -38,6 +40,12 @@ def _in(seconds: float) -> str:
 
 def _due(item: dict) -> str:
     return item.get("publish_at") or item.get("approved_at") or item["created_at"]
+
+
+def _order(item: dict) -> tuple:
+    """Upload order: the user's ranking first (items never ranked come after), then when they are due."""
+    rank = item.get("rank")
+    return (rank is None, rank or 0, _due(item))
 
 
 def _playlist_link(item: dict) -> str:
@@ -123,10 +131,14 @@ def _check_quota(client_id: str) -> None:
 def _finish(item: dict, channel: dict, client: Client, video: dict, requested: str) -> None:
     actual = video.get("status", {}).get("privacyStatus", requested)
     locked = requested == "public" and actual != "public"
+    ahead = item["kind"] == uploads.SHORT and requested == "private"      # scheduled on YouTube for its slot
     done = uploads.update(item["id"], status="live" if actual == "public" else "private", video_id=video["id"],
-                          uploaded_at=uploads.now_iso(), session_url=None, locked=locked, error=None)
+                          uploaded_at=uploads.now_iso(), session_url=None, locked=locked, error=None,
+                          scheduled_at=item["publish_at"] if ahead else None)
     if item["kind"] == uploads.FULL:
         uploads.update(item["id"], warnings=_thumbnail(client, done) + _playlist(client, channel, done))
+    elif warnings := _thumbnail(client, done):   # a Short's cover (vertical JPEG) is set the same way
+        uploads.update(item["id"], warnings=warnings)
     _note_visibility(channel, done, requested, actual)
     if item["kind"] == uploads.SHORT and (playlist := _playlist_link(item)):
         try:
@@ -137,6 +149,8 @@ def _finish(item: dict, channel: dict, client: Client, video: dict, requested: s
     link = uploads.url_of(done)
     if item["kind"] == uploads.FULL:
         telegram.notify(f"Uploaded as private: {item['title']}\n{link}")
+    elif done.get("scheduled_at"):
+        telegram.notify(f"Short scheduled on YouTube for {_at(done['scheduled_at']).astimezone():%a %d %b %H:%M}: {item['title']}\n{link}")
     elif locked:
         telegram.notify(f"Short uploaded private - publish it in Studio: {item['title']}\n{link}")
     else:
@@ -147,10 +161,16 @@ def _finish(item: dict, channel: dict, client: Client, video: dict, requested: s
 def _upload(item: dict, channel: dict) -> None:
     client = Client.for_channel(channel["id"])
     requested = "private" if item["kind"] == uploads.FULL else "public"
+    status = {"privacyStatus": requested, "selfDeclaredMadeForKids": False}
+    if item["kind"] == uploads.SHORT and item.get("publish_at") and _at(item["publish_at"]) > datetime.now(timezone.utc) + MIN_LEAD:
+        # uploaded now, published by YouTube itself at the slot: the laptop need not be on then
+        requested = "private"
+        status["privacyStatus"] = requested       # YouTube only accepts publishAt on a private video
+        status["publishAt"] = _at(item["publish_at"]).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")      # the form YouTube documents: with milliseconds
     uploads.update(item["id"], status="uploading", error=None)
     try:
         video = client.upload(
-            Path(item["file"]), _snippet(item), {"privacyStatus": requested, "selfDeclaredMadeForKids": False},
+            Path(item["file"]), _snippet(item), status,
             session_url=item["session_url"], on_session=lambda url: uploads.update(item["id"], session_url=url),
             progress=lambda fraction: uploads.set_progress(item["id"], fraction))
     except SessionExpired:
@@ -185,7 +205,7 @@ def _shorts_allowed(item: dict) -> bool:
 def _release_due_shorts() -> None:
     now = datetime.now(timezone.utc)
     for item in uploads.all_items():
-        if item["status"] == "scheduled" and _at(item["publish_at"]) <= now and _shorts_allowed(item):
+        if item["status"] == "scheduled" and _at(item["publish_at"]) <= now + AHEAD and _shorts_allowed(item):
             uploads.update(item["id"], status="queued")
 
 
@@ -208,7 +228,7 @@ def _upload_next() -> None:
     now = datetime.now(timezone.utc)
     ready = [i for i in uploads.all_items() if i["status"] == "queued" and i.get("metadata") != "pending"
              and (not i["next_attempt_at"] or _at(i["next_attempt_at"]) <= now)]
-    for item in sorted(ready, key=_due):
+    for item in sorted(ready, key=_order):
         if not _shorts_allowed(item):
             continue
         channel = channels.get(item["channel"])

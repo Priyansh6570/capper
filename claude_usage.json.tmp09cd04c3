@@ -1,0 +1,11 @@
+{
+  "five_hour": {
+    "percent": 1.0,
+    "resets_at": 1795173600
+  },
+  "seven_day": {
+    "percent": 42.0,
+    "resets_at": 1795366800
+  },
+  "seen_at": 1795156987.1202588
+}

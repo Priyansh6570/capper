@@ -11,6 +11,7 @@ from __future__ import annotations
 import functools
 import gc
 import io
+import re
 import time
 from pathlib import Path
 
@@ -58,8 +59,30 @@ def load_pipeline(voice: str, device: str):
     return _pipeline(voice[0], device)
 
 
+_READ = re.compile(r"\b(?:(\w+)(\W+))?(read)\b", re.IGNORECASE)
+# after these, "read" is the past participle ("have read", "was read"), pronounced "red"
+_PAST_BEFORE = {"have", "has", "had", "having", "been", "was", "were", "be", "being", "already", "just",
+                "never", "ever", "well", "widely", "often", "previously", "once", "also", "who've", "i've"}
+
+
+def fix_pronunciations(text: str) -> str:
+    """Force "read" to /ri:d/ (Kokoro often says "red"), except after a past-participle cue, via misaki's
+    inline `[word](/phonemes/)` markup. Text already carrying markup is left alone."""
+    if "](/" in text:
+        return text
+
+    def swap(match: re.Match) -> str:
+        before, gap, word = match.groups()
+        if before and before.lower() in _PAST_BEFORE:
+            return match.group(0)
+        return f"{before or ''}{gap or ''}[{word}](/ɹˈid/)"
+
+    return _READ.sub(swap, text)
+
+
 def synthesize(pipeline, text: str, voice: str, speed: float = 1.0) -> np.ndarray:
     """The narration of `text` as one float32 mono waveform at SAMPLE_RATE; `speed` above 1 is faster."""
+    text = fix_pronunciations(text)
     return np.concatenate([np.asarray(audio, dtype=np.float32).reshape(-1)
                            for _, _, audio in pipeline(text, voice=voice, speed=speed) if audio is not None])
 

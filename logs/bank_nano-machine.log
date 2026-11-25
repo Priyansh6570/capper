@@ -1,0 +1,57 @@
+chapter 1: stitching the strip from nano-machine-chapter-1.pdf
+  stitched 53 pages -> strip 800x132281 -> D:\Work\manhwa-recap\projects\nano-machine\chapters\1\work\pages\strip_001.png
+chapter 1: tagging 16 frames (16/104)
+chapter 1: tagging 16 frames (32/104)
+chapter 1: tagging 16 frames (48/104)
+chapter 1: tagging 16 frames (64/104)
+chapter 1: tagging 16 frames (80/104)
+chapter 1: tagging 16 frames (96/104)
+chapter 1: tagging 8 frames (104/104)
+chapter 1: bank: kept 27 of 104 frames
+chapter 2: stitching the strip from nano-machine-chapter-2.pdf
+  stitched 40 pages -> strip 800x95443 -> D:\Work\manhwa-recap\projects\nano-machine\chapters\2\work\pages\strip_001.png
+chapter 2: tagging 16 frames (16/81)
+chapter 2: tagging 16 frames (32/81)
+chapter 2: tagging 16 frames (48/81)
+chapter 2: tagging 16 frames (64/81)
+chapter 2: tagging 16 frames (80/81)
+chapter 2: tagging 1 frames (81/81)
+chapter 2: bank: kept 9 of 81 frames
+chapter 3: stitching the strip from nano-machine-chapter-3.pdf
+  stitched 42 pages -> strip 800x100302 -> D:\Work\manhwa-recap\projects\nano-machine\chapters\3\work\pages\strip_001.png
+chapter 3: tagging 16 frames (16/68)
+chapter 3: tagging 16 frames (32/68)
+chapter 3: tagging 16 frames (48/68)
+chapter 3: tagging 16 frames (64/68)
+chapter 3: tagging 4 frames (68/68)
+chapter 3: bank: kept 3 of 68 frames
+chapter 4: stitching the strip from nano-machine-chapter-4.pdf
+  stitched 37 pages -> strip 800x98811 -> D:\Work\manhwa-recap\projects\nano-machine\chapters\4\work\pages\strip_001.png
+chapter 4: tagging 16 frames (16/74)
+chapter 4: tagging 16 frames (32/74)
+chapter 4: tagging 16 frames (48/74)
+chapter 4: tagging 16 frames (64/74)
+chapter 4: tagging 10 frames (74/74)
+chapter 4: bank: kept 15 of 74 frames
+chapter 5: stitching the strip from nano-machine-chapter-5.pdf
+  stitched 42 pages -> strip 800x103647 -> D:\Work\manhwa-recap\projects\nano-machine\chapters\5\work\pages\strip_001.png
+chapter 5: tagging 16 frames (16/75)
+chapter 5: tagging 16 frames (32/75)
+chapter 5: tagging 16 frames (48/75)
+chapter 5: tagging 16 frames (64/75)
+chapter 5: tagging 11 frames (75/75)
+chapter 5: bank: kept 14 of 75 frames
+chapter 6: stitching the strip from nano-machine-chapter-6.pdf
+  stitched 41 pages -> strip 800x105857 -> D:\Work\manhwa-recap\projects\nano-machine\chapters\6\work\pages\strip_001.png
+chapter 6: tagging 16 frames (16/75)
+chapter 6: tagging 16 frames (32/75)
+chapter 6: tagging 16 frames (48/75)
+chapter 6: tagging 16 frames (64/75)
+chapter 6: tagging 11 frames (75/75)
+chapter 6: bank: kept 13 of 75 frames
+1 {'built': True, 'frames': 104, 'kept': 27, 'at': '2026-11-20T06:44:04+00:00'}
+2 {'built': True, 'frames': 81, 'kept': 9, 'at': '2026-11-20T06:45:40+00:00'}
+3 {'built': True, 'frames': 68, 'kept': 3, 'at': '2026-11-20T06:47:09+00:00'}
+4 {'built': True, 'frames': 74, 'kept': 15, 'at': '2026-11-20T06:48:42+00:00'}
+5 {'built': True, 'frames': 75, 'kept': 14, 'at': '2026-11-20T06:50:11+00:00'}
+6 {'built': True, 'frames': 75, 'kept': 13, 'at': '2026-11-20T06:51:41+00:00'}

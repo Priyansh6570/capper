@@ -17,9 +17,10 @@ import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-from . import music
+from . import NO_CONSOLE, music
+from .backdrop import Backdrop, Layer, parse as parse_backdrop
 
-W, H, FPS = 1080, 1920, 30
+W, H, FPS = 1080, 1920, 60
 ZMAX = 1.35                       # headroom baked into every base image
 ROOT = Path(__file__).resolve().parent.parent
 LOGO = ROOT / "assets" / "ReCapper.png"
@@ -63,6 +64,15 @@ def _sharpen(img: np.ndarray, amount: float = 0.5) -> np.ndarray:
     return cv2.addWeighted(img, 1 + amount, blur, -amount, 0)
 
 
+def _ink(img: np.ndarray) -> np.ndarray:
+    """A strongly magnified manga frame looks soft: bring the lines back (an unsharp pass at the size of the upscale blur)
+    and deepen the blacks a little, so the art reads crisp and inked instead of mushy."""
+    blur = cv2.GaussianBlur(img, (0, 0), 2.2)
+    out = cv2.addWeighted(img, 1.9, blur, -0.9, 0)
+    lut = np.clip(((np.arange(256) / 255.0 - 0.5) * 1.10 + 0.5) * 255 - 4, 0, 255).astype(np.uint8)
+    return cv2.LUT(out, lut)
+
+
 @dataclass
 class Shot:
     path: str
@@ -75,6 +85,8 @@ class Shot:
     pivot: tuple[float, float] = (0.5, 0.5)   # eye point, fractions of the trimmed image
     m_face: float = 1.0                       # magnification that gives the face the target size
     tag: dict | None = None
+    fit_geo: tuple = (0, 1920)                # fit shots: top y and height of the sharp panel on the canvas
+    plate: np.ndarray | None = None           # fit shots: the blurred ambient plate the hold mode animates
 
 
 FACE_TARGET_H = 0.30              # a face fills about this share of the screen height
@@ -102,7 +114,8 @@ def pivot_of(tag: dict | None, point: str = "eye") -> tuple[float, float, float 
     return None
 
 
-def load_shot(path: str | Path, tag: dict | None = None, min_zoom: float = 1.0, point: str | None = None) -> Shot:
+def load_shot(path: str | Path, tag: dict | None = None, min_zoom: float = 1.0, point: str | None = None,
+              cover_only: bool = False) -> Shot:
     img = cv2.imdecode(np.fromfile(str(path), dtype=np.uint8), cv2.IMREAD_COLOR)
     if img is None:
         raise ValueError(f"cannot read {path}")
@@ -110,7 +123,7 @@ def load_shot(path: str | Path, tag: dict | None = None, min_zoom: float = 1.0, 
     img, (top, bot, left, right) = _trim_borders(img)
     h, w = img.shape[:2]
     cover = max(W / w, H / h)
-    fit = cover > 2.4                 # too small to crop-to-fill: blurred backdrop + sharp panel
+    fit = cover > 2.4 and not cover_only   # too small to crop-to-fill: blurred backdrop + sharp panel (never with cover_only)
     fit_geo = (0, H)                  # fit only: where the panel sits on the canvas (top y, height)
     if fit:
         bg = cv2.resize(img, None, fx=cover, fy=cover, interpolation=cv2.INTER_AREA if cover < 1 else cv2.INTER_CUBIC)
@@ -128,12 +141,16 @@ def load_shot(path: str | Path, tag: dict | None = None, min_zoom: float = 1.0, 
         up, axis = s, "none"
     else:
         scale = cover * ZMAX
-        base = cv2.resize(img, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC if scale > 1 else cv2.INTER_AREA)
+        base = cv2.resize(img, None, fx=scale, fy=scale,
+                          interpolation=(cv2.INTER_LANCZOS4 if cover_only else cv2.INTER_CUBIC) if scale > 1 else cv2.INTER_AREA)
         up = scale
+        if cover_only and up > 2.2:
+            base = _ink(base)
         axis = "x" if base.shape[1] > base.shape[0] * (W / H) * 1.02 else "y" if base.shape[0] > base.shape[1] * (H / W) * 1.02 else "none"
         if up > 1.7:
             base = _sharpen(base, 0.45)
     shot = Shot(str(path), _grade(base), float(up), axis, fit, tag=tag)
+    shot.fit_geo = fit_geo
     sel = pivot_of(tag, point or "eye")
     if sel and (not fit or point) and h > 0 and w > 0:      # a letterboxed small panel is pinned only on request (a point)
         ex, ey, size = sel
@@ -420,6 +437,38 @@ def _story_view(shot: Shot, mo: Motion, u: float) -> np.ndarray:
     return _view(shot, 1.0 + 0.07 * u, 0.5, 0.5)
 
 
+def _hold_view(shot: Shot, mo: "Motion", u: float, t: float) -> np.ndarray:
+    """The hero frame held while the quote is spoken: a slow, visible push with a little sway. A small wide panel is not
+    left on static blurred bars: its background becomes an ambient plate that turns and breathes."""
+    u = min(1.0, max(0.0, u))
+    e = _ease(u)
+    if mo.kind == "pan" and not shot.fit_mode:
+        p = mo.p0 + (mo.p1 - mo.p0) * u
+        fx, fy = (p, 0.5) if shot.axis == "x" else (0.5, p)
+        return _view(shot, 1.0 + 0.06 * e, fx, fy)
+    m = 1.0 + 0.17 * e
+    img = _view(shot, m, 0.5 + 0.012 * math.sin(t * 0.7), 0.5 + 0.008 * math.cos(t * 0.5))
+    if not shot.fit_mode:
+        return img
+    if shot.plate is None:
+        small = cv2.resize(_view(shot, 1.0, 0.5, 0.5), (W // 8, H // 8), interpolation=cv2.INTER_AREA)
+        small = cv2.GaussianBlur(small, (0, 0), 3.0)
+        pw, ph = int(W * 1.45), int(H * 1.45)
+        shot.plate = (cv2.resize(small, (pw, ph), interpolation=cv2.INTER_CUBIC).astype(np.float32) * 0.85).astype(np.uint8)
+    plate = shot.plate
+    ph, pw = plate.shape[:2]
+    M = cv2.getRotationMatrix2D((pw / 2, ph / 2), 3.0 * math.sin(t * 0.35), 1.0 + 0.05 * math.sin(t * 0.5))
+    M[:, 2] += (W / 2 - pw / 2 + 36 * math.sin(t * 0.4), H / 2 - ph / 2 + 24 * math.cos(t * 0.3))
+    moving = cv2.warpAffine(plate, M, (W, H), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
+    moving = np.clip(moving.astype(np.float32) * (1 + 0.07 * math.sin(t * 1.1)), 0, 255)
+    fy, fh = shot.fit_geo
+    y0 = m * fy + H * (1 - m) / 2
+    y1 = y0 + m * fh
+    rows = np.arange(H, dtype=np.float32)
+    inside = np.clip(np.minimum(rows - y0, y1 - rows) / 18.0 + 0.5, 0, 1)[:, None, None]    # 1 on the panel, feathered edge
+    return (img.astype(np.float32) * inside + moving * (1 - inside)).astype(np.uint8)
+
+
 def _whip(img: np.ndarray, into: bool, out_of: bool, dt_cut: float, dt_end: float, ci: int) -> np.ndarray:
     """Slide + horizontal motion blur on the cut: the old shot is thrown off one side, the new one arrives from the other."""
     sgn = 1 if ci % 2 == 0 else -1
@@ -436,11 +485,39 @@ def _whip(img: np.ndarray, into: bool, out_of: bool, dt_cut: float, dt_end: floa
     return cv2.blur(img, (k, 1))
 
 
+MUSIC_DB = -9.0          # the music is always this much below its own level: the story is the voice, not the track
+VOICE_GAIN = 2.0        # the narration, after its own loudness normalisation
+DUCK_DB = 26.0          # the music dips this much, smoothly, while the narration is heard, so the voice is clearly above it
+
+
+def voice_mix_filter(fade_a: str, voice: tuple, more: tuple = ()) -> str:
+    """ffmpeg graph: music (input 1) with a small dip under the voice (input 2, delayed to its moment), limited so the
+    sum never clips. `more`: further voices (inputs 3, 4 ...), each a (wav, seconds in, seconds heard) that dips the music
+    in the same way. Inputs are stereo; every voice has already been loudness-normalised (amv.voice)."""
+    voices = [voice, *more]
+    dip = 1 - (1 - 10 ** (-DUCK_DB / 20))
+    duck = ""
+    if DUCK_DB > 0:
+        ks = []
+        for v in voices:
+            a0, a1 = v[1] - 0.55, v[1] + (v[2] if len(v) > 2 else 8.0)      # fully dipped when the first word starts
+            ks.append(f"min(clip((t-{a0:.3f})/0.4,0,1),clip(({a1:.3f}-t)/0.5,0,1))")
+        k = ks[0] if len(ks) == 1 else "max(" + ",".join(ks) + ")"
+        duck = f",volume='1-{1 - dip:.4f}*{k}':eval=frame"
+    parts = [f"[1:a]{fade_a},aformat=channel_layouts=stereo,volume={MUSIC_DB}dB{duck}[m]"]
+    for i, v in enumerate(voices):
+        ms = int(round(v[1] * 1000))
+        parts.append(f"[{2 + i}:a]adelay={ms}|{ms},aformat=channel_layouts=stereo,volume={VOICE_GAIN}[v{i}]")
+    mix = "[m]" + "".join(f"[v{i}]" for i in range(len(voices)))
+    parts.append(f"{mix}amix=inputs={1 + len(voices)}:duration=first:normalize=0,alimiter=limit=0.85[a]")
+    return ";".join(parts)
+
+
 def render(frames: list[str], track: str | Path, out: str | Path, length: float | None = 30.0,
            tempo_scale: float = 1.0, start: float | None = None, drop: float | None = None,
            hero: int = 0, preview: bool = False, name: str = "RECAPPER",
            progress=None, style: str = "push", recipe: str | None = None, items: list[dict] | None = None,
-           point: str | None = None) -> Path:
+           point: str | None = None, backdrop: list[Layer] | str | None = None, extra: dict | None = None) -> Path:
     """`frames`: image paths, or {"path", "tag"} dicts (tag from amv.tagger). `style`: "push"
     (every cut zooms in) or "alt" (cuts alternate zoom-in / zoom-out on the beat). `recipe` (amv.styles:
     aura | story | twist) lays the cuts and picks the frames itself from the bank `items`."""
@@ -453,18 +530,21 @@ def render(frames: list[str], track: str | Path, out: str | Path, length: float 
         length = length or 30.0
     length = round(length * FPS) / FPS
     order: list[int] | None = None
+    plan = None
     if recipe:
         from . import styles
-        plan = styles.build(recipe, items or [], a, start, length, drop_rel, point or "eye")
+        plan = styles.build(recipe, items or [], a, start, length, drop_rel, point or "eye", extra)
         cuts, frames, order, hero = plan.cuts, plan.frames, plan.order, plan.hero
     else:
         cuts = thin_cuts(build_cuts(a, start, length, drop_rel), len(frames))
     beats_rel = np.array([b - start for b in a["beats"] if start - 1 <= b <= start + length])
     downs_rel = np.array([d - start for d in a["downbeats"] if start - 1 <= d <= start + length])
 
-    pool = [load_shot(f["path"], f.get("tag"), 1.12 if style == "alt" else 1.0, point) if isinstance(f, dict)
-            else load_shot(f, None, 1.12 if style == "alt" else 1.0) for f in frames]
+    cover_only = bool(plan is not None and plan.cover_only)          # the picture fills the whole screen, always
+    pool = [load_shot(f["path"], f.get("tag"), 1.12 if style == "alt" else 1.0, f.get("point") or point, cover_only)
+            if isinstance(f, dict) else load_shot(f, None, 1.12 if style == "alt" else 1.0, None, cover_only) for f in frames]
     anchor = ANCHORS.get(point or "eye", ANCHOR)
+    anchors = [ANCHORS.get((f.get("point") if isinstance(f, dict) else None) or point or "eye", ANCHOR) for f in frames]
     dirs = [1 if (style != "alt" or i % 2 == 0) else -1 for i in range(len(cuts) + 1)]
     hero = min(hero, len(pool) - 1)
     if order is None:
@@ -478,19 +558,37 @@ def render(frames: list[str], track: str | Path, out: str | Path, length: float 
                 order.append(others[q % len(others)]); q += 1
 
     sc = 0.5 if preview else 1.0
-    ow, oh, fps = int(W * sc), int(H * sc), 15 if preview else FPS
+    ow, oh, fps = int(W * sc), int(H * sc), 30 if preview else FPS
+    stride = FPS // fps                    # preview draws every n-th frame
     overlay = make_overlay(name)
+    if isinstance(backdrop, str):
+        backdrop = parse_backdrop(backdrop, length)
+    if backdrop is None and plan is not None and plan.backdrop:
+        backdrop = plan.backdrop
+    text_layer = plan.overlay if plan is not None else None
+    voice = plan.voice if plan is not None else None
+    bd = Backdrop(backdrop or [], W, H)
+    post = Backdrop(plan.post if plan is not None and plan.post else [], W, H, seed=5)      # after the words: grain, border
+    bd.env = post.env = plan.env if plan is not None else None
     rng = np.random.default_rng(7)
 
     ffmpeg = shutil.which("ffmpeg") or "ffmpeg"
     out = Path(out); out.parent.mkdir(parents=True, exist_ok=True)
+    fade_a = f"afade=t=in:d={FADE_IN:g},afade=t=out:st={length - 0.8:.2f}:d=0.8"
     cmd = [ffmpeg, "-y", "-v", "error", "-f", "rawvideo", "-pix_fmt", "bgr24", "-s", f"{ow}x{oh}", "-r", str(fps),
-           "-i", "-", "-ss", f"{start:.3f}", "-t", f"{length:.3f}", "-i", str(track),
-           "-af", f"afade=t=in:d={FADE_IN:g},afade=t=out:st={length - 0.8:.2f}:d=0.8",
-           "-c:v", "libx264", "-preset", "veryfast" if preview else "fast", "-crf", "30" if preview else "20",
-           "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", "-t", f"{length:.3f}",
-           "-movflags", "+faststart", str(out)]
-    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
+           "-i", "-", "-ss", f"{start:.3f}", "-t", f"{length:.3f}", "-i", str(track)]
+    if voice:
+        # the music runs as it is; the narration is laid over it at its moment
+        more = tuple(plan.voice_more or ()) if plan is not None else ()
+        for v in (voice, *more):
+            cmd += ["-i", v[0]]
+        cmd += ["-filter_complex", voice_mix_filter(fade_a, voice, more), "-map", "0:v", "-map", "[a]"]
+    else:
+        cmd += ["-af", f"{fade_a},volume={MUSIC_DB}dB"]
+    cmd += ["-c:v", "libx264", "-preset", "veryfast" if preview else "fast", "-crf", "30" if preview else "20",
+            "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", "-t", f"{length:.3f}",
+            "-movflags", "+faststart", str(out)]
+    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, **NO_CONSOLE)
 
     # Camera model: every cut is one continuous forward move. The outgoing shot accelerates
     # into the cut, the incoming shot starts at the SAME speed and eases out, and the blur
@@ -506,13 +604,14 @@ def render(frames: list[str], track: str | Path, out: str | Path, length: float 
     ci = 0
     try:
         for fi in range(nframes):
-            if preview and fi % 2:
-                continue                   # preview is 15fps
+            if fi % stride:
+                continue                   # preview is 30fps
             t = fi / FPS
             while ci + 1 < len(cuts) and t >= cuts[ci + 1].t0 - 1e-6:
                 ci += 1
             cut = cuts[ci]
             shot = pool[order[ci]]
+            anchor = anchors[order[ci]]
             if ci not in motions:
                 motions[ci] = _motion_for(shot, cut, ci)
                 shot.used += 1
@@ -537,6 +636,8 @@ def render(frames: list[str], track: str | Path, out: str | Path, length: float 
                     prev_mo = motions.get(ci - 1) or _motion_for(prev_shot, cuts[ci - 1], ci - 1)
                     k = _ease(dt_cut / DISSOLVE_S)
                     img = cv2.addWeighted(_story_view(prev_shot, prev_mo, 1.0), 1 - k, img, k, 0)
+            elif cut.mode == "hold":
+                img = _hold_view(shot, mo, u, t)
             elif shot.has_face:
                 # one continuous camera move through every cut, zooming about the eyes (pinned
                 # at the anchor), so the viewer's gaze rests while the picture changes
@@ -597,6 +698,12 @@ def render(frames: list[str], track: str | Path, out: str | Path, length: float 
                 if prog > 0:
                     img = (img * (1 - 0.35 * min(1, prog))).astype(np.uint8)
 
+            # backdrop mood (under the branding)
+            img = bd.apply(img, t)
+            if text_layer is not None:
+                img = text_layer.draw(img, t)
+            img = post.apply(img, t)
+
             # branding
             fimg = img.astype(np.float32)
             for x, y, rgb, al in overlay:
@@ -613,7 +720,7 @@ def render(frames: list[str], track: str | Path, out: str | Path, length: float 
             if sc != 1.0:
                 img = cv2.resize(img, (ow, oh), interpolation=cv2.INTER_AREA)
             proc.stdin.write(img.tobytes())
-            if progress and fi % 30 == 0:
+            if progress and fi % 60 == 0:
                 progress(fi / nframes)
         proc.stdin.close()
         proc.wait()
